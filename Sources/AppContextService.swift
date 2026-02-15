@@ -42,7 +42,9 @@ final class AppContextService {
     private let baseURL = "https://api.groq.com/openai/v1"
     private let fallbackTextModel = "meta-llama/llama-4-scout-17b-16e-instruct"
     private let visionModel = "meta-llama/llama-4-scout-17b-16e-instruct"
-    private let maxScreenshotDataURILength = 3_900_000
+    private let maxScreenshotDataURILength = 500_000
+    private let screenshotCompressionPrimary = 0.5
+    private let screenshotMaxDimension: CGFloat = 1024
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -394,12 +396,13 @@ Return only two sentences, no labels, no markdown, no extra commentary.
                     }
                     return lhs.0.layer < rhs.0.layer
                 })
-                .first?.0 {
+                    .first?.0 {
                 if let dataURL = captureWindowImage(
                     windowID: activeWindow.id,
                     fileType: .jpeg,
                     mimeType: "image/jpeg",
-                    compression: 0.5
+                    compression: screenshotCompressionPrimary,
+                    maxDimension: screenshotMaxDimension
                 ) {
                     return (dataURL, "image/jpeg", nil)
                 }
@@ -432,7 +435,8 @@ Return only two sentences, no labels, no markdown, no extra commentary.
                     windowID: activeWindow.id,
                     fileType: .jpeg,
                     mimeType: "image/jpeg",
-                    compression: 0.5
+                    compression: screenshotCompressionPrimary,
+                    maxDimension: screenshotMaxDimension
                 ) {
                     return (dataURL, "image/jpeg", nil)
                 }
@@ -452,47 +456,10 @@ Return only two sentences, no labels, no markdown, no extra commentary.
             fullScreenImage,
             mimeType: "image/jpeg",
             fileType: .jpeg,
-            compression: 0.6,
-            maxDimension: nil
+            compression: screenshotCompressionPrimary,
+            maxDimension: screenshotMaxDimension
         ) {
             return (dataURL, "image/jpeg", nil)
-        }
-
-        for targetSize in [2048.0, 1600.0, 1280.0, 1024.0, 768.0, 640.0, 480.0, 360.0, 320.0] {
-            let compression = targetSize >= 1024.0 ? 0.6 : 0.45
-            if let dataURL = convertImageToDataURL(
-                fullScreenImage,
-                mimeType: "image/jpeg",
-                fileType: .jpeg,
-                compression: compression,
-                maxDimension: targetSize
-            ) {
-                return (dataURL, "image/jpeg", nil)
-            }
-        }
-
-        for targetSize in [320.0, 240.0, 180.0] {
-            if let dataURL = convertImageToDataURL(
-                fullScreenImage,
-                mimeType: "image/jpeg",
-                fileType: .jpeg,
-                compression: 0.35,
-                maxDimension: targetSize
-            ) {
-                return (dataURL, "image/jpeg", nil)
-            }
-        }
-
-        for targetSize in [240.0, 160.0, 120.0] {
-            if let dataURL = convertImageToDataURL(
-                fullScreenImage,
-                mimeType: "image/jpeg",
-                fileType: .jpeg,
-                compression: 0.3,
-                maxDimension: targetSize
-            ) {
-                return (dataURL, "image/jpeg", nil)
-            }
         }
 
         return (nil, nil, "Could not capture screenshot within size limits")
@@ -569,21 +536,35 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         compression: Double?,
         maxDimension: CGFloat?
     ) -> String? {
-        let imageToEncode = maxDimension.flatMap { resizedImage(for: image, maxDimension: $0) } ?? image
-        let imageRepresentation = NSBitmapImageRep(cgImage: imageToEncode)
-
-        var properties: [NSBitmapImageRep.PropertyKey: Any] = [:]
-        if let compression {
-            properties[.compressionFactor] = compression
+        let compressionSteps: [Double] = if let compression {
+            [compression, compression * 0.5, compression * 0.25]
+        } else {
+            [1.0]
+        }
+        let dimensionSteps: [CGFloat?] = if let maxDimension {
+            [maxDimension, maxDimension * 0.75, maxDimension * 0.5]
+        } else {
+            [nil]
         }
 
-        guard let imageData = imageRepresentation.representation(using: fileType, properties: properties) else {
-            return nil
+        for dim in dimensionSteps {
+            let imageToEncode = dim.flatMap { resizedImage(for: image, maxDimension: $0) } ?? image
+            let rep = NSBitmapImageRep(cgImage: imageToEncode)
+
+            for comp in compressionSteps {
+                guard let imageData = rep.representation(
+                    using: fileType,
+                    properties: [.compressionFactor: comp]
+                ) else { continue }
+
+                let base64 = imageData.base64EncodedString()
+                if base64.count <= maxScreenshotDataURILength {
+                    return "data:\(mimeType);base64,\(base64)"
+                }
+            }
         }
 
-        let base64 = imageData.base64EncodedString()
-        guard base64.count <= maxScreenshotDataURILength else { return nil }
-        return "data:\(mimeType);base64,\(base64)"
+        return nil
     }
 
     private func resizedImage(for image: CGImage, maxDimension: CGFloat) -> CGImage? {

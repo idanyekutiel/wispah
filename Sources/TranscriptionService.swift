@@ -100,7 +100,7 @@ class TranscriptionService {
 
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
-        append("Content-Type: audio/wav\r\n\r\n")
+        append("Content-Type: audio/mp4\r\n\r\n")
         body.append(audioData)
         append("\r\n")
         append("--\(boundary)--\r\n")
