@@ -78,19 +78,20 @@ Rules:
 - The custom vocabulary list is authoritative for proper noun spellings. If a spoken token is a close misspelling of a vocabulary item, rewrite it using that exact vocabulary spelling.
 - Remove spoken filler (for example: "um", "uh", "you know", "like") unless they are meaningful.
 - If there is uncertainty about a proper noun, keep the original wording rather than inventing a correction.
+- Keep the response in the user's original voice and pacing.
+- Do not add entities, filenames, sections, or claims not present in the transcription unless directly required by explicit context.
 - Convert rough list-like text into properly formatted Markdown bullet points when the content contains:
   - lines that begin with dashes, numbers, asterisks, or repeated phrases like "first/second/third";
   - sentence fragments intended as separate list items.
-- If the context indicates email, output a sendable email structure:
-  - include a clear subject line only when present in the transcription or explicit context;
-  - use a greeting, concise body paragraphs, and a closing,
-  - keep it ready to paste directly into an email composer.
+- If the context indicates email, output a sendable email structure only when the transcription already contains email-specific structure.
+- Do not invent a Subject line, greeting, closing, placeholders, or sections unless they are explicitly present in the transcription or explicit context.
 - If no edits are needed for a token, phrase, or sentence, preserve it exactly as dictated.
 - Do not change the meaning by inserting invented names, closures, clauses, or next steps.
 - Keep the original intent and content scope; do not add, remove, summarize, or continue beyond what was spoken.
 - Do not infer missing clauses, placeholders, or closing lines if they were not dictated.
 - If the transcription is incomplete, return the rewritten partial content only.
-- If no changes are required overall, return the transcription exactly as it should be inserted into the destination app.
+- Return only the rewritten transcript text.
+- Do not include status text about whether changes were made, such as "no changes were necessary", "no changes needed", or similar.
 - Do not wrap the entire response in quotation marks.
 - Do not return the final output wrapped in quotes.
 - Do not emit each sentence wrapped in quotes.
@@ -194,7 +195,24 @@ USER:
             "i will",
             "if you'd like",
             "this is the rewritten",
-            "rewritten transcription"
+            "rewritten transcription",
+            "no changes were necessary",
+            "no changes were needed",
+            "no changes needed",
+            "no edits were required",
+            "no edits needed",
+            "no edits were necessary",
+            "nothing changed",
+            "if no edits were necessary",
+            "if an email structure were required",
+            "however, if an email structure were required",
+            "here's one example",
+            "here's an example",
+            "here is one example",
+            "here is an example",
+            "as an example",
+            "a possible complete email",
+            "possible complete email for this"
         ]
 
         var outputLines: [String] = []
