@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct VoiceToTextApp: App {
+struct FreeFlowApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {

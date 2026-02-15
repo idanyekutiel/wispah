@@ -1,7 +1,8 @@
-APP_NAME = VoiceToText
-BUNDLE_ID = com.hackclub.voicetotext
+APP_NAME = FreeFlow
+BUNDLE_ID = com.hackclub.freeflow
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
+CODESIGN_IDENTITY ?= -
 CONTENTS = $(APP_BUNDLE)/Contents
 MACOS_DIR = $(CONTENTS)/MacOS
 
@@ -21,7 +22,7 @@ $(MACOS_DIR)/$(APP_NAME): $(SOURCES) Info.plist
 		-target $(ARCH)-apple-macosx13.0 \
 		$(SOURCES)
 	@cp Info.plist $(CONTENTS)/
-	@codesign --force --sign "VoiceToText Dev" --entitlements VoiceToText.entitlements $(APP_BUNDLE)
+	@codesign --force --sign "$(CODESIGN_IDENTITY)" --entitlements FreeFlow.entitlements $(APP_BUNDLE)
 	@echo "Built $(APP_BUNDLE)"
 
 clean:

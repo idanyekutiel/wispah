@@ -131,6 +131,48 @@ class AppState: ObservableObject {
         UserDefaults.standard.set(data, forKey: pipelineHistoryStorageKey)
     }
 
+    static func audioStorageDirectory() -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let audioDir = appSupport.appendingPathComponent("VoiceToText/audio", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: audioDir.path) {
+            try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
+        }
+        return audioDir
+    }
+
+    static func saveAudioFile(from tempURL: URL) -> String? {
+        let fileName = UUID().uuidString + "." + tempURL.pathExtension
+        let destURL = audioStorageDirectory().appendingPathComponent(fileName)
+        do {
+            try FileManager.default.copyItem(at: tempURL, to: destURL)
+            return fileName
+        } catch {
+            return nil
+        }
+    }
+
+    private static func deleteAudioFile(_ fileName: String) {
+        let fileURL = audioStorageDirectory().appendingPathComponent(fileName)
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    func clearPipelineHistory() {
+        for item in pipelineHistory {
+            if let audioFileName = item.audioFileName {
+                Self.deleteAudioFile(audioFileName)
+            }
+        }
+        pipelineHistory = []
+    }
+
+    func deleteHistoryEntry(id: UUID) {
+        guard let index = pipelineHistory.firstIndex(where: { $0.id == id }) else { return }
+        if let audioFileName = pipelineHistory[index].audioFileName {
+            Self.deleteAudioFile(audioFileName)
+        }
+        pipelineHistory.remove(at: index)
+    }
+
     func startAccessibilityPolling() {
         accessibilityTimer?.invalidate()
         hasAccessibility = AXIsProcessTrusted()
@@ -287,7 +329,7 @@ class AppState: ObservableObject {
     func showMicrophonePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Microphone Permission Required"
-        alert.informativeText = "Voice to Text cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable Voice to Text."
+        alert.informativeText = "FreeFlow cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable FreeFlow."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -305,7 +347,7 @@ class AppState: ObservableObject {
     func showAccessibilityAlert() {
         let alert = NSAlert()
         alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = "Voice to Text cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable Voice to Text."
+        alert.informativeText = "FreeFlow cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable FreeFlow."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -339,6 +381,7 @@ class AppState: ObservableObject {
             statusText = "Error"
             return
         }
+        let savedAudioFileName = Self.saveAudioFile(from: fileURL)
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."
@@ -410,7 +453,8 @@ class AppState: ObservableObject {
                         postProcessedTranscript: trimmedFinalTranscript,
                         postProcessingPrompt: postProcessingPrompt,
                         context: appContext,
-                        processingStatus: processingStatus
+                        processingStatus: processingStatus,
+                        audioFileName: savedAudioFileName
                     )
                     self.transcribingIndicatorTask?.cancel()
                     self.transcribingIndicatorTask = nil
@@ -474,7 +518,8 @@ class AppState: ObservableObject {
                         postProcessedTranscript: "",
                         postProcessingPrompt: "",
                         context: resolvedContext,
-                        processingStatus: "Error: \(error.localizedDescription)"
+                        processingStatus: "Error: \(error.localizedDescription)",
+                        audioFileName: savedAudioFileName
                     )
                 }
             }
@@ -486,7 +531,8 @@ class AppState: ObservableObject {
         postProcessedTranscript: String,
         postProcessingPrompt: String,
         context: AppContext,
-        processingStatus: String
+        processingStatus: String,
+        audioFileName: String? = nil
     ) {
         var entries = pipelineHistory
         let newEntry = PipelineHistoryItem(
@@ -500,11 +546,18 @@ class AppState: ObservableObject {
                 ?? "available (\(context.screenshotMimeType ?? "image"))",
             postProcessingStatus: processingStatus,
             debugStatus: debugStatusMessage,
-            customVocabulary: customVocabulary
+            customVocabulary: customVocabulary,
+            audioFileName: audioFileName
         )
 
         entries.insert(newEntry, at: 0)
         if entries.count > maxPipelineHistoryCount {
+            let dropped = entries.suffix(from: maxPipelineHistoryCount)
+            for item in dropped {
+                if let audioFileName = item.audioFileName {
+                    Self.deleteAudioFile(audioFileName)
+                }
+            }
             entries = Array(entries.prefix(maxPipelineHistoryCount))
         }
         pipelineHistory = entries

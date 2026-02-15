@@ -68,7 +68,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Voice to Text"
+        window.title = "FreeFlow"
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
         window.center()
@@ -100,7 +100,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Voice to Text"
+        window.title = "FreeFlow"
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.contentView = NSHostingView(rootView: setupView)

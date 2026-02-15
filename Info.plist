@@ -3,11 +3,11 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Voice to Text</string>
+    <string>FreeFlow</string>
     <key>CFBundleDisplayName</key>
-    <string>Voice to Text</string>
+    <string>FreeFlow</string>
     <key>CFBundleIdentifier</key>
-    <string>com.hackclub.voicetotext</string>
+    <string>com.hackclub.freeflow</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
@@ -15,16 +15,16 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>VoiceToText</string>
+    <string>FreeFlow</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Voice to Text needs microphone access to transcribe your speech.</string>
+    <string>FreeFlow needs microphone access to transcribe your speech.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Voice to Text needs speech recognition to convert your voice to text.</string>
+    <string>FreeFlow needs speech recognition to convert your voice to text.</string>
     <key>NSAccessibilityUsageDescription</key>
-    <string>Voice to Text needs accessibility access to detect the text cursor position and paste transcribed text.</string>
+    <string>FreeFlow needs accessibility access to detect the text cursor position and paste transcribed text.</string>
 </dict>
 </plist>

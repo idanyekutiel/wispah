@@ -1,6 +1,13 @@
 import SwiftUI
 import AppKit
 
+func imageFromDataURL(_ dataURL: String) -> NSImage? {
+    guard let commaIndex = dataURL.lastIndex(of: ",") else { return nil }
+    let base64 = String(dataURL[dataURL.index(after: commaIndex)...])
+    guard let data = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else { return nil }
+    return NSImage(data: data)
+}
+
 struct PipelineDebugContentView: View {
     let statusMessage: String
     let postProcessingStatus: String
@@ -127,19 +134,6 @@ struct PipelineDebugContentView: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)))
             }
         }
-    }
-
-    private func imageFromDataURL(_ dataURL: String) -> NSImage? {
-        guard let commaIndex = dataURL.lastIndex(of: ",") else {
-            return nil
-        }
-
-        let base64 = String(dataURL[dataURL.index(after: commaIndex)...])
-        guard let imageData = Data(base64Encoded: base64, options: .ignoreUnknownCharacters) else {
-            return nil
-        }
-
-        return NSImage(data: imageData)
     }
 
     private func screenshotPayloadBytes(dataURL: String) -> Int? {

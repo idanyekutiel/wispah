@@ -9,7 +9,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text("Voice to Text v\(appVersion)")
+            Text("FreeFlow v\(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
@@ -141,7 +141,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Quit Voice to Text") {
+            Button("Quit FreeFlow") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
