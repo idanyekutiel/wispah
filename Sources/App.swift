@@ -5,9 +5,27 @@ struct VoiceToTextApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Voice to Text", systemImage: "mic.fill") {
+        MenuBarExtra {
             MenuBarView()
                 .environmentObject(appDelegate.appState)
+        } label: {
+            MenuBarLabel()
+                .environmentObject(appDelegate.appState)
         }
+    }
+}
+
+struct MenuBarLabel: View {
+    @EnvironmentObject var appState: AppState
+
+    var body: some View {
+        let icon: String = if appState.isRecording {
+            "record.circle"
+        } else if appState.isTranscribing {
+            "ellipsis.circle"
+        } else {
+            "mic.fill"
+        }
+        Image(systemName: icon)
     }
 }

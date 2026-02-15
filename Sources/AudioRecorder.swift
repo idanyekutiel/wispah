@@ -1,6 +1,20 @@
 import AVFoundation
 import Foundation
 
+enum AudioRecorderError: LocalizedError {
+    case invalidInputFormat(String)
+    case missingInputDevice
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidInputFormat(let details):
+            return "Invalid input format: \(details)"
+        case .missingInputDevice:
+            return "No audio input device available."
+        }
+    }
+}
+
 class AudioRecorder: NSObject, ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
@@ -11,56 +25,71 @@ class AudioRecorder: NSObject, ObservableObject {
     private var smoothedLevel: Float = 0.0
 
     func startRecording() throws {
+        guard AVCaptureDevice.default(for: .audio) != nil else {
+            throw AudioRecorderError.missingInputDevice
+        }
+
         let audioEngine = AVAudioEngine()
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0 else {
+            throw AudioRecorderError.invalidInputFormat("Invalid sample rate: \(inputFormat.sampleRate)")
+        }
+        guard inputFormat.channelCount > 0 else {
+            throw AudioRecorderError.invalidInputFormat("No input channels available")
+        }
 
         // Create a temp file to write audio to
         let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".m4a")
+        let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".wav")
         self.tempFileURL = fileURL
 
-        // Record as AAC at 16kHz mono (Whisper operates at 16kHz internally)
-        let audioFile = try AVAudioFile(forWriting: fileURL, settings: [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 16000.0,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 64000,
-        ], commonFormat: .pcmFormatFloat32, interleaved: false)
-        self.audioFile = audioFile
-
-        // Convert input to mono 16kHz float32 for writing to AAC file
-        let monoFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 16000.0,
-            channels: 1,
-            interleaved: false
-        )!
-
-        let converter = AVAudioConverter(from: inputFormat, to: monoFormat)
-
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            guard let converter = converter else { return }
-            let frameCount = AVAudioFrameCount(
-                Double(buffer.frameLength) * monoFormat.sampleRate / inputFormat.sampleRate
+        // Try the input format first to avoid conversion issues, then fall back to 16-bit PCM.
+        let audioFile: AVAudioFile
+        do {
+            audioFile = try AVAudioFile(forWriting: fileURL, settings: inputFormat.settings)
+        } catch {
+            let fallbackSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVSampleRateKey: inputFormat.sampleRate,
+                AVNumberOfChannelsKey: inputFormat.channelCount,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: inputFormat.isInterleaved ? 0 : 1,
+            ]
+            audioFile = try AVAudioFile(
+                forWriting: fileURL,
+                settings: fallbackSettings,
+                commonFormat: .pcmFormatInt16,
+                interleaved: inputFormat.isInterleaved
             )
-            guard frameCount > 0,
-                  let convertedBuffer = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frameCount) else { return }
-
-            var error: NSError?
-            let status = converter.convert(to: convertedBuffer, error: &error) { inNumPackets, outStatus in
-                outStatus.pointee = .haveData
-                return buffer
-            }
-
-            if status != .error {
-                try? audioFile.write(from: convertedBuffer)
-                self?.computeAudioLevel(from: convertedBuffer)
-            }
         }
 
-        audioEngine.prepare()
-        try audioEngine.start()
+        // Keep a strong reference only after recording setup succeeds.
+        self.audioFile = audioFile
+
+        do {
+            inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+                guard let self else { return }
+                do {
+                    try audioFile.write(from: buffer)
+                    self.computeAudioLevel(from: buffer)
+                } catch {
+                    // Best-effort: if write fails after start, recording will stop and be surfaced by next action.
+                    self.audioFile = nil
+                }
+            }
+
+            audioEngine.prepare()
+            try audioEngine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            try? FileManager.default.removeItem(at: fileURL)
+            self.tempFileURL = nil
+            throw error
+        }
+
         self.audioEngine = audioEngine
         self.isRecording = true
     }
@@ -77,16 +106,26 @@ class AudioRecorder: NSObject, ObservableObject {
     }
 
     private func computeAudioLevel(from buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData else { return }
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return }
 
-        let samples = channelData[0]
         var sumOfSquares: Float = 0.0
-        for i in 0..<frames {
-            let sample = samples[i]
-            sumOfSquares += sample * sample
+        if let channelData = buffer.floatChannelData {
+            let samples = channelData[0]
+            for i in 0..<frames {
+                let sample = samples[i]
+                sumOfSquares += sample * sample
+            }
+        } else if let channelData = buffer.int16ChannelData {
+            let samples = channelData[0]
+            for i in 0..<frames {
+                let sample = Float(samples[i]) / Float(Int16.max)
+                sumOfSquares += sample * sample
+            }
+        } else {
+            return
         }
+
         let rms = sqrtf(sumOfSquares / Float(frames))
 
         // Scale RMS (~0.01-0.1 for speech) to 0-1 range

@@ -100,12 +100,25 @@ class TranscriptionService {
 
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
-        append("Content-Type: audio/mp4\r\n\r\n")
+        append("Content-Type: \(audioContentType(for: fileName))\r\n\r\n")
         body.append(audioData)
         append("\r\n")
         append("--\(boundary)--\r\n")
 
         return body
+    }
+
+    private func audioContentType(for fileName: String) -> String {
+        if fileName.lowercased().hasSuffix(".wav") {
+            return "audio/wav"
+        }
+        if fileName.lowercased().hasSuffix(".mp3") {
+            return "audio/mpeg"
+        }
+        if fileName.lowercased().hasSuffix(".m4a") {
+            return "audio/mp4"
+        }
+        return "audio/mp4"
     }
 
     private func parseTranscript(from data: Data) throws -> String {

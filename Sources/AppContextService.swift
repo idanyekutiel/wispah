@@ -452,8 +452,9 @@ Return only two sentences, no labels, no markdown, no extra commentary.
             return (nil, nil, "Could not capture screenshot (screen recording permission or window access issue)")
         }
 
-        if let dataURL = convertImageToDataURL(
-            fullScreenImage,
+        if let croppedImage = croppedWhitespaceImage(from: fullScreenImage),
+           let dataURL = convertImageToDataURL(
+            croppedImage,
             mimeType: "image/jpeg",
             fileType: .jpeg,
             compression: screenshotCompressionPrimary,
@@ -480,9 +481,10 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         ) else {
             return nil
         }
+        guard let croppedImage = croppedWhitespaceImage(from: image) else { return nil }
 
         if let dataURL = convertImageToDataURL(
-            image,
+            croppedImage,
             mimeType: mimeType,
             fileType: fileType,
             compression: compression,
@@ -565,6 +567,74 @@ Return only two sentences, no labels, no markdown, no extra commentary.
         }
 
         return nil
+    }
+
+    private func croppedWhitespaceImage(from image: CGImage) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return nil }
+
+        let bytesPerPixel = 4
+        let bytesPerRow = width * bytesPerPixel
+        let byteCount = bytesPerRow * height
+        var pixelData = Array(repeating: UInt8(0), count: byteCount)
+
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                data: &pixelData,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: bytesPerRow,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return image
+        }
+
+        let drawRect = CGRect(origin: .zero, size: CGSize(width: width, height: height))
+        context.draw(image, in: drawRect)
+
+        let whiteThreshold: UInt8 = 245
+        let alphaThreshold: UInt8 = 5
+        var minX = width
+        var minY = height
+        var maxX: Int = -1
+        var maxY: Int = -1
+        var hasContent = false
+
+        for y in 0..<height {
+            let rowOffset = y * bytesPerRow
+            for x in 0..<width {
+                let offset = rowOffset + x * bytesPerPixel
+                let r = pixelData[offset]
+                let g = pixelData[offset + 1]
+                let b = pixelData[offset + 2]
+                let a = pixelData[offset + 3]
+
+                if a <= alphaThreshold { continue }
+                if r >= whiteThreshold && g >= whiteThreshold && b >= whiteThreshold {
+                    continue
+                }
+
+                hasContent = true
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+            }
+        }
+
+        guard hasContent else { return image }
+
+        let cropRect = CGRect(
+            x: CGFloat(minX),
+            y: CGFloat(minY),
+            width: CGFloat(maxX - minX + 1),
+            height: CGFloat(maxY - minY + 1)
+        )
+
+        return image.cropping(to: cropRect) ?? image
     }
 
     private func resizedImage(for image: CGImage, maxDimension: CGFloat) -> CGImage? {

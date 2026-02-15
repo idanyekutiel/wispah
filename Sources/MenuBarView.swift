@@ -3,8 +3,20 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject var appState: AppState
 
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+    }
+
     var body: some View {
         VStack(spacing: 4) {
+            Text("Voice to Text v\(appVersion)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
+
+            Divider()
+
             if !appState.hasScreenRecordingPermission {
                 Button {
                     appState.requestScreenCapturePermission()
@@ -116,16 +128,16 @@ struct MenuBarView: View {
                 NotificationCenter.default.post(name: .showSettings, object: nil)
             }
 
-            Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
-                appState.toggleDebugOverlay()
-            }
+            Divider()
 
-            Button("Pipeline Debug") {
-                appState.toggleDebugPanel()
+            Menu("Debug") {
+                Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
+                    appState.toggleDebugOverlay()
+                }
+                Button("Pipeline Debug") {
+                    appState.toggleDebugPanel()
+                }
             }
-            Text(appState.isDebugPanelVisible ? "Debug panel open" : "Debug panel closed")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
 
             Divider()
 

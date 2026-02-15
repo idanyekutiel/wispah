@@ -4,7 +4,17 @@ import AVFoundation
 struct SetupView: View {
     var onComplete: () -> Void
     @EnvironmentObject var appState: AppState
-    @State private var currentStep = 0
+    private enum SetupStep: Int, CaseIterable {
+        case welcome = 0
+        case apiKey
+        case micPermission
+        case accessibility
+        case hotkey
+        case vocabulary
+        case ready
+    }
+
+    @State private var currentStep = SetupStep.welcome
     @State private var micPermissionGranted = false
     @State private var accessibilityGranted = false
     @State private var apiKeyInput: String = ""
@@ -12,27 +22,26 @@ struct SetupView: View {
     @State private var keyValidationError: String?
     @State private var accessibilityTimer: Timer?
     @State private var customVocabularyInput: String = ""
-
-    private let totalSteps = 7
+    private let totalSteps: [SetupStep] = SetupStep.allCases
 
     var body: some View {
         VStack(spacing: 0) {
             Group {
                 switch currentStep {
-                case 0:
+                case .welcome:
                     welcomeStep
-                case 1:
+                case .apiKey:
                     apiKeyStep
-                case 2:
+                case .micPermission:
                     micPermissionStep
-                case 3:
+                case .accessibility:
                     accessibilityStep
-                case 4:
+                case .hotkey:
                     hotkeyStep
-                case 5:
+                case .vocabulary:
+                    vocabularyStep
+                case .ready:
                     readyStep
-                default:
-                    EmptyView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -41,25 +50,25 @@ struct SetupView: View {
             Divider()
 
             HStack {
-                if currentStep > 0 {
+                if currentStep != .welcome {
                     Button("Back") {
                         keyValidationError = nil
                         withAnimation {
-                            currentStep -= 1
+                            currentStep = previousStep(currentStep)
                         }
                     }
                     .disabled(isValidatingKey)
                 }
                 Spacer()
-                if currentStep < totalSteps - 1 {
-                    if currentStep == 1 {
+                if currentStep != .ready {
+                    if currentStep == .apiKey {
                         // API key step: validate before continuing
                         Button(isValidatingKey ? "Validating..." : "Continue") {
                             validateAndContinue()
                         }
                         .keyboardShortcut(.defaultAction)
                         .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
-                    } else if currentStep == 5 {
+                    } else if currentStep == .vocabulary {
                         Button("Continue") {
                             saveCustomVocabularyAndContinue()
                         }
@@ -67,7 +76,7 @@ struct SetupView: View {
                     } else {
                         Button("Continue") {
                             withAnimation {
-                                currentStep += 1
+                                currentStep = nextStep(currentStep)
                             }
                         }
                         .keyboardShortcut(.defaultAction)
@@ -347,9 +356,9 @@ struct SetupView: View {
 
     var stepIndicator: some View {
         HStack(spacing: 8) {
-            ForEach(0..<totalSteps, id: \.self) { i in
+            ForEach(totalSteps, id: \.rawValue) { step in
                 Circle()
-                    .fill(i == currentStep ? Color.blue : Color.gray.opacity(0.3))
+                    .fill(step == currentStep ? Color.blue : Color.gray.opacity(0.3))
                     .frame(width: 8, height: 8)
             }
         }
@@ -370,7 +379,7 @@ struct SetupView: View {
                 if valid {
                     appState.apiKey = key
                     withAnimation {
-                        currentStep += 1
+                        currentStep = nextStep(currentStep)
                     }
                 } else {
                     keyValidationError = "Invalid API key. Please check and try again."
@@ -382,8 +391,18 @@ struct SetupView: View {
     func saveCustomVocabularyAndContinue() {
         appState.customVocabulary = customVocabularyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         withAnimation {
-            currentStep += 1
+            currentStep = nextStep(currentStep)
         }
+    }
+
+    private func previousStep(_ step: SetupStep) -> SetupStep {
+        let previous = SetupStep(rawValue: step.rawValue - 1)
+        return previous ?? .welcome
+    }
+
+    private func nextStep(_ step: SetupStep) -> SetupStep {
+        let next = SetupStep(rawValue: step.rawValue + 1)
+        return next ?? .ready
     }
 
     func checkMicPermission() {

@@ -1,6 +1,31 @@
 import Foundation
 import Combine
 import AppKit
+import AVFoundation
+
+enum SettingsTab: String, CaseIterable, Identifiable {
+    case general
+    case runLog
+    case debug
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .runLog: return "Run Log"
+        case .debug: return "Debug"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .general: return "gearshape"
+        case .runLog: return "clock.arrow.circlepath"
+        case .debug: return "ant"
+        }
+    }
+}
 
 class AppState: ObservableObject {
     private let apiKeyStorageKey = "groq_api_key"
@@ -44,7 +69,7 @@ class AppState: ObservableObject {
     @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
     @Published var isDebugOverlayActive = false
-    @Published var isDebugPanelVisible = false
+    @Published var selectedSettingsTab: SettingsTab? = .general
     @Published var pipelineHistory: [PipelineHistoryItem] = [] {
         didSet {
             persistPipelineHistory()
@@ -190,6 +215,37 @@ class AppState: ObservableObject {
             showAccessibilityAlert()
             return
         }
+        guard ensureMicrophoneAccess() else { return }
+        beginRecording()
+    }
+
+    private func ensureMicrophoneAccess() -> Bool {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        switch status {
+        case .authorized:
+            return true
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
+                DispatchQueue.main.async {
+                    if granted {
+                        self?.beginRecording()
+                    } else {
+                        self?.errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
+                        self?.statusText = "No Microphone"
+                        self?.showMicrophonePermissionAlert()
+                    }
+                }
+            }
+            return false
+        default:
+            errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
+            statusText = "No Microphone"
+            showMicrophonePermissionAlert()
+            return false
+        }
+    }
+
+    private func beginRecording() {
         errorMessage = nil
         do {
             try audioRecorder.startRecording()
@@ -205,8 +261,44 @@ class AppState: ObservableObject {
                     self?.overlayManager.updateAudioLevel(level)
                 }
         } catch {
-            errorMessage = "Failed to start recording: \(error.localizedDescription)"
+            errorMessage = formattedRecordingStartError(error)
             statusText = "Error"
+        }
+    }
+
+    private func formattedRecordingStartError(_ error: Error) -> String {
+        if let recorderError = error as? AudioRecorderError {
+            return "Failed to start recording: \(recorderError.localizedDescription)"
+        }
+
+        let lower = error.localizedDescription.lowercased()
+        if lower.contains("operation couldn't be completed") || lower.contains("operation could not be completed") {
+            return "Failed to start recording: Audio input error. Verify microphone access is granted and a working mic is selected in System Settings > Sound > Input."
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSOSStatusErrorDomain {
+            return "Failed to start recording (audio subsystem error \(nsError.code)). Check microphone permissions and selected input device."
+        }
+
+        return "Failed to start recording: \(error.localizedDescription)"
+    }
+
+    func showMicrophonePermissionAlert() {
+        let alert = NSAlert()
+        alert.messageText = "Microphone Permission Required"
+        alert.informativeText = "Voice to Text cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable Voice to Text."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Dismiss")
+        alert.icon = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: nil)
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            let settingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+            if let url = settingsURL {
+                NSWorkspace.shared.open(url)
+            }
         }
     }
 
@@ -537,8 +629,8 @@ class AppState: ObservableObject {
     }
 
     func toggleDebugPanel() {
-        isDebugPanelVisible.toggle()
-        NotificationCenter.default.post(name: .toggleDebugPanel, object: nil)
+        selectedSettingsTab = .debug
+        NotificationCenter.default.post(name: .showSettings, object: nil)
     }
 
     private func pasteAtCursor() {
