@@ -11,8 +11,9 @@ struct SetupView: View {
     @State private var isValidatingKey = false
     @State private var keyValidationError: String?
     @State private var accessibilityTimer: Timer?
+    @State private var customVocabularyInput: String = ""
 
-    private let totalSteps = 6
+    private let totalSteps = 7
 
     var body: some View {
         VStack(spacing: 0) {
@@ -58,6 +59,11 @@ struct SetupView: View {
                         }
                         .keyboardShortcut(.defaultAction)
                         .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
+                    } else if currentStep == 5 {
+                        Button("Continue") {
+                            saveCustomVocabularyAndContinue()
+                        }
+                        .keyboardShortcut(.defaultAction)
                     } else {
                         Button("Continue") {
                             withAnimation {
@@ -78,6 +84,7 @@ struct SetupView: View {
         .frame(width: 520, height: 520)
         .onAppear {
             apiKeyInput = appState.apiKey
+            customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             checkAccessibility()
         }
@@ -117,7 +124,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Voice to Text uses Groq's `whisper-large-v3-turbo` model for fast, high-accuracy transcription. Enter your API key below.")
+            Text("Voice to Text uses Groq's `whisper-large-v3` model for high-accuracy transcription. Enter your API key below.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -277,6 +284,42 @@ struct SetupView: View {
         }
     }
 
+    var vocabularyStep: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "text.book.closed.fill")
+                .font(.system(size: 60))
+                .foregroundStyle(.blue)
+
+            Text("Custom Vocabulary")
+                .font(.title)
+                .fontWeight(.bold)
+
+            Text("Add words and phrases that should be preserved in post-processing.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Vocabulary")
+                    .font(.headline)
+
+                TextEditor(text: $customVocabularyInput)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 130)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                    )
+
+                Text("Separate entries with commas, new lines, or semicolons.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            stepIndicator
+        }
+    }
+
     var readyStep: some View {
         VStack(spacing: 20) {
             Image(systemName: "checkmark.circle.fill")
@@ -333,6 +376,13 @@ struct SetupView: View {
                     keyValidationError = "Invalid API key. Please check and try again."
                 }
             }
+        }
+    }
+
+    func saveCustomVocabularyAndContinue() {
+        appState.customVocabulary = customVocabularyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        withAnimation {
+            currentStep += 1
         }
     }
 

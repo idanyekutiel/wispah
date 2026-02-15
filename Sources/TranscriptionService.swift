@@ -3,7 +3,7 @@ import Foundation
 class TranscriptionService {
     private let apiKey: String
     private let baseURL = "https://api.groq.com/openai/v1"
-    private let transcriptionModel = "whisper-large-v3-turbo"
+    private let transcriptionModel = "whisper-large-v3"
     private let transcriptionTimeoutSeconds: TimeInterval = 20
 
     init(apiKey: String) {

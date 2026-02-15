@@ -5,6 +5,23 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 4) {
+            if !appState.hasScreenRecordingPermission {
+                Button {
+                    appState.requestScreenCapturePermission()
+                } label: {
+                    Label("Screen Recording Permission Needed", systemImage: "camera.viewfinder")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(Color.orange)
+
+                Divider()
+            }
+
             // Accessibility warning
             if !appState.hasAccessibility {
                 Button {
@@ -30,7 +47,7 @@ struct MenuBarView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 6)
             } else if appState.isTranscribing {
-                Label("Transcribing...", systemImage: "ellipsis.circle")
+                Label(appState.debugStatusMessage, systemImage: "ellipsis.circle")
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 6)
@@ -95,9 +112,20 @@ struct MenuBarView: View {
                 NotificationCenter.default.post(name: .showSetup, object: nil)
             }
 
+            Button("Settings") {
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+            }
+
             Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
                 appState.toggleDebugOverlay()
             }
+
+            Button("Pipeline Debug") {
+                appState.toggleDebugPanel()
+            }
+            Text(appState.isDebugPanelVisible ? "Debug panel open" : "Debug panel closed")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
             Divider()
 
@@ -112,4 +140,5 @@ struct MenuBarView: View {
 
 extension Notification.Name {
     static let showSetup = Notification.Name("showSetup")
+    static let showSettings = Notification.Name("showSettings")
 }
