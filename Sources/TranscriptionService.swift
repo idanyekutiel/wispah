@@ -2,7 +2,9 @@ import Foundation
 
 class TranscriptionService {
     private let apiKey: String
-    private let baseURL = "https://api.assemblyai.com/v2"
+    private let baseURL = "https://api.groq.com/openai/v1"
+    private let transcriptionModel = "whisper-large-v3-turbo"
+    private let transcriptionTimeoutSeconds: TimeInterval = 20
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -13,8 +15,8 @@ class TranscriptionService {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
-        var request = URLRequest(url: URL(string: "https://api.assemblyai.com/v2/transcript?limit=1")!)
-        request.setValue(trimmed, forHTTPHeaderField: "Authorization")
+        var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/models")!)
+        request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
 
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
@@ -27,102 +29,101 @@ class TranscriptionService {
 
     // Upload audio file, submit for transcription, poll until done, return text
     func transcribe(fileURL: URL) async throws -> String {
-        let uploadURL = try await uploadAudio(fileURL: fileURL)
-        let transcriptID = try await submitTranscription(audioURL: uploadURL)
-        let text = try await pollForResult(transcriptID: transcriptID)
-        return text
+        try await withThrowingTaskGroup(of: String.self) { group in
+            group.addTask { [weak self] in
+                guard let self else {
+                    throw TranscriptionError.submissionFailed("Service deallocated")
+                }
+                return try await self.transcribeAudio(fileURL: fileURL)
+            }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(self.transcriptionTimeoutSeconds * 1_000_000_000))
+                throw TranscriptionError.transcriptionTimedOut(self.transcriptionTimeoutSeconds)
+            }
+
+            do {
+                let result = try await group.next()!
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+        }
     }
 
-    // Step 1: Upload audio file
-    private func uploadAudio(fileURL: URL) async throws -> String {
-        let url = URL(string: "\(baseURL)/upload")!
+    // Send audio file for transcription and return text
+    private func transcribeAudio(fileURL: URL) async throws -> String {
+        let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue(apiKey, forHTTPHeaderField: "Authorization")
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let boundary = UUID().uuidString
+        let contentType = "multipart/form-data; boundary=\(boundary)"
+        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
 
         let audioData = try Data(contentsOf: fileURL)
-        let (data, response) = try await URLSession.shared.upload(for: request, from: audioData)
+        let body = makeMultipartBody(
+            audioData: audioData,
+            fileName: fileURL.lastPathComponent,
+            model: transcriptionModel,
+            boundary: boundary
+        )
+        request.httpBody = body
 
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
-            let body = String(data: data, encoding: .utf8) ?? ""
-            throw TranscriptionError.uploadFailed("Status \(statusCode): \(body)")
+        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw TranscriptionError.submissionFailed("No response from server")
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let uploadURL = json["upload_url"] as? String else {
-            throw TranscriptionError.uploadFailed("Invalid response")
-        }
-
-        return uploadURL
-    }
-
-    // Step 2: Submit transcription request
-    private func submitTranscription(audioURL: String) async throws -> String {
-        let url = URL(string: "\(baseURL)/transcript")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(apiKey, forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = [
-            "audio_url": audioURL,
-            "speech_models": ["universal-3-pro"],
-            "punctuate": true,
-            "format_text": true,
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? ""
-            throw TranscriptionError.submissionFailed("Status \(statusCode): \(responseBody)")
+            throw TranscriptionError.submissionFailed("Status \(httpResponse.statusCode): \(responseBody)")
         }
 
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let transcriptID = json["id"] as? String else {
-            throw TranscriptionError.submissionFailed("Invalid response")
-        }
-
-        return transcriptID
+        return try parseTranscript(from: data)
     }
 
-    // Step 3: Poll for completion
-    private func pollForResult(transcriptID: String) async throws -> String {
-        let url = URL(string: "\(baseURL)/transcript/\(transcriptID)")!
+    private func makeMultipartBody(audioData: Data, fileName: String, model: String, boundary: String) -> Data {
+        var body = Data()
 
-        while true {
-            var request = URLRequest(url: url)
-            request.setValue(apiKey, forHTTPHeaderField: "Authorization")
-
-            let (data, _) = try await URLSession.shared.data(for: request)
-
-            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let status = json["status"] as? String else {
-                throw TranscriptionError.pollFailed("Invalid response")
-            }
-
-            switch status {
-            case "completed":
-                guard let text = json["text"] as? String else {
-                    throw TranscriptionError.pollFailed("No text in response")
-                }
-                return text
-
-            case "error":
-                let error = json["error"] as? String ?? "Unknown error"
-                throw TranscriptionError.transcriptionFailed(error)
-
-            case "queued", "processing":
-                try await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
-
-            default:
-                try await Task.sleep(nanoseconds: 1_000_000_000)
-            }
+        func append(_ value: String) {
+            body.append(Data(value.utf8))
         }
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
+        append("\(model)\r\n")
+
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")
+        append("Content-Type: audio/wav\r\n\r\n")
+        body.append(audioData)
+        append("\r\n")
+        append("--\(boundary)--\r\n")
+
+        return body
+    }
+
+    private func parseTranscript(from data: Data) throws -> String {
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let text = json["text"] as? String {
+            return text
+        }
+
+        let plainText = String(data: data, encoding: .utf8) ?? ""
+        let text = plainText
+                .components(separatedBy: .newlines)
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            throw TranscriptionError.pollFailed("Invalid response")
+        }
+
+        return text
     }
 }
 
@@ -130,12 +131,14 @@ enum TranscriptionError: LocalizedError {
     case uploadFailed(String)
     case submissionFailed(String)
     case transcriptionFailed(String)
+    case transcriptionTimedOut(TimeInterval)
     case pollFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .uploadFailed(let msg): return "Upload failed: \(msg)"
         case .submissionFailed(let msg): return "Submission failed: \(msg)"
+        case .transcriptionTimedOut(let seconds): return "Transcription timed out after \(Int(seconds))s"
         case .transcriptionFailed(let msg): return "Transcription failed: \(msg)"
         case .pollFailed(let msg): return "Polling failed: \(msg)"
         }

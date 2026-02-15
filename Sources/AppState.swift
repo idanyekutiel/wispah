@@ -3,6 +3,10 @@ import Combine
 import AppKit
 
 class AppState: ObservableObject {
+    private let apiKeyStorageKey = "groq_api_key"
+    private let legacyAssemblyAIStorageKey = "assemblyai_api_key"
+    private let transcribingIndicatorDelay: TimeInterval = 1.0
+
     @Published var hasCompletedSetup: Bool {
         didSet {
             UserDefaults.standard.set(hasCompletedSetup, forKey: "hasCompletedSetup")
@@ -11,7 +15,8 @@ class AppState: ObservableObject {
 
     @Published var apiKey: String {
         didSet {
-            UserDefaults.standard.set(apiKey, forKey: "assemblyai_api_key")
+            UserDefaults.standard.set(apiKey, forKey: apiKeyStorageKey)
+            UserDefaults.standard.removeObject(forKey: legacyAssemblyAIStorageKey)
         }
     }
 
@@ -36,10 +41,13 @@ class AppState: ObservableObject {
     private var accessibilityTimer: Timer?
     private var audioLevelCancellable: AnyCancellable?
     private var debugOverlayTimer: Timer?
+    private var transcribingIndicatorTask: Task<Void, Never>?
 
     init() {
         self.hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
-        self.apiKey = UserDefaults.standard.string(forKey: "assemblyai_api_key") ?? ""
+        self.apiKey = UserDefaults.standard.string(forKey: apiKeyStorageKey)
+            ?? UserDefaults.standard.string(forKey: legacyAssemblyAIStorageKey)
+            ?? ""
 
         let savedHotkey = UserDefaults.standard.string(forKey: "hotkey_option") ?? "fn"
         self.selectedHotkey = HotkeyOption(rawValue: savedHotkey) ?? .fnKey
@@ -155,9 +163,20 @@ class AppState: ObservableObject {
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."
+        errorMessage = nil
         NSSound(named: "Pop")?.play()
-        overlayManager.slideUpToNotch { [weak self] in
-            self?.overlayManager.showTranscribing()
+        overlayManager.slideUpToNotch { }
+
+        transcribingIndicatorTask?.cancel()
+        let indicatorDelay = transcribingIndicatorDelay
+        transcribingIndicatorTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(indicatorDelay * 1_000_000_000))
+                await MainActor.run {
+                    guard let self, self.isTranscribing else { return }
+                    self.overlayManager.showTranscribing()
+                }
+            } catch {}
         }
 
         let service = TranscriptionService(apiKey: apiKey)
@@ -166,10 +185,15 @@ class AppState: ObservableObject {
             do {
                 let text = try await service.transcribe(fileURL: fileURL)
                 await MainActor.run {
+                    self.transcribingIndicatorTask?.cancel()
+                    self.transcribingIndicatorTask = nil
                     self.lastTranscript = text
                     self.isTranscribing = false
                     self.statusText = "Copied to clipboard!"
                     self.overlayManager.showDone()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                        self.overlayManager.dismiss()
+                    }
 
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
@@ -188,6 +212,8 @@ class AppState: ObservableObject {
                 }
             } catch {
                 await MainActor.run {
+                    self.transcribingIndicatorTask?.cancel()
+                    self.transcribingIndicatorTask = nil
                     self.errorMessage = error.localizedDescription
                     self.isTranscribing = false
                     self.statusText = "Error"

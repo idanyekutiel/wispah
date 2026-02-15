@@ -113,11 +113,11 @@ struct SetupView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("AssemblyAI API Key")
+            Text("Groq API Key")
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Voice to Text uses AssemblyAI's Universal-3 Pro model for high-accuracy transcription. Enter your API key below.")
+            Text("Voice to Text uses Groq's `whisper-large-v3-turbo` model for fast, high-accuracy transcription. Enter your API key below.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -125,7 +125,7 @@ struct SetupView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("API Key")
                     .font(.headline)
-                SecureField("Enter your AssemblyAI API key", text: $apiKeyInput)
+                SecureField("Enter your Groq API key", text: $apiKeyInput)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .disabled(isValidatingKey)
