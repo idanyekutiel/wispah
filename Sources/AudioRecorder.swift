@@ -97,8 +97,12 @@ class AudioRecorder: NSObject, ObservableObject {
         // Scale RMS (~0.01-0.1 for speech) to 0-1 range
         let scaled = min(rms * 10.0, 1.0)
 
-        // Exponential moving average smoothing
-        smoothedLevel = smoothedLevel * 0.7 + scaled * 0.3
+        // Fast attack, slower release — follows speech dynamics closely
+        if scaled > smoothedLevel {
+            smoothedLevel = smoothedLevel * 0.3 + scaled * 0.7
+        } else {
+            smoothedLevel = smoothedLevel * 0.6 + scaled * 0.4
+        }
 
         DispatchQueue.main.async {
             self.audioLevel = self.smoothedLevel
