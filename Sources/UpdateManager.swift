@@ -170,10 +170,17 @@ final class UpdateManager: ObservableObject {
 
             // Check stability buffer (3 days since published)
             let daysSincePublished = Date().timeIntervalSince(publishedDate) / (24 * 60 * 60)
-            guard daysSincePublished >= stabilityBufferDays else {
-                // Too new, don't offer yet
-                updateAvailable = false
-                if userInitiated { showUpToDateAlert() }
+            if daysSincePublished < stabilityBufferDays {
+                if !userInitiated {
+                    // Auto-check: silently skip, too new
+                    updateAvailable = false
+                    return
+                }
+                // Manual check: let user know and offer the update anyway
+                latestRelease = release
+                latestReleaseDate = releaseDateString
+                updateAvailable = true
+                showRecentReleaseAlert(daysSincePublished: daysSincePublished)
                 return
             }
 
@@ -221,6 +228,26 @@ final class UpdateManager: ObservableObject {
             latestRelease = nil
         default:
             break // Remind me later — do nothing
+        }
+    }
+
+    private func showRecentReleaseAlert(daysSincePublished: Double) {
+        guard let release = latestRelease else { return }
+
+        let hoursAgo = Int(daysSincePublished * 24)
+        let ageText = hoursAgo < 1 ? "less than an hour ago" : hoursAgo < 24 ? "\(hoursAgo) hour\(hoursAgo == 1 ? "" : "s") ago" : "\(Int(daysSincePublished)) day\(Int(daysSincePublished) == 1 ? "" : "s") ago"
+
+        let alert = NSAlert()
+        alert.messageText = "New Release Available"
+        alert.informativeText = "A new version of FreeFlow was released \(ageText). It's very recent — you can download it now or wait a few days for stability.\n\nWould you like to download it?"
+        alert.alertStyle = .informational
+        alert.icon = NSApp.applicationIconImage
+        alert.addButton(withTitle: "Download Now")
+        alert.addButton(withTitle: "Wait")
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            downloadAndInstall(release: release)
         }
     }
 
