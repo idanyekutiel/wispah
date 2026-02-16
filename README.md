@@ -20,7 +20,7 @@
 | | Download | Mac Compatibility |
 |:-:|:-:|:-:|
 | **Apple Silicon** | [**⬇ FreeFlow-arm64.dmg**](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow-arm64.dmg) | M1, M2, M3, M4, M5 Chips |
-| **Universal** | [**⬇ FreeFlow-universal.dmg**](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow-universal.dmg) | Intel & All Macs |
+| **Universal** | [**⬇ FreeFlow-universal.dmg**](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow-universal.dmg) | Intel Macs |
 
 </div>
 
