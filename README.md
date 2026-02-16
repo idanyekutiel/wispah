@@ -1,3 +1,5 @@
+> **Work in progress.** FreeFlow is under active development and things may break or change.
+
 <p align="center">
   <img src="Resources/AppIcon-Source.png" width="128" height="128" alt="FreeFlow icon">
 </p>
