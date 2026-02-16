@@ -33,6 +33,16 @@ One of the cool features is that it's context aware. If you're replying to an em
 
 An added bonus is that there's no FreeFlow server, so no data is stored or retained - making it more privacy friendly than the SaaS apps. The only information that leaves your computer are the API calls to Groq's transcription and LLM API (LLM is for post-processing the transcription to adapt to context).
 
+### FAQ
+
+**Why does this use Groq instead of a local transcription model?**
+
+I love this idea, and originally planned to build FreeFlow using local models, but to have post-processing (that's where you get correctly spelled names when replying to emails / etc), you need to have a local LLM too.
+
+If you do that, the total pipeline takes too long for the UX to be good (5-10 seconds per transcription instead of <1s). I also had concerns around battery life.
+
+Some day!
+
 ## License
 
 Licensed under the MIT license.
