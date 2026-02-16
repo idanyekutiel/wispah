@@ -161,18 +161,48 @@ struct MenuBarView: View {
             if updateManager.updateAvailable {
                 Divider()
 
-                Button {
-                    updateManager.showUpdateAlert()
-                } label: {
-                    Label("Update Available", systemImage: "arrow.down.circle.fill")
+                switch updateManager.updateStatus {
+                case .downloading:
+                    VStack(spacing: 4) {
+                        Text("Downloading update... \(Int((updateManager.downloadProgress ?? 0) * 100))%")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                        ProgressView(value: updateManager.downloadProgress ?? 0)
+                            .progressViewStyle(.linear)
+                            .tint(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.blue)
+
+                case .installing, .readyToRelaunch:
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Installing update...")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.blue)
+
+                default:
+                    Button {
+                        updateManager.showUpdateAlert()
+                    } label: {
+                        Label("Update Available", systemImage: "arrow.down.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.blue)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .font(.caption.weight(.semibold))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity)
-                .background(Color.blue)
             }
 
             Divider()

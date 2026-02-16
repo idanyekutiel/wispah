@@ -31,6 +31,16 @@ struct GitHubReleaseAsset: Decodable {
     }
 }
 
+// MARK: - Update Status
+
+enum UpdateStatus: Equatable {
+    case idle
+    case downloading
+    case installing
+    case readyToRelaunch
+    case error(String)
+}
+
 // MARK: - Update Manager
 
 @MainActor
@@ -41,6 +51,8 @@ final class UpdateManager: ObservableObject {
     @Published var latestRelease: GitHubRelease?
     @Published var latestReleaseDate: String = ""
     @Published var isChecking = false
+    @Published var downloadProgress: Double?
+    @Published var updateStatus: UpdateStatus = .idle
     @Published var lastCheckDate: Date? {
         didSet {
             if let date = lastCheckDate {
@@ -63,6 +75,7 @@ final class UpdateManager: ObservableObject {
     private let stabilityBufferDays: TimeInterval = 3
     private let checkIntervalSeconds: TimeInterval = 7 * 24 * 60 * 60 // 7 days
     private var periodicTimer: Timer?
+    private var activeDownloadTask: URLSessionDataTask?
 
     private init() {
         lastCheckDate = UserDefaults.standard.object(forKey: "updateLastCheckDate") as? Date
@@ -273,9 +286,15 @@ final class UpdateManager: ObservableObject {
 
     // MARK: - Download and Install
 
+    func cancelDownload() {
+        activeDownloadTask?.cancel()
+        activeDownloadTask = nil
+        downloadProgress = nil
+        updateStatus = .idle
+    }
+
     func downloadAndInstall(release: GitHubRelease) {
         guard let dmgAsset = release.assets.first(where: { $0.name.hasSuffix(".dmg") }) else {
-            // No DMG found, open the release page instead
             if let url = URL(string: release.htmlUrl) {
                 NSWorkspace.shared.open(url)
             }
@@ -284,58 +303,183 @@ final class UpdateManager: ObservableObject {
 
         guard let downloadURL = URL(string: dmgAsset.browserDownloadUrl) else { return }
 
-        let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first!
-        let destURL = downloadsDir.appendingPathComponent(dmgAsset.name)
-
-        // Remove existing file if present
-        try? FileManager.default.removeItem(at: destURL)
-
-        let progressAlert = NSAlert()
-        progressAlert.messageText = "Downloading Update..."
-        progressAlert.informativeText = "Downloading FreeFlow update..."
-        progressAlert.alertStyle = .informational
-        progressAlert.icon = NSApp.applicationIconImage
-        progressAlert.addButton(withTitle: "Cancel")
-
-        // Start download in background
-        let task = URLSession.shared.downloadTask(with: downloadURL) { [weak self] tempURL, response, error in
-            DispatchQueue.main.async {
-                NSApp.abortModal()
-
-                if let error {
-                    self?.showErrorAlert("Download failed: \(error.localizedDescription)")
-                    return
-                }
-
-                guard let tempURL else {
-                    self?.showErrorAlert("Download failed: no file received.")
-                    return
-                }
-
-                do {
-                    try FileManager.default.moveItem(at: tempURL, to: destURL)
-                    NSWorkspace.shared.open(destURL)
-                    self?.showInstallInstructions()
-                } catch {
-                    self?.showErrorAlert("Failed to save download: \(error.localizedDescription)")
-                }
-            }
-        }
-        task.resume()
-
-        let response = progressAlert.runModal()
-        if response == .alertFirstButtonReturn {
-            task.cancel()
+        Task {
+            await performUpdate(downloadURL: downloadURL, expectedSize: dmgAsset.size)
         }
     }
 
-    private func showInstallInstructions() {
-        let alert = NSAlert()
-        alert.messageText = "Update Downloaded"
-        alert.informativeText = "The DMG has been opened. To install:\n\n1. Drag FreeFlow to your Applications folder\n2. Replace the existing copy when prompted\n3. Relaunch FreeFlow"
-        alert.alertStyle = .informational
-        alert.icon = NSApp.applicationIconImage
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
+    private func performUpdate(downloadURL: URL, expectedSize: Int) async {
+        let fm = FileManager.default
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("freeflow-update-\(UUID().uuidString)")
+
+        do {
+            try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        } catch {
+            updateStatus = .error("Failed to create temp directory: \(error.localizedDescription)")
+            return
+        }
+
+        let dmgPath = tempDir.appendingPathComponent("FreeFlow.dmg")
+
+        // MARK: Download phase
+        updateStatus = .downloading
+        downloadProgress = 0
+
+        do {
+            var request = URLRequest(url: downloadURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+
+            let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
+
+            let totalSize = (response as? HTTPURLResponse)
+                .flatMap { Int($0.value(forHTTPHeaderField: "Content-Length") ?? "") }
+                ?? expectedSize
+
+            let outputHandle = try FileHandle(forWritingTo: {
+                fm.createFile(atPath: dmgPath.path, contents: nil)
+                return dmgPath
+            }())
+
+            var receivedBytes = 0
+            let bufferSize = 65_536
+            var buffer = Data()
+            buffer.reserveCapacity(bufferSize)
+
+            for try await byte in asyncBytes {
+                buffer.append(byte)
+                if buffer.count >= bufferSize {
+                    outputHandle.write(buffer)
+                    receivedBytes += buffer.count
+                    buffer.removeAll(keepingCapacity: true)
+                    if totalSize > 0 {
+                        downloadProgress = Double(receivedBytes) / Double(totalSize)
+                    }
+                }
+            }
+
+            // Write remaining bytes
+            if !buffer.isEmpty {
+                outputHandle.write(buffer)
+                receivedBytes += buffer.count
+            }
+            try outputHandle.close()
+            downloadProgress = 1.0
+
+        } catch is CancellationError {
+            try? fm.removeItem(at: tempDir)
+            return
+        } catch let error as URLError where error.code == .cancelled {
+            try? fm.removeItem(at: tempDir)
+            return
+        } catch {
+            updateStatus = .error("Download failed: \(error.localizedDescription)")
+            downloadProgress = nil
+            try? fm.removeItem(at: tempDir)
+            return
+        }
+
+        // MARK: Install phase - mount DMG, extract app
+        updateStatus = .installing
+        downloadProgress = nil
+
+        do {
+            let mountPoint = try await mountDMG(at: dmgPath)
+
+            defer {
+                // Always try to detach
+                let detach = Process()
+                detach.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+                detach.arguments = ["detach", mountPoint, "-quiet"]
+                try? detach.run()
+                detach.waitUntilExit()
+            }
+
+            // Find the .app inside the mounted volume
+            let volumeURL = URL(fileURLWithPath: mountPoint)
+            let contents = try fm.contentsOfDirectory(at: volumeURL, includingPropertiesForKeys: nil)
+            guard let appBundle = contents.first(where: { $0.pathExtension == "app" }) else {
+                updateStatus = .error("No .app found in DMG.")
+                try? fm.removeItem(at: tempDir)
+                return
+            }
+
+            // Copy app to staging directory
+            let stagingDir = fm.temporaryDirectory.appendingPathComponent("freeflow-staged-\(UUID().uuidString)")
+            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+            let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
+            try fm.copyItem(at: appBundle, to: stagedApp)
+
+            // Clean up DMG (detach happens in defer above, delete temp dir)
+            try? fm.removeItem(at: tempDir)
+
+            // MARK: Replace & relaunch
+            updateStatus = .readyToRelaunch
+            replaceAndRelaunch(stagedApp: stagedApp, stagingDir: stagingDir)
+
+        } catch {
+            updateStatus = .error("Install failed: \(error.localizedDescription)")
+            try? fm.removeItem(at: tempDir)
+        }
+    }
+
+    private func mountDMG(at path: URL) async throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        process.arguments = ["attach", path.path, "-nobrowse", "-noverify", "-noautoopen", "-plist"]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        try process.run()
+        process.waitUntilExit()
+
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "UpdateManager", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "hdiutil attach failed with exit code \(process.terminationStatus)"
+            ])
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+
+        // Parse the plist output to find mount point
+        guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let entities = plist["system-entities"] as? [[String: Any]] else {
+            throw NSError(domain: "UpdateManager", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "Could not parse hdiutil output"
+            ])
+        }
+
+        // Find the mount point from the entities
+        for entity in entities {
+            if let mountPoint = entity["mount-point"] as? String {
+                return mountPoint
+            }
+        }
+
+        throw NSError(domain: "UpdateManager", code: 3, userInfo: [
+            NSLocalizedDescriptionKey: "No mount point found in hdiutil output"
+        ])
+    }
+
+    private func replaceAndRelaunch(stagedApp: URL, stagingDir: URL) {
+        let currentAppPath = Bundle.main.bundlePath
+        let pid = ProcessInfo.processInfo.processIdentifier
+
+        let script = """
+        while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
+        rm -rf "\(currentAppPath)"
+        mv "\(stagedApp.path)" "\(currentAppPath)"
+        open "\(currentAppPath)"
+        rm -rf "\(stagingDir.path)"
+        """
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = ["-c", script]
+        try? process.run()
+
+        // Quit the current app
+        NSApp.terminate(nil)
     }
 }

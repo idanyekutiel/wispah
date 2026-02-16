@@ -99,4 +99,4 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 run: all
-	open $(APP_BUNDLE)
+	open "$(APP_BUNDLE)"

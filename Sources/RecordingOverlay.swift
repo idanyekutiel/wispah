@@ -9,6 +9,7 @@ class RecordingOverlayState: ObservableObject {
 }
 
 enum OverlayPhase {
+    case initializing
     case recording
     case transcribing
     case done
@@ -83,8 +84,24 @@ class RecordingOverlayManager {
         return screen.safeAreaInsets.top > 0
     }
 
+    func showInitializing() {
+        DispatchQueue.main.async {
+            self.overlayState.phase = .initializing
+            self.overlayState.audioLevel = 0.0
+            self._showOverlayPanel()
+        }
+    }
+
     func showRecording() {
-        DispatchQueue.main.async { self._showRecording() }
+        DispatchQueue.main.async {
+            self.overlayState.phase = .recording
+            self.overlayState.audioLevel = 0.0
+            self._showOverlayPanel()
+        }
+    }
+
+    func transitionToRecording() {
+        DispatchQueue.main.async { self.overlayState.phase = .recording }
     }
 
     func updateAudioLevel(_ level: Float) {
@@ -107,10 +124,7 @@ class RecordingOverlayManager {
         DispatchQueue.main.async { self._dismiss() }
     }
 
-    private func _showRecording() {
-        overlayState.phase = .recording
-        overlayState.audioLevel = 0.0
-
+    private func _showOverlayPanel() {
         let panelWidth: CGFloat = 120
         let panelHeight: CGFloat = 32
 
@@ -361,14 +375,50 @@ struct WaveformView: View {
 
 // MARK: - Recording Overlay View
 
+struct InitializingDotsView: View {
+    @State private var activeDot = 0
+    @State private var timer: Timer?
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3, id: \.self) { index in
+                Circle()
+                    .fill(.white.opacity(activeDot == index ? 0.9 : 0.25))
+                    .frame(width: 4.5, height: 4.5)
+                    .animation(.easeInOut(duration: 0.4), value: activeDot)
+            }
+        }
+        .onAppear {
+            timer?.invalidate()
+            timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+                DispatchQueue.main.async { activeDot = (activeDot + 1) % 3 }
+            }
+        }
+        .onDisappear {
+            timer?.invalidate()
+            timer = nil
+        }
+    }
+}
+
 struct RecordingOverlayView: View {
     @ObservedObject var state: RecordingOverlayState
 
     var body: some View {
-        WaveformView(audioLevel: state.audioLevel)
-            .frame(width: 100, height: 20)
-            .frame(width: 120, height: 32)
-            .background(LiquidGlassOverlay(shape: UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)))
+        Group {
+            if state.phase == .initializing {
+                InitializingDotsView()
+                    .frame(width: 100, height: 20)
+                    .transition(.opacity)
+            } else {
+                WaveformView(audioLevel: state.audioLevel)
+                    .frame(width: 100, height: 20)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: state.phase == .initializing)
+        .frame(width: 120, height: 32)
+        .background(LiquidGlassOverlay(shape: UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)))
     }
 }
 

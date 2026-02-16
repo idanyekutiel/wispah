@@ -105,7 +105,7 @@ Your job:
 
 Output rules:
 - Return ONLY the cleaned transcript text, nothing else.
-- If the transcription is empty or contains no meaningful speech, return exactly: [EMPTY]
+- If the transcription is empty, return exactly: EMPTY
 - Do not add words, names, or content that are not in the transcription. The context is only for correcting spelling of words already spoken.
 - Do not change the meaning of what was said.
 """
@@ -114,13 +114,11 @@ Output rules:
         }
 
         let userMessage = """
-Clean up this transcription. Only use context to fix spelling of words already present.
+Instructions: Clean up this RAW_TRANSCRIPTION. Return EMPTY if there should be no result.
 
-Transcription:
-\(transcript)
+CONTEXT: "\(contextSummary)"
 
-Context (for spelling reference only):
-\(contextSummary)
+RAW_TRANSCRIPTION: "\(transcript)"
 """
 
         let promptForDisplay = """
@@ -186,7 +184,7 @@ Model: \(model)
         }
 
         // Treat the sentinel value as empty
-        if result == "[EMPTY]" {
+        if result == "EMPTY" {
             return ""
         }
 

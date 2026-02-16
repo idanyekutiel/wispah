@@ -275,7 +275,7 @@ struct GeneralSettingsView: View {
                         Text("Check for Updates Now")
                     }
                 }
-                .disabled(updateManager.isChecking)
+                .disabled(updateManager.isChecking || updateManager.updateStatus != .idle)
 
                 if let lastCheck = updateManager.lastCheckDate {
                     Text("Last checked: \(lastCheck.formatted(date: .abbreviated, time: .shortened))")
@@ -285,16 +285,78 @@ struct GeneralSettingsView: View {
             }
 
             if updateManager.updateAvailable {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.down.circle.fill")
-                        .foregroundStyle(.blue)
-                    Text("A new version of FreeFlow is available!")
-                        .font(.caption.weight(.semibold))
-                    Spacer()
-                    Button("Download") {
-                        updateManager.showUpdateAlert()
+                VStack(alignment: .leading, spacing: 8) {
+                    switch updateManager.updateStatus {
+                    case .downloading:
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Downloading update...")
+                                    .font(.caption.weight(.semibold))
+                                ProgressView(value: updateManager.downloadProgress ?? 0)
+                                    .progressViewStyle(.linear)
+                                if let progress = updateManager.downloadProgress {
+                                    Text("\(Int(progress * 100))%")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Button("Cancel") {
+                                updateManager.cancelDownload()
+                            }
+                            .font(.caption)
+                        }
+
+                    case .installing:
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Installing update...")
+                                .font(.caption.weight(.semibold))
+                        }
+
+                    case .readyToRelaunch:
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Relaunching...")
+                                .font(.caption.weight(.semibold))
+                        }
+
+                    case .error(let message):
+                        HStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.red)
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                            Spacer()
+                            Button("Retry") {
+                                updateManager.updateStatus = .idle
+                                if let release = updateManager.latestRelease {
+                                    updateManager.downloadAndInstall(release: release)
+                                }
+                            }
+                            .font(.caption)
+                        }
+
+                    case .idle:
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .foregroundStyle(.blue)
+                            Text("A new version of FreeFlow is available!")
+                                .font(.caption.weight(.semibold))
+                            Spacer()
+                            Button("Update Now") {
+                                if let release = updateManager.latestRelease {
+                                    updateManager.downloadAndInstall(release: release)
+                                }
+                            }
+                            .font(.caption)
+                        }
                     }
-                    .font(.caption)
                 }
                 .padding(10)
                 .background(Color.blue.opacity(0.1))
