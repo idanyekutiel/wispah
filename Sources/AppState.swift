@@ -6,6 +6,9 @@ import CoreAudio
 import ServiceManagement
 import ApplicationServices
 import ScreenCaptureKit
+import os.log
+
+private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
@@ -317,6 +320,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func handleHotkeyDown() {
+        os_log(.info, log: recordingLog, "handleHotkeyDown() fired, isRecording=%{public}d, isTranscribing=%{public}d", isRecording, isTranscribing)
         guard !isRecording && !isTranscribing else { return }
         startRecording()
     }
@@ -327,6 +331,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func toggleRecording() {
+        os_log(.info, log: recordingLog, "toggleRecording() called, isRecording=%{public}d", isRecording)
         if isRecording {
             stopAndTranscribe()
         } else {
@@ -335,14 +340,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func startRecording() {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        os_log(.info, log: recordingLog, "startRecording() entered")
         guard hasAccessibility else {
             errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
             statusText = "No Accessibility"
             showAccessibilityAlert()
             return
         }
+        os_log(.info, log: recordingLog, "accessibility check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         guard ensureMicrophoneAccess() else { return }
+        os_log(.info, log: recordingLog, "mic access check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         beginRecording()
+        os_log(.info, log: recordingLog, "startRecording() finished: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
 
     private func ensureMicrophoneAccess() -> Bool {
@@ -372,23 +382,67 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func beginRecording() {
+        os_log(.info, log: recordingLog, "beginRecording() entered")
         errorMessage = nil
-        do {
-            try audioRecorder.startRecording(deviceUID: selectedMicrophoneID)
-            isRecording = true
-            statusText = "Recording..."
-            hasShownScreenshotPermissionAlert = false
-            NSSound(named: "Tink")?.play()
-            overlayManager.showRecording()
-            startContextCapture()
-            audioLevelCancellable = audioRecorder.$audioLevel
-                .receive(on: DispatchQueue.main)
-                .sink { [weak self] level in
-                    self?.overlayManager.updateAudioLevel(level)
+
+        isRecording = true
+        statusText = "Starting..."
+        hasShownScreenshotPermissionAlert = false
+
+        // Show initializing dots only if engine takes longer than 0.5s to start
+        var overlayShown = false
+        let initTimer = DispatchSource.makeTimerSource(queue: .main)
+        initTimer.schedule(deadline: .now() + 0.5)
+        initTimer.setEventHandler { [weak self] in
+            guard let self, !overlayShown else { return }
+            overlayShown = true
+            os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
+            self.overlayManager.showInitializing()
+        }
+        initTimer.resume()
+
+        // Transition to waveform when first real audio arrives (any non-zero RMS)
+        let deviceUID = selectedMicrophoneID
+        audioRecorder.onRecordingReady = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                initTimer.cancel()
+                os_log(.info, log: recordingLog, "first real audio — transitioning to waveform")
+                self.statusText = "Recording..."
+                if overlayShown {
+                    self.overlayManager.transitionToRecording()
+                } else {
+                    self.overlayManager.showRecording()
                 }
-        } catch {
-            errorMessage = formattedRecordingStartError(error)
-            statusText = "Error"
+                overlayShown = true
+                NSSound(named: "Tink")?.play()
+            }
+        }
+
+        // Start engine on background thread so UI isn't blocked
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let t0 = CFAbsoluteTimeGetCurrent()
+            do {
+                try self.audioRecorder.startRecording(deviceUID: deviceUID)
+                os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                DispatchQueue.main.async {
+                    self.startContextCapture()
+                    self.audioLevelCancellable = self.audioRecorder.$audioLevel
+                        .receive(on: DispatchQueue.main)
+                        .sink { [weak self] level in
+                            self?.overlayManager.updateAudioLevel(level)
+                        }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    initTimer.cancel()
+                    self.isRecording = false
+                    self.errorMessage = self.formattedRecordingStartError(error)
+                    self.statusText = "Error"
+                    self.overlayManager.dismiss()
+                }
+            }
         }
     }
 
@@ -740,10 +794,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
         if isScreenCapturePermissionError(message) && !hasShownScreenshotPermissionAlert {
             hasShownScreenshotPermissionAlert = true
             showScreenshotPermissionAlert(message: message)
-            return
+        } else {
+            showScreenshotCaptureErrorAlert(message: message)
         }
 
-        showScreenshotCaptureErrorAlert(message: message)
+        // Stop the recording — a screenshot is required
+        _ = audioRecorder.stopRecording()
+        audioRecorder.cleanup()
+        audioLevelCancellable?.cancel()
+        audioLevelCancellable = nil
+        contextCaptureTask?.cancel()
+        contextCaptureTask = nil
+        capturedContext = nil
+        isRecording = false
+        statusText = "Screenshot Required"
+        overlayManager.dismiss()
     }
 
     private func isScreenCapturePermissionError(_ message: String) -> Bool {
@@ -753,11 +818,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func showScreenshotPermissionAlert(message: String) {
         let alert = NSAlert()
-        alert.messageText = "Screen Recording Not Available"
-        alert.informativeText = "\(message)\n\nOpen System Settings to grant Screen Recording permission."
+        alert.messageText = "Screen Recording Permission Required"
+        alert.informativeText = "\(message)\n\nFreeFlow requires Screen Recording permission to capture screenshots for context-aware transcription.\n\nGo to System Settings > Privacy & Security > Screen Recording and enable FreeFlow."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
-        alert.addButton(withTitle: "Continue Without Screenshot")
+        alert.addButton(withTitle: "Dismiss")
         alert.icon = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
 
         let response = alert.runModal()
@@ -769,8 +834,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func showScreenshotCaptureErrorAlert(message: String) {
         let alert = NSAlert()
         alert.messageText = "Screenshot Capture Failed"
-        alert.informativeText = "\(message)\n\nContext-aware post-processing will continue without a screenshot."
-        alert.alertStyle = .warning
+        alert.informativeText = "\(message)\n\nA screenshot is required for context-aware transcription. Recording has been stopped."
+        alert.alertStyle = .critical
         alert.addButton(withTitle: "Dismiss")
         alert.icon = NSImage(systemSymbolName: "camera.viewfinder", accessibilityDescription: nil)
         _ = alert.runModal()
