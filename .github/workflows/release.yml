@@ -2,29 +2,37 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [main]
 
 jobs:
   build-and-release:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate version tag
+        id: version
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          TAG="build-$(date -u +'%Y%m%d-%H%M%S')-${SHORT_SHA}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install create-dmg
+        run: brew install create-dmg
 
       - name: Build app
-        run: make APP_NAME=FreeFlow
-        env:
-          CODESIGN_IDENTITY: '-'
+        run: make APP_NAME=FreeFlow CODESIGN_IDENTITY="-"
 
       - name: Create DMG
-        run: |
-          brew install create-dmg
-          make dmg APP_NAME=FreeFlow
-        env:
-          CODESIGN_IDENTITY: '-'
+        run: make dmg APP_NAME=FreeFlow CODESIGN_IDENTITY="-"
 
-      - name: Upload Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: FreeFlow ${{ steps.version.outputs.tag }}
           generate_release_notes: true
+          make_latest: true
           files: build/FreeFlow.dmg
