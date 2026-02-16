@@ -142,7 +142,7 @@ struct GeneralSettingsView: View {
                                         Button {
                                             openURL(star.user.htmlUrl)
                                         } label: {
-                                            AsyncImage(url: star.user.avatarUrl) { phase in
+                                            AsyncImage(url: star.user.avatarThumbnailUrl) { phase in
                                                 switch phase {
                                                 case .success(let image):
                                                     image.resizable().aspectRatio(contentMode: .fill)
@@ -157,11 +157,14 @@ struct GeneralSettingsView: View {
                                         .buttonStyle(.plain)
                                     }
                                 }
+                                .clipped()
                                 Text("recently starred")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
+                                    .fixedSize()
                                 Spacer()
                             }
+                            .clipped()
                         }
                     }
                     .padding(12)
