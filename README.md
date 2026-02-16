@@ -1,5 +1,3 @@
-> **Work in progress.** FreeFlow is under active development and not ready for others to use yet.
-
 <p align="center">
   <img src="Resources/AppIcon-README.png" width="128" height="128" alt="FreeFlow icon">
 </p>
@@ -7,12 +5,7 @@
 <h1 align="center">FreeFlow</h1>
 
 <p align="center">
-  Free and open source voice-to-text for Mac.<br>
-  A free alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">SuperWhisper</a>, and <a href="https://monologue.to">Monologue</a>.
-</p>
-
-<p align="center">
-  Hold a key to record, release to transcribe. Works everywhere on your Mac.
+  Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">SuperWhisper</a>, and <a href="https://monologue.to">Monologue</a>.
 </p>
 
 <p align="center">
@@ -22,30 +15,20 @@
 
 ---
 
-**Fast and accurate transcription** — powered by Groq's lightning-fast inference, your speech is transcribed in moments.
+I vibe-coded this over the weekend because I didn't want to pay $10/month for voice-to-text. I was also annoyed with frequent errors from existing apps and intrusive UI.
 
-**Context-aware** — FreeFlow captures what's on your screen so it understands where you are. In a terminal, it formats commands correctly. In an email, it spells names and technical terms properly. The context around your cursor directly improves transcription quality.
+FreeFlow is a simple and free voice-to-text app that uses [Groq](https://groq.com/)'s free API. Push and hold the `Fn` key (customizable) to transcribe anywhere on your Mac.
 
-**Private** — no cloud services besides the Groq API for transcription and LLM post-processing. Everything else runs locally on your Mac.
+**Features:**
 
-**Free** — most usage fits comfortably within Groq's free tier. No subscriptions, no usage fees. Just grab a free API key and go.
+- Fast and accurate transcription (uses `whisper-large-v3` + `meta-llama/llama-4-scout-17b-16e-instruct` for post-processing). Very, very fast.
 
-## Setup
+- Context-aware post-processing. Ex. It'll detect if you're writing an email and correct spelling of names to how they're spelled on the rest of your screen.
 
-1. [Download FreeFlow.dmg](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg) (or [build from source](#building-from-source))
-2. Open the app and follow the setup wizard
-3. Get a free API key from [console.groq.com/keys](https://console.groq.com/keys)
-4. Grant the requested permissions (microphone, accessibility, screen recording)
-5. Pick your push-to-talk key and start dictating
+- Define a custom vocabulary
 
-## Building from Source
-
-```bash
-git clone https://github.com/zachlatta/freeflow.git
-cd freeflow
-swift build
-```
+- Free! Most usage will fit [Groq](https://groq.com/)'s free tier.
 
 ## License
 
-MIT
+Licensed under the MIT license.
