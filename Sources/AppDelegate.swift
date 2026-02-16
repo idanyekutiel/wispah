@@ -107,6 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.contentView = NSHostingView(rootView: setupView)
+        window.minSize = NSSize(width: 520, height: 480)
         window.center()
         window.makeKeyAndOrderFront(nil)
         window.isReleasedWhenClosed = false
