@@ -8,8 +8,6 @@ struct SetupView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
     private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
-    private let freeflowRepoAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow")!
-    private let freeflowRecentStargazersAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/stargazers?per_page=3")!
     private enum SetupStep: Int, CaseIterable {
         case welcome = 0
         case apiKey
@@ -110,7 +108,7 @@ struct SetupView: View {
             checkMicPermission()
             checkAccessibility()
             Task {
-                await fetchRepositoryMetadata()
+                await githubCache.fetchIfNeeded()
             }
         }
         .onDisappear {
@@ -653,38 +651,6 @@ struct SetupView: View {
         AXIsProcessTrustedWithOptions(options)
     }
 
-    private func fetchRepositoryMetadata() async {
-        githubCache.isLoading = true
-        var starsCount: Int?
-        var recent: [GitHubStarRecord] = []
-
-        do {
-            let repoResult = try await URLSession.shared.data(from: freeflowRepoAPIURL)
-            guard let repoHTTP = repoResult.1 as? HTTPURLResponse,
-                  (200..<300).contains(repoHTTP.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
-            starsCount = try JSONDecoder().decode(GitHubRepoInfo.self, from: repoResult.0).stargazersCount
-
-            var request = URLRequest(url: freeflowRecentStargazersAPIURL)
-            request.setValue("application/vnd.github.v3.star+json", forHTTPHeaderField: "Accept")
-            let starredResult = try await URLSession.shared.data(for: request)
-            if let starredHTTP = starredResult.1 as? HTTPURLResponse,
-               (200..<300).contains(starredHTTP.statusCode) {
-                recent = try JSONDecoder().decode([GitHubStarRecord].self, from: starredResult.0)
-            }
-
-            await MainActor.run {
-                githubCache.starCount = starsCount
-                githubCache.recentStargazers = recent
-                githubCache.isLoading = false
-            }
-        } catch {
-            await MainActor.run {
-                githubCache.isLoading = false
-            }
-        }
-    }
 }
 
 struct GitHubRepoInfo: Decodable {
@@ -722,7 +688,7 @@ class GitHubMetadataCache: ObservableObject {
     static let shared = GitHubMetadataCache()
 
     @Published var starCount: Int?
-    @Published var githubCache.recentStargazers: [GitHubStarRecord] = []
+    @Published var recentStargazers: [GitHubStarRecord] = []
     @Published var isLoading = true
 
     private var lastFetchDate: Date?
@@ -757,7 +723,7 @@ class GitHubMetadataCache: ObservableObject {
             }
 
             starCount = count
-            githubCache.recentStargazers = recent
+            recentStargazers = recent
             isLoading = false
             lastFetchDate = Date()
         } catch {

@@ -59,12 +59,8 @@ struct GeneralSettingsView: View {
     @State private var keyValidationSuccess = false
     @State private var customVocabularyInput: String = ""
     @State private var micPermissionGranted = false
-    @State private var repositoryStarCount: Int?
-    @State private var isLoadingStarCount = true
-    @State private var recentStargazers: [GitHubStarRecord] = []
+    @StateObject private var githubCache = GitHubMetadataCache.shared
     private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
-    private let freeflowRepoAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow")!
-    private let freeflowRecentStargazersAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/stargazers?per_page=3")!
 
     var body: some View {
         ScrollView {
@@ -112,9 +108,9 @@ struct GeneralSettingsView: View {
                                 Image(systemName: "star.fill")
                                     .foregroundStyle(.yellow)
                                     .font(.caption2)
-                                if isLoadingStarCount {
+                                if githubCache.isLoading {
                                     ProgressView().scaleEffect(0.5)
-                                } else if let count = repositoryStarCount {
+                                } else if let count = githubCache.starCount {
                                     Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
                                         .font(.caption2.weight(.semibold))
                                         .foregroundStyle(.secondary)
@@ -139,11 +135,11 @@ struct GeneralSettingsView: View {
                             .buttonStyle(.plain)
                         }
 
-                        if !recentStargazers.isEmpty {
+                        if !githubCache.recentStargazers.isEmpty {
                             Divider()
                             HStack(spacing: 8) {
                                 HStack(spacing: -6) {
-                                    ForEach(recentStargazers) { star in
+                                    ForEach(githubCache.recentStargazers) { star in
                                         Button {
                                             openURL(star.user.htmlUrl)
                                         } label: {
@@ -206,7 +202,7 @@ struct GeneralSettingsView: View {
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             appState.refreshLaunchAtLoginStatus()
-            Task { await fetchRepositoryMetadata() }
+            Task { await githubCache.fetchIfNeeded() }
         }
     }
 
@@ -424,36 +420,6 @@ struct GeneralSettingsView: View {
         micPermissionGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
     }
 
-    private func fetchRepositoryMetadata() async {
-        isLoadingStarCount = true
-        do {
-            let repoResult = try await URLSession.shared.data(from: freeflowRepoAPIURL)
-            guard let repoHTTP = repoResult.1 as? HTTPURLResponse,
-                  (200..<300).contains(repoHTTP.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
-            let starsCount = try JSONDecoder().decode(GitHubRepoInfo.self, from: repoResult.0).stargazersCount
-
-            var request = URLRequest(url: freeflowRecentStargazersAPIURL)
-            request.setValue("application/vnd.github.v3.star+json", forHTTPHeaderField: "Accept")
-            let starredResult = try await URLSession.shared.data(for: request)
-            var recent: [GitHubStarRecord] = []
-            if let starredHTTP = starredResult.1 as? HTTPURLResponse,
-               (200..<300).contains(starredHTTP.statusCode) {
-                recent = try JSONDecoder().decode([GitHubStarRecord].self, from: starredResult.0)
-            }
-
-            await MainActor.run {
-                repositoryStarCount = starsCount
-                recentStargazers = recent
-                isLoadingStarCount = false
-            }
-        } catch {
-            await MainActor.run {
-                isLoadingStarCount = false
-            }
-        }
-    }
 }
 
 // MARK: - Run Log
