@@ -8,7 +8,7 @@ MACOS_DIR = $(CONTENTS)/MacOS
 
 SOURCES = $(wildcard Sources/*.swift)
 RESOURCES = $(CONTENTS)/Resources
-ARCH = $(shell uname -m)
+ARCH ?= $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 
@@ -18,12 +18,31 @@ all: $(MACOS_DIR)/$(APP_NAME)
 
 $(MACOS_DIR)/$(APP_NAME): $(SOURCES) Info.plist $(ICON_ICNS)
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
+ifeq ($(ARCH),universal)
+	swiftc \
+		-parse-as-library \
+		-o "$(MACOS_DIR)/$(APP_NAME)-arm64" \
+		-sdk $(shell xcrun --show-sdk-path) \
+		-target arm64-apple-macosx13.0 \
+		$(SOURCES)
+	swiftc \
+		-parse-as-library \
+		-o "$(MACOS_DIR)/$(APP_NAME)-x86_64" \
+		-sdk $(shell xcrun --show-sdk-path) \
+		-target x86_64-apple-macosx13.0 \
+		$(SOURCES)
+	lipo -create -output "$(MACOS_DIR)/$(APP_NAME)" \
+		"$(MACOS_DIR)/$(APP_NAME)-arm64" \
+		"$(MACOS_DIR)/$(APP_NAME)-x86_64"
+	@rm "$(MACOS_DIR)/$(APP_NAME)-arm64" "$(MACOS_DIR)/$(APP_NAME)-x86_64"
+else
 	swiftc \
 		-parse-as-library \
 		-o "$(MACOS_DIR)/$(APP_NAME)" \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target $(ARCH)-apple-macosx13.0 \
 		$(SOURCES)
+endif
 	@cp Info.plist "$(CONTENTS)/"
 	@plutil -replace CFBundleName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"

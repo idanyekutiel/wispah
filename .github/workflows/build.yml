@@ -9,6 +9,9 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [arm64, universal]
     steps:
       - uses: actions/checkout@v4
 
@@ -16,13 +19,16 @@ jobs:
         run: brew install create-dmg
 
       - name: Build
-        run: make APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
+        run: make ARCH=${{ matrix.arch }} APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
 
       - name: Create DMG
-        run: make dmg APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
+        run: make dmg ARCH=${{ matrix.arch }} APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
+
+      - name: Rename DMG
+        run: mv build/FreeFlow.dmg build/FreeFlow-${{ matrix.arch }}.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FreeFlow
-          path: build/FreeFlow.dmg
+          name: FreeFlow-${{ matrix.arch }}
+          path: build/FreeFlow-${{ matrix.arch }}.dmg

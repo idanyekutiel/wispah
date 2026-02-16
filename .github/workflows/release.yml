@@ -22,11 +22,26 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
-      - name: Build app
-        run: make APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
+      - name: Build arm64
+        run: make ARCH=arm64 APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
 
-      - name: Create DMG
-        run: make dmg APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
+      - name: Create arm64 DMG
+        run: make dmg ARCH=arm64 APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
+
+      - name: Save arm64 DMG
+        run: mv build/FreeFlow.dmg FreeFlow-arm64.dmg
+
+      - name: Clean for next build
+        run: make clean
+
+      - name: Build universal
+        run: make ARCH=universal APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
+
+      - name: Create universal DMG
+        run: make dmg ARCH=universal APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="-"
+
+      - name: Save universal DMG
+        run: mv build/FreeFlow.dmg FreeFlow-universal.dmg
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -35,4 +50,6 @@ jobs:
           name: FreeFlow ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           make_latest: true
-          files: build/FreeFlow.dmg
+          files: |
+            FreeFlow-arm64.dmg
+            FreeFlow-universal.dmg
