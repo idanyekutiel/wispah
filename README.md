@@ -19,21 +19,19 @@
   <img src="Resources/demo.gif" alt="FreeFlow demo" width="600">
 </p>
 
-I vibe-coded this over the weekend because I didn't want to pay $10/month for voice-to-text. I was also annoyed with intrusive UI and frequent up-sells from other apps.
+I really like the concept of apps like [Wispr Flow](https://wisprflow.ai/), [Superwhisper](https://superwhisper.com/), and [Monologue](https://www.monologue.to/) that use AI to add really accurate and easy-to-use transcription to your computer, but they all charge fees of like $10/month when the underlying AI models are free to use or cost pennies at most.
 
-FreeFlow is a simple and free voice-to-text app that uses [Groq](https://groq.com/)'s free API. Push and hold the `Fn` key (customizable) to transcribe anywhere on your Mac.
+So over the weekend I vibe-coded my own free version!
 
-**Features:**
+It's called FreeFlow. Here's how it works:
 
-- Fast and accurate transcription (uses `whisper-large-v3` + `meta-llama/llama-4-scout-17b-16e-instruct` for post-processing). Very, very fast.
+1. Download the app from above or [click here](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg)
+2. Get a free Groq API key from [groq.com](https://groq.com/)
+3. Press and hold `Fn` anytime to start recording and have whatever you say pasted into the current text field
 
-- Context-aware post-processing. Ex. It'll detect if you're writing an email and correct spelling of names to how they're spelled on the rest of your screen.
+One of the cool features is that it's context aware. If you're replying to an email, it'll read the names of the people you're replying to and make sure to spell their names correctly. Same with if you're dictating into a terminal or another app. This is the same thing as Monologue's "Deep Context" feature.
 
-- Define a custom vocabulary
-
-- Free! Most usage will fit [Groq](https://groq.com/)'s free tier.
-
-- Privacy friendly. Your Mac makes direct calls to Groq's API. FreeFlow doesn't have a server. No data is stored or retained because no server exists.
+An added bonus is that there's no FreeFlow server, so no data is stored or retained - making it more privacy friendly than the SaaS apps. The only information that leaves your computer are the API calls to Groq's transcription and LLM API (LLM is for post-processing the transcription to adapt to context).
 
 ## License
 
