@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
-  <sub>Universal build — works on all Macs (Apple Silicon + Intel)</sub>
+  <sub>Works on all Macs (Apple Silicon + Intel)</sub>
 </p>
 
 ---
