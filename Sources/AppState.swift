@@ -143,8 +143,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private static func loadStoredAPIKey(account: String) -> String {
-        if let keychainKey = KeychainStorage.load(account: account), !keychainKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return keychainKey
+        if let storedKey = AppSettingsStorage.load(account: account), !storedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return storedKey
         }
         return ""
     }
@@ -152,9 +152,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func persistAPIKey(_ value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            KeychainStorage.delete(account: apiKeyStorageKey)
+            AppSettingsStorage.delete(account: apiKeyStorageKey)
         } else {
-            KeychainStorage.save(trimmed, account: apiKeyStorageKey)
+            AppSettingsStorage.save(trimmed, account: apiKeyStorageKey)
         }
     }
 
