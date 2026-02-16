@@ -12,7 +12,7 @@ ARCH ?= $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 
-.PHONY: all clean run icon dmg
+.PHONY: all clean run icon dmg codesign-dmg notarize
 
 all: $(MACOS_DIR)/$(APP_NAME)
 
@@ -49,7 +49,7 @@ endif
 	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
-	@codesign --force --sign "$(CODESIGN_IDENTITY)" --entitlements FreeFlow.entitlements "$(APP_BUNDLE)"
+	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements FreeFlow.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 icon: $(ICON_ICNS)
@@ -86,6 +86,14 @@ dmg: all
 		$(BUILD_DIR)/$(APP_NAME).dmg \
 		$(APP_BUNDLE)
 	@echo "Created $(BUILD_DIR)/$(APP_NAME).dmg"
+
+codesign-dmg: dmg
+	codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUILD_DIR)/$(APP_NAME).dmg
+
+notarize:
+	xcrun notarytool submit $(BUILD_DIR)/$(APP_NAME).dmg \
+		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
+	xcrun stapler staple $(BUILD_DIR)/$(APP_NAME).dmg
 
 clean:
 	rm -rf $(BUILD_DIR)
