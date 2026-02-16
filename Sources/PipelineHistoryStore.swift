@@ -9,7 +9,8 @@ final class PipelineHistoryStore {
         container = NSPersistentContainer(name: "PipelineHistory", managedObjectModel: model)
 
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let baseURL = appSupport.appendingPathComponent("FreeFlow", isDirectory: true)
+            let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "FreeFlow"
+            let baseURL = appSupport.appendingPathComponent(appName, isDirectory: true)
             try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
             let storeURL = baseURL.appendingPathComponent("PipelineHistory.sqlite")
             let description = NSPersistentStoreDescription(url: storeURL)
@@ -121,6 +122,7 @@ final class PipelineHistoryStore {
 
     private static func makeHistoryItem(from entity: PipelineHistoryEntry) -> PipelineHistoryItem {
         PipelineHistoryItem(
+            id: entity.id,
             timestamp: entity.timestamp ?? Date(),
             rawTranscript: entity.rawTranscript ?? "",
             postProcessedTranscript: entity.postProcessedTranscript ?? "",

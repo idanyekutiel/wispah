@@ -1,5 +1,5 @@
 APP_NAME ?= FreeFlow Dev
-BUNDLE_ID = com.zachlatta.freeflow
+BUNDLE_ID ?= com.zachlatta.freeflow.dev
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
 CODESIGN_IDENTITY ?= FreeFlow Dev
@@ -17,19 +17,20 @@ ICON_ICNS = Resources/AppIcon.icns
 all: $(MACOS_DIR)/$(APP_NAME)
 
 $(MACOS_DIR)/$(APP_NAME): $(SOURCES) Info.plist $(ICON_ICNS)
-	@mkdir -p $(MACOS_DIR) $(RESOURCES)
+	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
 	swiftc \
 		-parse-as-library \
-		-o $(MACOS_DIR)/$(APP_NAME) \
+		-o "$(MACOS_DIR)/$(APP_NAME)" \
 		-sdk $(shell xcrun --show-sdk-path) \
 		-target $(ARCH)-apple-macosx13.0 \
 		$(SOURCES)
-	@cp Info.plist $(CONTENTS)/
-	@plutil -replace CFBundleName -string "$(APP_NAME)" $(CONTENTS)/Info.plist
-	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" $(CONTENTS)/Info.plist
-	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" $(CONTENTS)/Info.plist
-	@cp $(ICON_ICNS) $(RESOURCES)/
-	@codesign --force --sign "$(CODESIGN_IDENTITY)" --entitlements FreeFlow.entitlements $(APP_BUNDLE)
+	@cp Info.plist "$(CONTENTS)/"
+	@plutil -replace CFBundleName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
+	@cp $(ICON_ICNS) "$(RESOURCES)/"
+	@codesign --force --sign "$(CODESIGN_IDENTITY)" --entitlements FreeFlow.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 icon: $(ICON_ICNS)

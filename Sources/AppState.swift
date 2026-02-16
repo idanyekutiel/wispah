@@ -3,6 +3,7 @@ import Combine
 import AppKit
 import AVFoundation
 import ServiceManagement
+import ApplicationServices
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
@@ -142,7 +143,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     static func audioStorageDirectory() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let audioDir = appSupport.appendingPathComponent("FreeFlow/audio", isDirectory: true)
+        let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "FreeFlow"
+        let audioDir = appSupport.appendingPathComponent("\(appName)/audio", isDirectory: true)
         if !FileManager.default.fileExists(atPath: audioDir.path) {
             try? FileManager.default.createDirectory(at: audioDir, withIntermediateDirectories: true)
         }
@@ -626,10 +628,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     private func fallbackContextAtStop() -> AppContext {
         let frontmostApp = NSWorkspace.shared.frontmostApplication
+        let windowTitle = focusedWindowTitle(for: frontmostApp)
         return AppContext(
             appName: frontmostApp?.localizedName,
             bundleIdentifier: frontmostApp?.bundleIdentifier,
-            windowTitle: frontmostApp?.localizedName,
+            windowTitle: windowTitle,
             selectedText: nil,
             currentActivity: "Could not refresh app context at stop time; using text-only post-processing.",
             contextPrompt: nil,
@@ -637,6 +640,49 @@ final class AppState: ObservableObject, @unchecked Sendable {
             screenshotMimeType: nil,
             screenshotError: "No app context captured before stop"
         )
+    }
+
+    private func focusedWindowTitle(for app: NSRunningApplication?) -> String? {
+        guard let app else { return nil }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        return focusedWindowTitle(from: appElement)
+    }
+
+    private func focusedWindowTitle(from appElement: AXUIElement) -> String? {
+        guard let focusedWindow = accessibilityElement(from: appElement, attribute: kAXFocusedWindowAttribute as CFString) else {
+            return nil
+        }
+
+        guard let windowTitle = accessibilityString(from: focusedWindow, attribute: kAXTitleAttribute as CFString) else {
+            return nil
+        }
+
+        return trimmedText(windowTitle)
+    }
+
+    private func accessibilityElement(from element: AXUIElement, attribute: CFString) -> AXUIElement? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard result == .success,
+              let rawValue = value,
+              CFGetTypeID(rawValue) == AXUIElementGetTypeID() else {
+            return nil
+        }
+        return unsafeBitCast(rawValue, to: AXUIElement.self)
+    }
+
+    private func accessibilityString(from element: AXUIElement, attribute: CFString) -> String? {
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(element, attribute, &value)
+        guard result == .success, let stringValue = value as? String else { return nil }
+        return stringValue
+    }
+
+    private func trimmedText(_ value: String) -> String? {
+        let trimmed = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ")
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     private func handleScreenshotCaptureIssue(_ message: String?) {
