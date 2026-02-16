@@ -32,12 +32,12 @@ final class PipelineHistoryStore {
         return entities.compactMap(Self.makeHistoryItem(from:))
     }
 
-    func append(_ item: PipelineHistoryItem, maxCount: Int) -> [String] {
-        insert(item)
-        return trim(to: maxCount)
+    func append(_ item: PipelineHistoryItem, maxCount: Int) throws -> [String] {
+        try insert(item)
+        return try trim(to: maxCount)
     }
 
-    func delete(id: UUID) -> String? {
+    func delete(id: UUID) throws -> String? {
         let request = pipelineHistoryRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
         guard let entity = try? container.viewContext.fetch(request).first else {
@@ -46,11 +46,11 @@ final class PipelineHistoryStore {
 
         let audioFileName = entity.audioFileName
         container.viewContext.delete(entity)
-        saveContext()
+        try saveContext()
         return audioFileName
     }
 
-    func clearAll() -> [String] {
+    func clearAll() throws -> [String] {
         let request = pipelineHistoryRequest()
         request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: false)]
         guard let entities = try? container.viewContext.fetch(request) else {
@@ -61,13 +61,13 @@ final class PipelineHistoryStore {
         for entity in entities {
             container.viewContext.delete(entity)
         }
-        saveContext()
+        try saveContext()
         return audioFileNames
     }
 
-    func trim(to maxCount: Int) -> [String] {
+    func trim(to maxCount: Int) throws -> [String] {
         guard maxCount > 0 else {
-            let audioFileNames = clearAll()
+            let audioFileNames = try clearAll()
             return audioFileNames
         }
 
@@ -82,11 +82,11 @@ final class PipelineHistoryStore {
         for entity in dropped {
             container.viewContext.delete(entity)
         }
-        saveContext()
+        try saveContext()
         return audioFileNames
     }
 
-    private func insert(_ item: PipelineHistoryItem) {
+    private func insert(_ item: PipelineHistoryItem) throws {
         let context = container.viewContext
         let entity = PipelineHistoryEntry(context: context)
         entity.id = item.id
@@ -102,12 +102,17 @@ final class PipelineHistoryStore {
         entity.debugStatus = item.debugStatus
         entity.customVocabulary = item.customVocabulary
         entity.audioFileName = item.audioFileName
-        saveContext()
+        try saveContext()
     }
 
-    private func saveContext() {
+    private func saveContext() throws {
         guard container.viewContext.hasChanges else { return }
-        try? container.viewContext.save()
+        do {
+            try container.viewContext.save()
+        } catch {
+            container.viewContext.rollback()
+            throw error
+        }
     }
 
     private func pipelineHistoryRequest() -> NSFetchRequest<PipelineHistoryEntry> {

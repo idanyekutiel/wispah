@@ -102,7 +102,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
-        let removedAudioFileNames = pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
+        var removedAudioFileNames: [String] = []
+        do {
+            removedAudioFileNames = try pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
+        } catch {
+            print("Failed to trim pipeline history during init: \(error)")
+        }
         for audioFileName in removedAudioFileNames {
             Self.deleteAudioFile(audioFileName)
         }
@@ -161,19 +166,27 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     func clearPipelineHistory() {
-        let removedAudioFileNames = pipelineHistoryStore.clearAll()
-        for audioFileName in removedAudioFileNames {
-            Self.deleteAudioFile(audioFileName)
+        do {
+            let removedAudioFileNames = try pipelineHistoryStore.clearAll()
+            for audioFileName in removedAudioFileNames {
+                Self.deleteAudioFile(audioFileName)
+            }
+            pipelineHistory = []
+        } catch {
+            errorMessage = "Unable to clear run history: \(error.localizedDescription)"
         }
-        pipelineHistory = []
     }
 
     func deleteHistoryEntry(id: UUID) {
         guard let index = pipelineHistory.firstIndex(where: { $0.id == id }) else { return }
-        if let audioFileName = pipelineHistoryStore.delete(id: id) {
-            Self.deleteAudioFile(audioFileName)
+        do {
+            if let audioFileName = try pipelineHistoryStore.delete(id: id) {
+                Self.deleteAudioFile(audioFileName)
+            }
+            pipelineHistory.remove(at: index)
+        } catch {
+            errorMessage = "Unable to delete run history entry: \(error.localizedDescription)"
         }
-        pipelineHistory.remove(at: index)
     }
 
     func startAccessibilityPolling() {
@@ -576,11 +589,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
             customVocabulary: customVocabulary,
             audioFileName: audioFileName
         )
-        let removedAudioFileNames = pipelineHistoryStore.append(newEntry, maxCount: maxPipelineHistoryCount)
-        for audioFileName in removedAudioFileNames {
-            Self.deleteAudioFile(audioFileName)
+        do {
+            let removedAudioFileNames = try pipelineHistoryStore.append(newEntry, maxCount: maxPipelineHistoryCount)
+            for audioFileName in removedAudioFileNames {
+                Self.deleteAudioFile(audioFileName)
+            }
+            pipelineHistory = pipelineHistoryStore.loadAllHistory()
+        } catch {
+            errorMessage = "Unable to save run history entry: \(error.localizedDescription)"
         }
-        pipelineHistory = pipelineHistoryStore.loadAllHistory()
     }
 
     private func startContextCapture() {

@@ -351,6 +351,7 @@ struct RecordingOverlayView: View {
 
 struct TranscribingIndicatorView: View {
     @State private var animatingDot = 0
+    @State private var dotAnimationTimer: Timer?
 
     var body: some View {
         HStack(spacing: 4) {
@@ -366,13 +367,20 @@ struct TranscribingIndicatorView: View {
             LiquidGlassOverlay(shape: UnevenRoundedRectangle(bottomLeadingRadius: 11, bottomTrailingRadius: 11))
         )
         .onAppear { startDotAnimation() }
+        .onDisappear { stopDotAnimation() }
     }
 
     private func startDotAnimation() {
-        Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+        dotAnimationTimer?.invalidate()
+        dotAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
             DispatchQueue.main.async {
                 animatingDot = (animatingDot + 1) % 3
             }
         }
+    }
+
+    private func stopDotAnimation() {
+        dotAnimationTimer?.invalidate()
+        dotAnimationTimer = nil
     }
 }

@@ -3,6 +3,7 @@ import Foundation
 enum PostProcessingError: LocalizedError {
     case requestFailed(Int, String)
     case invalidResponse(String)
+    case requestTimedOut(TimeInterval)
 
     var errorDescription: String? {
         switch self {
@@ -10,6 +11,8 @@ enum PostProcessingError: LocalizedError {
             "Post-processing failed with status \(statusCode): \(details)"
         case .invalidResponse(let details):
             "Invalid post-processing response: \(details)"
+        case .requestTimedOut(let seconds):
+            "Post-processing timed out after \(Int(seconds))s"
         }
     }
 }
@@ -23,6 +26,7 @@ final class PostProcessingService {
     private let apiKey: String
     private let baseURL = "https://api.groq.com/openai/v1"
     private let defaultModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private let postProcessingTimeoutSeconds: TimeInterval = 20
 
     init(apiKey: String) {
         self.apiKey = apiKey
@@ -34,12 +38,37 @@ final class PostProcessingService {
         customVocabulary: String
     ) async throws -> PostProcessingResult {
         let vocabularyTerms = mergedVocabularyTerms(rawVocabulary: customVocabulary)
-        return try await process(
-            transcript: transcript,
-            contextSummary: context.contextSummary,
-            model: defaultModel,
-            customVocabulary: vocabularyTerms
-        )
+
+        let timeoutSeconds = postProcessingTimeoutSeconds
+        return try await withThrowingTaskGroup(of: PostProcessingResult.self) { group in
+            group.addTask { [weak self] in
+                guard let self else {
+                    throw PostProcessingError.invalidResponse("Post-processing service deallocated")
+                }
+                return try await self.process(
+                    transcript: transcript,
+                    contextSummary: context.contextSummary,
+                    model: defaultModel,
+                    customVocabulary: vocabularyTerms
+                )
+            }
+
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                throw PostProcessingError.requestTimedOut(timeoutSeconds)
+            }
+
+            do {
+                guard let result = try await group.next() else {
+                    throw PostProcessingError.invalidResponse("No post-processing result")
+                }
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                throw error
+            }
+        }
     }
 
     private func process(
@@ -52,6 +81,7 @@ final class PostProcessingService {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = postProcessingTimeoutSeconds
 
         let normalizedVocabulary = normalizedVocabularyText(customVocabulary)
         let vocabularyPrompt = if !normalizedVocabulary.isEmpty {
