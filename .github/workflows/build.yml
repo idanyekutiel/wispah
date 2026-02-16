@@ -12,11 +12,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install create-dmg
+        run: brew install create-dmg
+
       - name: Build
         run: make CODESIGN_IDENTITY="-"
 
       - name: Create DMG
-        run: hdiutil create -volname "FreeFlow" -srcfolder build/FreeFlow.app -ov -format UDZO build/FreeFlow.dmg
+        run: make dmg CODESIGN_IDENTITY="-"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

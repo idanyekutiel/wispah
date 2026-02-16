@@ -12,7 +12,7 @@ ARCH = $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 
-.PHONY: all clean run icon
+.PHONY: all clean run icon dmg
 
 all: $(MACOS_DIR)/$(APP_NAME)
 
@@ -46,6 +46,23 @@ $(ICON_ICNS): $(ICON_SOURCE)
 	@iconutil -c icns -o $@ $(BUILD_DIR)/AppIcon.iconset
 	@rm -rf $(BUILD_DIR)/AppIcon.iconset
 	@echo "Generated $@"
+
+dmg: all
+	@rm -f $(BUILD_DIR)/$(APP_NAME).dmg
+	@echo "Creating DMG..."
+	@create-dmg \
+		--volname "$(APP_NAME)" \
+		--volicon "$(ICON_ICNS)" \
+		--window-pos 200 120 \
+		--window-size 660 400 \
+		--icon-size 128 \
+		--icon "$(APP_NAME).app" 180 170 \
+		--hide-extension "$(APP_NAME).app" \
+		--app-drop-link 480 170 \
+		--no-internet-enable \
+		$(BUILD_DIR)/$(APP_NAME).dmg \
+		$(APP_BUNDLE)
+	@echo "Created $(BUILD_DIR)/$(APP_NAME).dmg"
 
 clean:
 	rm -rf $(BUILD_DIR)
