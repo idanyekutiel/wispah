@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  <img src="Resources/demo.gif" alt="FreeFlow demo" width="600">
+</p>
+
+<p align="center">
   <a href="https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
   <sub>Works on all Macs (Apple Silicon + Intel)</sub>
 </p>
