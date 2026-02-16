@@ -7,7 +7,7 @@
     <key>CFBundleDisplayName</key>
     <string>FreeFlow</string>
     <key>CFBundleIdentifier</key>
-    <string>com.hackclub.freeflow</string>
+    <string>com.zachlatta.freeflow</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>

@@ -27,11 +27,9 @@ enum SettingsTab: String, CaseIterable, Identifiable {
     }
 }
 
-class AppState: ObservableObject {
+final class AppState: ObservableObject, @unchecked Sendable {
     private let apiKeyStorageKey = "groq_api_key"
-    private let legacyAssemblyAIStorageKey = "assemblyai_api_key"
     private let customVocabularyStorageKey = "custom_vocabulary"
-    private let pipelineHistoryStorageKey = "pipeline_history"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
     private let maxPipelineHistoryCount = 20
 
@@ -43,8 +41,7 @@ class AppState: ObservableObject {
 
     @Published var apiKey: String {
         didSet {
-            UserDefaults.standard.set(apiKey, forKey: apiKeyStorageKey)
-            UserDefaults.standard.removeObject(forKey: legacyAssemblyAIStorageKey)
+            persistAPIKey(apiKey)
             contextService = AppContextService(apiKey: apiKey)
         }
     }
@@ -70,11 +67,7 @@ class AppState: ObservableObject {
     @Published var hasAccessibility = false
     @Published var isDebugOverlayActive = false
     @Published var selectedSettingsTab: SettingsTab? = .general
-    @Published var pipelineHistory: [PipelineHistoryItem] = [] {
-        didSet {
-            persistPipelineHistory()
-        }
-    }
+    @Published var pipelineHistory: [PipelineHistoryItem] = []
     @Published var debugStatusMessage = "Idle"
     @Published var lastRawTranscript = ""
     @Published var lastPostProcessedTranscript = ""
@@ -96,17 +89,20 @@ class AppState: ObservableObject {
     private var contextCaptureTask: Task<AppContext?, Never>?
     private var capturedContext: AppContext?
     private var hasShownScreenshotPermissionAlert = false
+    private let pipelineHistoryStore = PipelineHistoryStore()
 
     init() {
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
-        let apiKey = UserDefaults.standard.string(forKey: apiKeyStorageKey)
-            ?? UserDefaults.standard.string(forKey: legacyAssemblyAIStorageKey)
-            ?? ""
+        let apiKey = Self.loadStoredAPIKey(account: apiKeyStorageKey)
         let selectedHotkey = HotkeyOption(rawValue: UserDefaults.standard.string(forKey: "hotkey_option") ?? "fn") ?? .fnKey
         let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
-        let savedHistory = Self.loadPipelineHistory(forKey: pipelineHistoryStorageKey)
+        let removedAudioFileNames = pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
+        for audioFileName in removedAudioFileNames {
+            Self.deleteAudioFile(audioFileName)
+        }
+        let savedHistory = pipelineHistoryStore.loadAllHistory()
 
         self.contextService = AppContextService(apiKey: apiKey)
         self.hasCompletedSetup = hasCompletedSetup
@@ -118,17 +114,20 @@ class AppState: ObservableObject {
         self.hasScreenRecordingPermission = initialScreenCapturePermission
     }
 
-    private static func loadPipelineHistory(forKey key: String) -> [PipelineHistoryItem] {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let items = try? JSONDecoder().decode([PipelineHistoryItem].self, from: data) else {
-            return []
+    private static func loadStoredAPIKey(account: String) -> String {
+        if let keychainKey = KeychainStorage.load(account: account), !keychainKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return keychainKey
         }
-        return items
+        return ""
     }
 
-    private func persistPipelineHistory() {
-        guard let data = try? JSONEncoder().encode(pipelineHistory) else { return }
-        UserDefaults.standard.set(data, forKey: pipelineHistoryStorageKey)
+    private func persistAPIKey(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            KeychainStorage.delete(account: apiKeyStorageKey)
+        } else {
+            KeychainStorage.save(trimmed, account: apiKeyStorageKey)
+        }
     }
 
     static func audioStorageDirectory() -> URL {
@@ -157,17 +156,16 @@ class AppState: ObservableObject {
     }
 
     func clearPipelineHistory() {
-        for item in pipelineHistory {
-            if let audioFileName = item.audioFileName {
-                Self.deleteAudioFile(audioFileName)
-            }
+        let removedAudioFileNames = pipelineHistoryStore.clearAll()
+        for audioFileName in removedAudioFileNames {
+            Self.deleteAudioFile(audioFileName)
         }
         pipelineHistory = []
     }
 
     func deleteHistoryEntry(id: UUID) {
         guard let index = pipelineHistory.firstIndex(where: { $0.id == id }) else { return }
-        if let audioFileName = pipelineHistory[index].audioFileName {
+        if let audioFileName = pipelineHistoryStore.delete(id: id) {
             Self.deleteAudioFile(audioFileName)
         }
         pipelineHistory.remove(at: index)
@@ -395,9 +393,10 @@ class AppState: ObservableObject {
         transcribingIndicatorTask = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: UInt64(indicatorDelay * 1_000_000_000))
-                await MainActor.run {
-                    guard let self, self.isTranscribing else { return }
-                    self.overlayManager.showTranscribing()
+                let shouldShowTranscribing = self?.isTranscribing ?? false
+                guard shouldShowTranscribing else { return }
+                await MainActor.run { [weak self] in
+                    self?.overlayManager.showTranscribing()
                 }
             } catch {}
         }
@@ -534,7 +533,6 @@ class AppState: ObservableObject {
         processingStatus: String,
         audioFileName: String? = nil
     ) {
-        var entries = pipelineHistory
         let newEntry = PipelineHistoryItem(
             timestamp: Date(),
             rawTranscript: rawTranscript,
@@ -550,18 +548,11 @@ class AppState: ObservableObject {
             customVocabulary: customVocabulary,
             audioFileName: audioFileName
         )
-
-        entries.insert(newEntry, at: 0)
-        if entries.count > maxPipelineHistoryCount {
-            let dropped = entries.suffix(from: maxPipelineHistoryCount)
-            for item in dropped {
-                if let audioFileName = item.audioFileName {
-                    Self.deleteAudioFile(audioFileName)
-                }
-            }
-            entries = Array(entries.prefix(maxPipelineHistoryCount))
+        let removedAudioFileNames = pipelineHistoryStore.append(newEntry, maxCount: maxPipelineHistoryCount)
+        for audioFileName in removedAudioFileNames {
+            Self.deleteAudioFile(audioFileName)
         }
-        pipelineHistory = entries
+        pipelineHistory = pipelineHistoryStore.loadAllHistory()
     }
 
     private func startContextCapture() {

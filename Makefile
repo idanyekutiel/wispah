@@ -1,5 +1,5 @@
 APP_NAME = FreeFlow
-BUNDLE_ID = com.hackclub.freeflow
+BUNDLE_ID = com.zachlatta.freeflow
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
 CODESIGN_IDENTITY ?= VoiceToText Dev
