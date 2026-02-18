@@ -20,12 +20,13 @@ struct MenuBarLabel: View {
 
     var body: some View {
         let icon: String = if appState.isRecording {
-            "record.circle"
+            "record.circle.fill"
         } else if appState.isTranscribing {
-            "ellipsis.circle"
+            "ellipsis.circle.fill"
         } else {
-            "mic.fill"
+            "waveform"
         }
         Image(systemName: icon)
+            .symbolRenderingMode(.hierarchical)
     }
 }

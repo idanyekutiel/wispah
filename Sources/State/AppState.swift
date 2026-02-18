@@ -1,0 +1,292 @@
+import Foundation
+import Combine
+import AppKit
+import AVFoundation
+import CoreAudio
+import ServiceManagement
+import ApplicationServices
+import ScreenCaptureKit
+import os.log
+
+let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+
+final class AppState: ObservableObject, @unchecked Sendable {
+    let apiKeyStorageKey = "groq_api_key"
+    private let customVocabularyStorageKey = "custom_vocabulary"
+    private let selectedMicrophoneStorageKey = "selected_microphone_id"
+    private let screenRecordingEnabledStorageKey = "screen_recording_enabled"
+    private let recordingModeStorageKey = "recording_mode"
+    let transcribingIndicatorDelay: TimeInterval = 1.0
+
+    @Published var maxPipelineHistoryCount: Int {
+        didSet {
+            UserDefaults.standard.set(maxPipelineHistoryCount, forKey: "max_pipeline_history_count")
+        }
+    }
+
+    @Published var hasCompletedSetup: Bool {
+        didSet {
+            UserDefaults.standard.set(hasCompletedSetup, forKey: "hasCompletedSetup")
+        }
+    }
+
+    @Published var apiKey: String {
+        didSet {
+            persistAPIKey(apiKey)
+            contextService = AppContextService(apiKey: apiKey)
+        }
+    }
+
+    @Published var toggleHotkey: HotkeyOption {
+        didSet {
+            UserDefaults.standard.set(toggleHotkey.rawValue, forKey: "toggle_hotkey")
+            restartHotkeyMonitoring()
+        }
+    }
+
+    @Published var holdHotkey: HotkeyOption {
+        didSet {
+            UserDefaults.standard.set(holdHotkey.rawValue, forKey: "hold_hotkey")
+            restartHotkeyMonitoring()
+        }
+    }
+
+    @Published var screenRecordingEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(screenRecordingEnabled, forKey: screenRecordingEnabledStorageKey)
+        }
+    }
+
+    @Published var recordingMode: RecordingMode {
+        didSet {
+            UserDefaults.standard.set(recordingMode.rawValue, forKey: recordingModeStorageKey)
+        }
+    }
+
+    @Published var customVocabulary: String {
+        didSet {
+            UserDefaults.standard.set(customVocabulary, forKey: customVocabularyStorageKey)
+        }
+    }
+
+    @Published var playSoundsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(playSoundsEnabled, forKey: "play_sounds_enabled")
+        }
+    }
+
+    @Published var saveRunHistory: Bool {
+        didSet {
+            UserDefaults.standard.set(saveRunHistory, forKey: "save_run_history")
+        }
+    }
+
+    @Published var saveAudioFiles: Bool {
+        didSet {
+            UserDefaults.standard.set(saveAudioFiles, forKey: "save_audio_files")
+        }
+    }
+
+    @Published var keepAudioOnErrors: Bool {
+        didSet {
+            UserDefaults.standard.set(keepAudioOnErrors, forKey: "keep_audio_on_errors")
+        }
+    }
+
+    @Published var whisperModel: WhisperModel {
+        didSet {
+            UserDefaults.standard.set(whisperModel.rawValue, forKey: "whisper_model")
+        }
+    }
+
+    @Published var transcriptionLanguage: String? {
+        didSet {
+            UserDefaults.standard.set(transcriptionLanguage ?? "", forKey: "transcription_language")
+        }
+    }
+
+    @Published var smartFormattingEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(smartFormattingEnabled, forKey: "smart_formatting_enabled")
+        }
+    }
+
+    @Published var developerModeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(developerModeEnabled, forKey: "developer_mode_enabled")
+        }
+    }
+
+    @Published var audioWhileRecording: AudioWhileRecording {
+        didSet {
+            UserDefaults.standard.set(audioWhileRecording.rawValue, forKey: "audio_while_recording")
+        }
+    }
+
+    static let supportedLanguages: [(code: String?, displayName: String)] = [
+        (nil, "Auto-detect"),
+        ("en", "English"),
+        ("es", "Spanish"),
+        ("fr", "French"),
+        ("de", "German"),
+        ("it", "Italian"),
+        ("pt", "Portuguese"),
+        ("nl", "Dutch"),
+        ("ja", "Japanese"),
+        ("zh", "Chinese"),
+        ("ko", "Korean"),
+        ("ru", "Russian"),
+        ("ar", "Arabic"),
+        ("hi", "Hindi"),
+        ("pl", "Polish"),
+        ("uk", "Ukrainian"),
+        ("he", "Hebrew"),
+    ]
+
+    @Published var isRecording = false
+    @Published var isTranscribing = false
+    @Published var lastTranscript: String = ""
+    @Published var errorMessage: String?
+    @Published var statusText: String = "Ready"
+    @Published var hasAccessibility = false
+    @Published var isDebugOverlayActive = false
+    @Published var selectedSettingsTab: SettingsTab? = .general
+    @Published var pipelineHistory: [PipelineHistoryItem] = []
+    @Published var debugStatusMessage = "Idle"
+    @Published var lastRawTranscript = ""
+    @Published var lastPostProcessedTranscript = ""
+    @Published var lastPostProcessingPrompt = ""
+    @Published var lastContextSummary = ""
+    @Published var lastPostProcessingStatus = ""
+    @Published var lastContextScreenshotDataURL: String? = nil
+    @Published var lastContextScreenshotStatus = "No screenshot"
+    @Published var hasScreenRecordingPermission = false
+    @Published var launchAtLogin: Bool {
+        didSet { setLaunchAtLogin(launchAtLogin) }
+    }
+
+    @Published var selectedMicrophoneID: String {
+        didSet {
+            UserDefaults.standard.set(selectedMicrophoneID, forKey: selectedMicrophoneStorageKey)
+        }
+    }
+    @Published var availableMicrophones: [AudioDevice] = []
+
+    let audioRecorder = AudioRecorder()
+    let hotkeyManager = HotkeyManager()
+    let overlayManager = RecordingOverlayManager()
+    var accessibilityTimer: Timer?
+    var audioLevelCancellable: AnyCancellable?
+    var debugOverlayTimer: Timer?
+    var transcribingIndicatorTask: Task<Void, Never>?
+    var contextService: AppContextService
+    var contextCaptureTask: Task<AppContext?, Never>?
+    var capturedContext: AppContext?
+    var hasShownScreenshotPermissionAlert = false
+    var audioDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+    let pipelineHistoryStore = PipelineHistoryStore()
+    var wasMediaPlayingBeforeRecording = false
+    var wasSystemMutedBeforeRecording = false
+
+    init() {
+        let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
+        let apiKey = Self.loadStoredAPIKey(account: apiKeyStorageKey)
+        let toggleHotkey = HotkeyOption(rawValue: UserDefaults.standard.string(forKey: "toggle_hotkey") ?? "fn") ?? .fnKey
+        let holdHotkey = HotkeyOption(rawValue: UserDefaults.standard.string(forKey: "hold_hotkey") ?? "rightOption") ?? .rightOption
+        let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
+        let initialAccessibility = AXIsProcessTrusted()
+        let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
+        let storedMaxHistory = UserDefaults.standard.object(forKey: "max_pipeline_history_count") as? Int ?? 50
+        self.maxPipelineHistoryCount = storedMaxHistory
+        var removedAudioFileNames: [String] = []
+        do {
+            removedAudioFileNames = try pipelineHistoryStore.trim(to: storedMaxHistory)
+        } catch {
+            print("Failed to trim pipeline history during init: \(error)")
+        }
+        for audioFileName in removedAudioFileNames {
+            Self.deleteAudioFile(audioFileName)
+        }
+        let savedHistory = pipelineHistoryStore.loadAllHistory()
+
+        let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
+
+        let screenRecordingEnabled: Bool
+        if UserDefaults.standard.object(forKey: "screen_recording_enabled") != nil {
+            screenRecordingEnabled = UserDefaults.standard.bool(forKey: "screen_recording_enabled")
+        } else {
+            screenRecordingEnabled = true
+        }
+        let recordingMode = RecordingMode(rawValue: UserDefaults.standard.string(forKey: "recording_mode") ?? "") ?? .holdToRecord
+
+        let playSoundsEnabled: Bool
+        if UserDefaults.standard.object(forKey: "play_sounds_enabled") != nil {
+            playSoundsEnabled = UserDefaults.standard.bool(forKey: "play_sounds_enabled")
+        } else {
+            playSoundsEnabled = true
+        }
+
+        let saveRunHistory: Bool
+        if UserDefaults.standard.object(forKey: "save_run_history") != nil {
+            saveRunHistory = UserDefaults.standard.bool(forKey: "save_run_history")
+        } else {
+            saveRunHistory = true
+        }
+
+        let saveAudioFiles: Bool
+        if UserDefaults.standard.object(forKey: "save_audio_files") != nil {
+            saveAudioFiles = UserDefaults.standard.bool(forKey: "save_audio_files")
+        } else {
+            saveAudioFiles = true
+        }
+
+        let keepAudioOnErrors: Bool
+        if UserDefaults.standard.object(forKey: "keep_audio_on_errors") != nil {
+            keepAudioOnErrors = UserDefaults.standard.bool(forKey: "keep_audio_on_errors")
+        } else {
+            keepAudioOnErrors = true
+        }
+
+        let whisperModel = WhisperModel(rawValue: UserDefaults.standard.string(forKey: "whisper_model") ?? "") ?? .largeV3
+
+        let storedLanguage = UserDefaults.standard.string(forKey: "transcription_language") ?? ""
+        let transcriptionLanguage: String? = storedLanguage.isEmpty ? nil : storedLanguage
+
+        let smartFormattingEnabled: Bool
+        if UserDefaults.standard.object(forKey: "smart_formatting_enabled") != nil {
+            smartFormattingEnabled = UserDefaults.standard.bool(forKey: "smart_formatting_enabled")
+        } else {
+            smartFormattingEnabled = true
+        }
+
+        let developerModeEnabled = UserDefaults.standard.bool(forKey: "developer_mode_enabled")
+
+        let audioWhileRecording = AudioWhileRecording(rawValue: UserDefaults.standard.string(forKey: "audio_while_recording") ?? "") ?? .doNothing
+
+        self.contextService = AppContextService(apiKey: apiKey)
+        self.hasCompletedSetup = hasCompletedSetup
+        self.apiKey = apiKey
+        self.toggleHotkey = toggleHotkey
+        self.holdHotkey = holdHotkey
+        self.screenRecordingEnabled = screenRecordingEnabled
+        self.recordingMode = recordingMode
+        self.customVocabulary = customVocabulary
+        self.pipelineHistory = savedHistory
+        self.hasAccessibility = initialAccessibility
+        self.hasScreenRecordingPermission = initialScreenCapturePermission
+        self.launchAtLogin = SMAppService.mainApp.status == .enabled
+        self.selectedMicrophoneID = selectedMicrophoneID
+        self.playSoundsEnabled = playSoundsEnabled
+        self.saveRunHistory = saveRunHistory
+        self.saveAudioFiles = saveAudioFiles
+        self.keepAudioOnErrors = keepAudioOnErrors
+        self.whisperModel = whisperModel
+        self.transcriptionLanguage = transcriptionLanguage
+        self.smartFormattingEnabled = smartFormattingEnabled
+        self.developerModeEnabled = developerModeEnabled
+        self.audioWhileRecording = audioWhileRecording
+
+        refreshAvailableMicrophones()
+        installAudioDeviceListener()
+    }
+}

@@ -19,6 +19,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
+        // Refresh permissions on app activation
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.appState.refreshPermissions()
+        }
+
+        // Cmd+Comma opens settings (standard macOS convention)
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "," {
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+                return nil
+            }
+            return event
+        }
+
         if !appState.hasCompletedSetup {
             showSetupWindow()
         } else {
@@ -74,6 +92,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "FreeFlow"
         window.contentView = hostingView
         window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 600, height: 400)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

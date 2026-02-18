@@ -369,7 +369,9 @@ struct WaveformView: View {
 
     private func barAmplitude(for index: Int) -> CGFloat {
         let level = CGFloat(audioLevel)
-        return min(level * Self.multipliers[index], 1.0)
+        // Power curve to boost quieter levels visually
+        let boosted = sqrt(level)
+        return min(boosted * Self.multipliers[index], 1.0)
     }
 }
 

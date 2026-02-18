@@ -1,0 +1,101 @@
+import CoreAudio
+import Foundation
+
+struct AudioDevice: Identifiable {
+    let id: AudioDeviceID
+    let uid: String
+    let name: String
+
+    static func availableInputDevices() -> [AudioDevice] {
+        var propertyAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var dataSize: UInt32 = 0
+        var status = AudioObjectGetPropertyDataSize(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0, nil,
+            &dataSize
+        )
+        guard status == noErr, dataSize > 0 else { return [] }
+
+        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
+        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
+        status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &propertyAddress,
+            0, nil,
+            &dataSize,
+            &deviceIDs
+        )
+        guard status == noErr else { return [] }
+
+        var devices: [AudioDevice] = []
+        for deviceID in deviceIDs {
+            // Check if device has input streams
+            var inputStreamAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyStreamConfiguration,
+                mScope: kAudioDevicePropertyScopeInput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var streamSize: UInt32 = 0
+            guard AudioObjectGetPropertyDataSize(deviceID, &inputStreamAddress, 0, nil, &streamSize) == noErr,
+                  streamSize > 0 else { continue }
+
+            let bufferListPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
+            defer { bufferListPointer.deallocate() }
+            guard AudioObjectGetPropertyData(deviceID, &inputStreamAddress, 0, nil, &streamSize, bufferListPointer) == noErr else { continue }
+
+            let bufferList = UnsafeMutableAudioBufferListPointer(bufferListPointer)
+            let inputChannels = bufferList.reduce(0) { $0 + Int($1.mNumberChannels) }
+            guard inputChannels > 0 else { continue }
+
+            // Skip aggregate and virtual devices
+            var transportAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyTransportType,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var transportType: UInt32 = 0
+            var transportSize = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(deviceID, &transportAddress, 0, nil, &transportSize, &transportType) == noErr {
+                if transportType == kAudioDeviceTransportTypeAggregate
+                    || transportType == kAudioDeviceTransportTypeVirtual {
+                    continue
+                }
+            }
+
+            // Get device UID
+            var uidAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceUID,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var uidRef: Unmanaged<CFString>?
+            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            guard AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, &uidRef) == noErr,
+                  let uid = uidRef?.takeUnretainedValue() as String? else { continue }
+
+            // Get device name
+            var nameAddress = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var nameRef: Unmanaged<CFString>?
+            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            guard AudioObjectGetPropertyData(deviceID, &nameAddress, 0, nil, &nameSize, &nameRef) == noErr,
+                  let name = nameRef?.takeUnretainedValue() as String? else { continue }
+
+            devices.append(AudioDevice(id: deviceID, uid: uid, name: name))
+        }
+        return devices
+    }
+
+    static func deviceID(forUID uid: String) -> AudioDeviceID? {
+        return availableInputDevices().first(where: { $0.uid == uid })?.id
+    }
+}

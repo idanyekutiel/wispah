@@ -17,6 +17,7 @@ struct SetupView: View {
         case screenRecording
         case hotkey
         case vocabulary
+        case language
         case launchAtLogin
         case testTranscription
         case ready
@@ -66,6 +67,8 @@ struct SetupView: View {
                     hotkeyStep
                 case .vocabulary:
                     vocabularyStep
+                case .language:
+                    languageStep
                 case .launchAtLogin:
                     launchAtLoginStep
                 case .testTranscription:
@@ -494,36 +497,68 @@ struct SetupView: View {
     }
 
     var hotkeyStep: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             Image(systemName: "keyboard.fill")
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("Recording Key")
+            Text("Recording Keys")
                 .font(.title)
                 .fontWeight(.bold)
 
-            Picker("Recording Mode", selection: $appState.recordingMode) {
-                ForEach(RecordingMode.allCases) { mode in
-                    Text(mode.displayName).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 300)
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Toggle to Record")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Press once to start, press again to stop.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-            VStack(spacing: 8) {
-                ForEach(HotkeyOption.allCases) { option in
-                    HotkeyOptionRow(
-                        option: option,
-                        isSelected: appState.selectedHotkey == option,
-                        action: {
-                            appState.selectedHotkey = option
+                    VStack(spacing: 4) {
+                        ForEach(HotkeyOption.allCases) { option in
+                            HotkeyOptionRow(
+                                option: option,
+                                isSelected: appState.toggleHotkey == option,
+                                action: {
+                                    let old = appState.toggleHotkey
+                                    if option == appState.holdHotkey {
+                                        appState.holdHotkey = old
+                                    }
+                                    appState.toggleHotkey = option
+                                }
+                            )
                         }
-                    )
+                    }
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Hold to Record")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Hold the key to record, release to stop.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    VStack(spacing: 4) {
+                        ForEach(HotkeyOption.allCases) { option in
+                            HotkeyOptionRow(
+                                option: option,
+                                isSelected: appState.holdHotkey == option,
+                                action: {
+                                    let old = appState.holdHotkey
+                                    if option == appState.toggleHotkey {
+                                        appState.toggleHotkey = old
+                                    }
+                                    appState.holdHotkey = option
+                                }
+                            )
+                        }
+                    }
                 }
             }
 
-            if appState.selectedHotkey == .fnKey {
+            if appState.toggleHotkey == .fnKey || appState.holdHotkey == .fnKey {
                 Text("Tip: If Fn opens Emoji picker, go to\nSystem Settings > Keyboard and change\n\"Press fn key to\" to \"Do Nothing\".")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -565,6 +600,35 @@ struct SetupView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            stepIndicator
+        }
+    }
+
+    var languageStep: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "globe")
+                .font(.system(size: 60))
+                .foregroundStyle(.blue)
+
+            Text("Language")
+                .font(.title)
+                .fontWeight(.bold)
+
+            Text("Setting a specific language improves transcription accuracy.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("Transcription language:", selection: Binding(
+                get: { appState.transcriptionLanguage ?? "" },
+                set: { appState.transcriptionLanguage = $0.isEmpty ? nil : $0 }
+            )) {
+                ForEach(AppState.supportedLanguages, id: \.displayName) { lang in
+                    Text(lang.displayName).tag(lang.code ?? "")
+                }
+            }
+            .frame(maxWidth: 300)
 
             stepIndicator
         }
@@ -632,9 +696,10 @@ struct SetupView: View {
                             .font(.title)
                             .fontWeight(.bold)
 
-                        Text(appState.recordingMode == .holdToRecord
-                             ? "Hold **\(appState.selectedHotkey.displayName)**"
-                             : "Press **\(appState.selectedHotkey.displayName)**")
+                        VStack(spacing: 4) {
+                            Text("Hold **\(appState.holdHotkey.displayName)** to dictate")
+                            Text("Press **\(appState.toggleHotkey.displayName)** to toggle")
+                        }
                             .font(.headline)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
@@ -679,9 +744,15 @@ struct SetupView: View {
 
                 case .done:
                     VStack(spacing: 16) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 60))
-                            .foregroundStyle(.green)
+                        if testError != nil {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 60))
+                                .foregroundStyle(.orange)
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 60))
+                                .foregroundStyle(.green)
+                        }
 
                         if let error = testError {
                             Text("Something went wrong")
@@ -693,9 +764,8 @@ struct SetupView: View {
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
 
-                            Text(appState.recordingMode == .holdToRecord
-                             ? "Hold **\(appState.selectedHotkey.displayName)** to try again"
-                             : "Press **\(appState.selectedHotkey.displayName)** to try again")
+                            Text("Hold **\(appState.holdHotkey.displayName)** or press **\(appState.toggleHotkey.displayName)** to try again")
+                                .multilineTextAlignment(.center)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else if testTranscript.isEmpty {
@@ -704,9 +774,8 @@ struct SetupView: View {
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.secondary)
 
-                            Text(appState.recordingMode == .holdToRecord
-                             ? "Hold **\(appState.selectedHotkey.displayName)** to try again"
-                             : "Press **\(appState.selectedHotkey.displayName)** to try again")
+                            Text("Hold **\(appState.holdHotkey.displayName)** or press **\(appState.toggleHotkey.displayName)** to try again")
+                                .multilineTextAlignment(.center)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
@@ -722,9 +791,8 @@ struct SetupView: View {
                                 .cornerRadius(10)
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
 
-                            Text(appState.recordingMode == .holdToRecord
-                             ? "Hold **\(appState.selectedHotkey.displayName)** to try again"
-                             : "Press **\(appState.selectedHotkey.displayName)** to try again")
+                            Text("Hold **\(appState.holdHotkey.displayName)** or press **\(appState.toggleHotkey.displayName)** to try again")
+                                .multilineTextAlignment(.center)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
@@ -762,13 +830,8 @@ struct SetupView: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 12) {
-                if appState.recordingMode == .holdToRecord {
-                    HowToRow(icon: "keyboard", text: "Hold \(appState.selectedHotkey.displayName) to record")
-                    HowToRow(icon: "hand.raised", text: "Release to stop and transcribe")
-                } else {
-                    HowToRow(icon: "keyboard", text: "Press \(appState.selectedHotkey.displayName) to start recording")
-                    HowToRow(icon: "keyboard", text: "Press again to stop and transcribe")
-                }
+                HowToRow(icon: "keyboard", text: "Hold \(appState.holdHotkey.displayName) to record, release to stop")
+                HowToRow(icon: "keyboard", text: "Press \(appState.toggleHotkey.displayName) to toggle recording")
                 HowToRow(icon: "doc.on.clipboard", text: "Text is typed at your cursor & copied")
             }
             .padding(.top, 10)
@@ -988,33 +1051,51 @@ struct SetupView: View {
     }
 
     private func startTestHotkeyMonitoring() {
-        appState.hotkeyManager.onKeyDown = { [self] in
+        appState.hotkeyManager.onKeyDown = { [self] option in
             DispatchQueue.main.async {
-                switch appState.recordingMode {
-                case .holdToRecord:
+                if option == appState.holdHotkey && option != appState.toggleHotkey {
                     startTestRecording()
-                case .toggleToRecord:
+                } else if option == appState.toggleHotkey && option != appState.holdHotkey {
                     if testPhase == .recording {
                         stopTestRecordingAndTranscribe()
                     } else {
                         startTestRecording()
                     }
+                } else {
+                    // Same key for both — use recordingMode
+                    switch appState.recordingMode {
+                    case .holdToRecord:
+                        startTestRecording()
+                    case .toggleToRecord:
+                        if testPhase == .recording {
+                            stopTestRecordingAndTranscribe()
+                        } else {
+                            startTestRecording()
+                        }
+                    }
                 }
             }
         }
 
-        appState.hotkeyManager.onKeyUp = { [self] in
+        appState.hotkeyManager.onKeyUp = { [self] option in
             DispatchQueue.main.async {
-                switch appState.recordingMode {
-                case .holdToRecord:
+                if option == appState.holdHotkey && option != appState.toggleHotkey {
                     stopTestRecordingAndTranscribe()
-                case .toggleToRecord:
-                    break
+                } else if option == appState.toggleHotkey && option != appState.holdHotkey {
+                    // Toggle key released — no action
+                } else {
+                    switch appState.recordingMode {
+                    case .holdToRecord:
+                        stopTestRecordingAndTranscribe()
+                    case .toggleToRecord:
+                        break
+                    }
                 }
             }
         }
 
-        appState.hotkeyManager.start(option: appState.selectedHotkey)
+        let uniqueKeys = Array(Set([appState.toggleHotkey, appState.holdHotkey]))
+        appState.hotkeyManager.start(options: uniqueKeys)
     }
 
     private func stopTestHotkeyMonitoring() {
@@ -1045,156 +1126,4 @@ struct SetupView: View {
         }
     }
 
-}
-
-struct GitHubRepoInfo: Decodable {
-    let stargazersCount: Int
-
-    private enum CodingKeys: String, CodingKey {
-        case stargazersCount = "stargazers_count"
-    }
-}
-
-struct GitHubStarRecord: Decodable, Identifiable {
-    let user: GitHubStarUser
-
-    var id: Int {
-        user.id
-    }
-}
-
-struct GitHubStarUser: Decodable {
-    let id: Int
-    let login: String
-    let avatarUrl: URL
-    let htmlUrl: URL
-
-    /// Avatar URL resized to 44px (2x for 22pt display) for efficient loading
-    var avatarThumbnailUrl: URL {
-        // GitHub avatar URLs already have query params, so append with &
-        let separator = avatarUrl.absoluteString.contains("?") ? "&" : "?"
-        return URL(string: avatarUrl.absoluteString + "\(separator)s=44")!
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case login
-        case avatarUrl = "avatar_url"
-        case htmlUrl = "html_url"
-    }
-}
-
-@MainActor
-class GitHubMetadataCache: ObservableObject {
-    static let shared = GitHubMetadataCache()
-
-    @Published var starCount: Int?
-    @Published var recentStargazers: [GitHubStarRecord] = []
-    @Published var isLoading = true
-
-    private var lastFetchDate: Date?
-    private let cacheDuration: TimeInterval = 5 * 60 // 5 minutes
-    private let repoAPIURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow")!
-
-    private init() {}
-
-    func fetchIfNeeded() async {
-        if let lastFetch = lastFetchDate, Date().timeIntervalSince(lastFetch) < cacheDuration {
-            return
-        }
-
-        isLoading = true
-
-        do {
-            let repoResult = try await URLSession.shared.data(from: repoAPIURL)
-            guard let repoHTTP = repoResult.1 as? HTTPURLResponse,
-                  (200..<300).contains(repoHTTP.statusCode) else {
-                throw URLError(.badServerResponse)
-            }
-            let count = try JSONDecoder().decode(GitHubRepoInfo.self, from: repoResult.0).stargazersCount
-
-            var recent: [GitHubStarRecord] = []
-            if count > 0 {
-                let perPage = 100
-                let lastPage = max(1, Int(ceil(Double(count) / Double(perPage))))
-                let stargazersURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/stargazers?per_page=\(perPage)&page=\(lastPage)")!
-                var request = URLRequest(url: stargazersURL)
-                request.setValue("application/vnd.github.v3.star+json", forHTTPHeaderField: "Accept")
-                let starredResult = try await URLSession.shared.data(for: request)
-                if let starredHTTP = starredResult.1 as? HTTPURLResponse,
-                   (200..<300).contains(starredHTTP.statusCode) {
-                    let all = try JSONDecoder().decode([GitHubStarRecord].self, from: starredResult.0)
-                    recent = Array(all.suffix(15).reversed())
-                }
-            }
-
-            starCount = count
-            recentStargazers = recent
-            isLoading = false
-            lastFetchDate = Date()
-        } catch {
-            isLoading = false
-        }
-    }
-}
-
-private struct InlineTranscribingDots: View {
-    @State private var activeDot = 0
-    let timer = Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .fill(Color.blue.opacity(activeDot == index ? 1.0 : 0.3))
-                    .frame(width: 12, height: 12)
-                    .scaleEffect(activeDot == index ? 1.3 : 1.0)
-                    .animation(.easeInOut(duration: 0.3), value: activeDot)
-            }
-        }
-        .onReceive(timer) { _ in
-            activeDot = (activeDot + 1) % 3
-        }
-    }
-}
-
-struct HotkeyOptionRow: View {
-    let option: HotkeyOption
-    let isSelected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? .blue : .secondary)
-                Text(option.displayName)
-                    .foregroundStyle(.primary)
-                Spacer()
-            }
-            .padding(12)
-            .background(isSelected ? Color.blue.opacity(0.1) : Color(nsColor: .controlBackgroundColor))
-            .cornerRadius(8)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(isSelected ? Color.blue : Color.clear, lineWidth: 1.5)
-                )
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-struct HowToRow: View {
-    let icon: String
-    let text: String
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .frame(width: 24)
-                .foregroundStyle(.blue)
-            Text(text)
-                .foregroundStyle(.secondary)
-        }
-    }
 }
