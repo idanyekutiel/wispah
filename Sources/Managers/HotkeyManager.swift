@@ -39,18 +39,28 @@ class HotkeyManager {
     private var globalKeyUpMonitor: Any?
     private var localKeyDownMonitor: Any?
     private var localKeyUpMonitor: Any?
-    private var isKeyDown = false
-    private var currentOption: HotkeyOption = .fnKey
+    private var keyDownStates: [HotkeyOption: Bool] = [:]
+    private var monitoredOptions: [HotkeyOption] = []
 
-    var onKeyDown: (() -> Void)?
-    var onKeyUp: (() -> Void)?
+    var onKeyDown: ((HotkeyOption) -> Void)?
+    var onKeyUp: ((HotkeyOption) -> Void)?
+
 
     func start(option: HotkeyOption) {
-        stop()
-        currentOption = option
-        isKeyDown = false
+        start(options: [option])
+    }
 
-        if option.isModifier {
+    func start(options: [HotkeyOption]) {
+        stop()
+        monitoredOptions = options
+        for opt in options {
+            keyDownStates[opt] = false
+        }
+
+        let hasModifier = options.contains(where: { $0.isModifier })
+        let hasRegularKey = options.contains(where: { !$0.isModifier })
+
+        if hasModifier {
             globalFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 self?.handleFlagsChanged(event: event)
             }
@@ -58,8 +68,9 @@ class HotkeyManager {
                 self?.handleFlagsChanged(event: event)
                 return event
             }
-        } else {
-            // For regular keys like F5, monitor keyDown/keyUp
+        }
+
+        if hasRegularKey {
             globalKeyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 self?.handleKeyDown(event: event)
             }
@@ -77,42 +88,49 @@ class HotkeyManager {
         }
     }
 
+    private func matchingOption(for keyCode: UInt16) -> HotkeyOption? {
+        monitoredOptions.first(where: { $0.keyCode == keyCode })
+    }
+
     private func handleFlagsChanged(event: NSEvent) {
-        guard event.keyCode == currentOption.keyCode else { return }
+        for option in monitoredOptions where option.isModifier && event.keyCode == option.keyCode {
+            let flagIsSet: Bool
+            switch option {
+            case .fnKey:
+                flagIsSet = event.modifierFlags.contains(.function)
+            case .rightOption:
+                flagIsSet = event.modifierFlags.contains(.option)
+            default:
+                continue
+            }
 
-        let flagIsSet: Bool
-        switch currentOption {
-        case .fnKey:
-            flagIsSet = event.modifierFlags.contains(.function)
-        case .rightOption:
-            flagIsSet = event.modifierFlags.contains(.option)
-        default:
-            return
-        }
-
-        if flagIsSet && !isKeyDown {
-            isKeyDown = true
-            onKeyDown?()
-        } else if !flagIsSet && isKeyDown {
-            isKeyDown = false
-            onKeyUp?()
+            let wasDown = keyDownStates[option] ?? false
+            if flagIsSet && !wasDown {
+                keyDownStates[option] = true
+                onKeyDown?(option)
+            } else if !flagIsSet && wasDown {
+                keyDownStates[option] = false
+                onKeyUp?(option)
+            }
         }
     }
 
     private func handleKeyDown(event: NSEvent) {
-        guard event.keyCode == currentOption.keyCode else { return }
-        guard !event.isARepeat else { return } // Ignore key repeat
-        if !isKeyDown {
-            isKeyDown = true
-            onKeyDown?()
+        guard let option = matchingOption(for: event.keyCode), !option.isModifier else { return }
+        guard !event.isARepeat else { return }
+        let wasDown = keyDownStates[option] ?? false
+        if !wasDown {
+            keyDownStates[option] = true
+            onKeyDown?(option)
         }
     }
 
     private func handleKeyUp(event: NSEvent) {
-        guard event.keyCode == currentOption.keyCode else { return }
-        if isKeyDown {
-            isKeyDown = false
-            onKeyUp?()
+        guard let option = matchingOption(for: event.keyCode), !option.isModifier else { return }
+        let wasDown = keyDownStates[option] ?? false
+        if wasDown {
+            keyDownStates[option] = false
+            onKeyUp?(option)
         }
     }
 
@@ -129,7 +147,8 @@ class HotkeyManager {
         globalKeyUpMonitor = nil
         localKeyDownMonitor = nil
         localKeyUpMonitor = nil
-        isKeyDown = false
+        keyDownStates.removeAll()
+        monitoredOptions.removeAll()
     }
 
     deinit {

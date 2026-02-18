@@ -4,11 +4,14 @@ import AVFoundation
 class TranscriptionService {
     private let apiKey: String
     private let baseURL = "https://api.groq.com/openai/v1"
-    private let transcriptionModel = "whisper-large-v3"
+    private let transcriptionModel: String
+    private let transcriptionLanguage: String?
     private let minimumTimeoutSeconds: TimeInterval = 30
 
-    init(apiKey: String) {
+    init(apiKey: String, model: String = "whisper-large-v3", language: String? = nil) {
         self.apiKey = apiKey
+        self.transcriptionModel = model
+        self.transcriptionLanguage = language
     }
 
     /// Timeout: 30s base, plus 2s per second of audio beyond 10s
@@ -82,7 +85,8 @@ class TranscriptionService {
             audioData: audioData,
             fileName: fileURL.lastPathComponent,
             model: transcriptionModel,
-            boundary: boundary
+            boundary: boundary,
+            language: transcriptionLanguage
         )
         request.httpBody = body
 
@@ -104,7 +108,7 @@ class TranscriptionService {
         return try parseTranscript(from: data)
     }
 
-    private func makeMultipartBody(audioData: Data, fileName: String, model: String, boundary: String) -> Data {
+    private func makeMultipartBody(audioData: Data, fileName: String, model: String, boundary: String, language: String? = nil) -> Data {
         var body = Data()
 
         func append(_ value: String) {
@@ -114,6 +118,12 @@ class TranscriptionService {
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(model)\r\n")
+
+        if let language, !language.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            append("\(language)\r\n")
+        }
 
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\r\n")

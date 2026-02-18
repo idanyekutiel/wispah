@@ -8,7 +8,7 @@ DEV_CODESIGN_IDENTITY ?= -
 CONTENTS = $(APP_BUNDLE)/Contents
 MACOS_DIR = $(CONTENTS)/MacOS
 
-SOURCES = $(wildcard Sources/*.swift)
+SOURCES = $(shell find Sources -name '*.swift')
 RESOURCES = $(CONTENTS)/Resources
 ARCH ?= $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png

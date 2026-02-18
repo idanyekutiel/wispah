@@ -28,6 +28,47 @@ final class PostProcessingService {
     private let defaultModel = "meta-llama/llama-4-scout-17b-16e-instruct"
     private let postProcessingTimeoutSeconds: TimeInterval = 20
 
+    static let appContextHints: [String: String] = [
+        // Terminals
+        "com.mitchellh.ghostty": "User is in a terminal (Ghostty). They are likely running commands, writing scripts, or interacting with CLI tools. Expect technical/developer language.",
+        "com.apple.Terminal": "User is in Terminal. Expect command-line language, file paths, technical terms.",
+        "com.googlecode.iterm2": "User is in iTerm2 terminal. Expect developer/CLI language.",
+        "net.kovidgoyal.kitty": "User is in Kitty terminal. Expect developer/CLI language.",
+        "com.warp.terminal": "User is in Warp terminal. Expect developer/CLI language.",
+        // Code editors
+        "com.todesktop.230313mzl4w4u92": "User is in Cursor (AI code editor). They are likely writing or discussing code. Expect programming terms, variable names, file paths.",
+        "com.microsoft.VSCode": "User is in VS Code. They are likely coding. Expect programming language, variable names, function names.",
+        "dev.zed.Zed": "User is in Zed editor. They are likely coding.",
+        "com.jetbrains.intellij": "User is in IntelliJ IDEA. They are likely writing Java/Kotlin code.",
+        "com.sublimetext.4": "User is in Sublime Text. They are likely editing code or text files.",
+        "com.codeium.windsurf": "User is in Windsurf (AI code editor). They are likely writing or discussing code.",
+        // Browsers
+        "com.apple.Safari": "User is in Safari browser. They may be researching, writing web content, or filling forms.",
+        "com.google.Chrome": "User is in Chrome browser. They may be researching, writing web content, or filling forms.",
+        "org.mozilla.firefox": "User is in Firefox browser. They may be researching, writing, or filling forms.",
+        "company.thebrowser.Browser": "User is in Arc browser. They may be researching, writing, or filling forms.",
+        // Communication
+        "com.apple.MobileSMS": "User is in Messages. They are writing a text message — keep tone casual and conversational.",
+        "com.tinyspeck.slackmacgap": "User is in Slack. They are writing a work message — professional but conversational tone.",
+        "com.hnc.Discord": "User is in Discord. They are writing a chat message — casual tone.",
+        "WhatsApp": "User is in WhatsApp. They are writing a message — casual, conversational tone.",
+        "com.readdle.smartemail.macos": "User is in Spark email. They are composing an email — semi-formal tone.",
+        // Email
+        "com.google.Gmail": "User is composing an email in Gmail. Use professional email tone.",
+        "com.apple.mail": "User is in Apple Mail composing an email. Use professional email tone.",
+        // Productivity
+        "com.apple.Notes": "User is in Apple Notes. They are taking notes — preserve structure, lists, and quick thoughts.",
+        "md.obsidian": "User is in Obsidian. They are writing notes, likely in Markdown format. Preserve structure.",
+        "com.notion.Notion": "User is in Notion. They are writing documents or notes. Preserve structure and formatting.",
+        "com.apple.iWork.Pages": "User is in Pages. They are writing a document — proper prose formatting.",
+        "com.microsoft.Word": "User is in Microsoft Word. They are writing a document.",
+        // Design
+        "com.figma.Desktop": "User is in Figma. They may be discussing design, UI elements, components, or leaving comments.",
+        // Misc
+        "com.apple.finder": "User is in Finder. They may be discussing files, folders, or file management.",
+        "com.apple.systempreferences": "User is in System Settings. They may be describing settings or configurations.",
+    ]
+
     init(apiKey: String) {
         self.apiKey = apiKey
     }
@@ -35,9 +76,12 @@ final class PostProcessingService {
     func postProcess(
         transcript: String,
         context: AppContext,
-        customVocabulary: String
+        customVocabulary: String,
+        smartFormatting: Bool = true,
+        developerMode: Bool = false
     ) async throws -> PostProcessingResult {
         let vocabularyTerms = mergedVocabularyTerms(rawVocabulary: customVocabulary)
+        let appHint = Self.appContextHints[context.bundleIdentifier ?? ""] ?? ""
 
         let timeoutSeconds = postProcessingTimeoutSeconds
         return try await withThrowingTaskGroup(of: PostProcessingResult.self) { group in
@@ -49,7 +93,10 @@ final class PostProcessingService {
                     transcript: transcript,
                     contextSummary: context.contextSummary,
                     model: defaultModel,
-                    customVocabulary: vocabularyTerms
+                    customVocabulary: vocabularyTerms,
+                    smartFormatting: smartFormatting,
+                    developerMode: developerMode,
+                    appHint: appHint
                 )
             }
 
@@ -75,7 +122,10 @@ final class PostProcessingService {
         transcript: String,
         contextSummary: String,
         model: String,
-        customVocabulary: [String]
+        customVocabulary: [String],
+        smartFormatting: Bool,
+        developerMode: Bool,
+        appHint: String
     ) async throws -> PostProcessingResult {
         var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
         request.httpMethod = "POST"
@@ -114,10 +164,38 @@ Output rules:
             systemPrompt += "\n\n" + vocabularyPrompt
         }
 
+        if smartFormatting {
+            systemPrompt += """
+
+\nFormatting rules:
+- Detect when the speaker is listing items (e.g. "first... second... third...", "one... two...", "number one... number two...") and format as a numbered list.
+- Detect bullet-point-style lists (e.g. "also... and another thing... plus...") and format as bullet points with "- " prefix.
+- When the speaker dictates multiple distinct thoughts or topics, separate them into paragraphs.
+- Preserve inline formatting cues: if the speaker says "in quotes" or "quote... unquote", wrap that text in quotation marks.
+- If the speaker says "new line" or "new paragraph", insert the appropriate line break.
+- Do not over-format — only apply formatting when the speaker's intent is clearly structural.
+"""
+        }
+
+        if developerMode {
+            systemPrompt += """
+
+\nDeveloper context rules:
+- Recognize programming terms and format them correctly: variable names in camelCase or snake_case as appropriate for the context, class names in PascalCase, constants in UPPER_SNAKE_CASE.
+- When the speaker spells out or sounds out a technical term (e.g. "J S O N" → "JSON", "A P I" → "API", "U R L" → "URL"), combine them.
+- Recognize common programming keywords and format them as code-adjacent text: function names, method calls, file paths, terminal commands.
+- When the speaker is clearly dictating code or pseudocode, preserve the logical structure rather than converting to prose.
+- Prefer technical/programming interpretations of ambiguous words when the screen context suggests a coding environment.
+- Common developer abbreviations: "repo" → repository context, "PR" → pull request, "env" → environment, "config" → configuration, "deps" → dependencies, "impl" → implementation.
+"""
+        }
+
+        let appHintContext = appHint.isEmpty ? "" : "\nApp context: \(appHint)"
+
         let userMessage = """
 Instructions: Clean up this RAW_TRANSCRIPTION. Return EMPTY if there should be no result.
 
-CONTEXT: "\(contextSummary)"
+CONTEXT: "\(contextSummary)"\(appHintContext)
 
 RAW_TRANSCRIPTION: "\(transcript)"
 """

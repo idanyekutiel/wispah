@@ -3,93 +3,6 @@ import CoreAudio
 import Foundation
 import os.log
 
-private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
-
-struct AudioDevice: Identifiable {
-    let id: AudioDeviceID
-    let uid: String
-    let name: String
-
-    static func availableInputDevices() -> [AudioDevice] {
-        var propertyAddress = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDevices,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-
-        var dataSize: UInt32 = 0
-        var status = AudioObjectGetPropertyDataSize(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0, nil,
-            &dataSize
-        )
-        guard status == noErr, dataSize > 0 else { return [] }
-
-        let deviceCount = Int(dataSize) / MemoryLayout<AudioDeviceID>.size
-        var deviceIDs = [AudioDeviceID](repeating: 0, count: deviceCount)
-        status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
-            0, nil,
-            &dataSize,
-            &deviceIDs
-        )
-        guard status == noErr else { return [] }
-
-        var devices: [AudioDevice] = []
-        for deviceID in deviceIDs {
-            // Check if device has input streams
-            var inputStreamAddress = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyStreamConfiguration,
-                mScope: kAudioDevicePropertyScopeInput,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var streamSize: UInt32 = 0
-            guard AudioObjectGetPropertyDataSize(deviceID, &inputStreamAddress, 0, nil, &streamSize) == noErr,
-                  streamSize > 0 else { continue }
-
-            let bufferListPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
-            defer { bufferListPointer.deallocate() }
-            guard AudioObjectGetPropertyData(deviceID, &inputStreamAddress, 0, nil, &streamSize, bufferListPointer) == noErr else { continue }
-
-            let bufferList = UnsafeMutableAudioBufferListPointer(bufferListPointer)
-            let inputChannels = bufferList.reduce(0) { $0 + Int($1.mNumberChannels) }
-            guard inputChannels > 0 else { continue }
-
-            // Get device UID
-            var uidAddress = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyDeviceUID,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var uidRef: Unmanaged<CFString>?
-            var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            guard AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, &uidRef) == noErr,
-                  let uid = uidRef?.takeUnretainedValue() as String? else { continue }
-
-            // Get device name
-            var nameAddress = AudioObjectPropertyAddress(
-                mSelector: kAudioObjectPropertyName,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var nameRef: Unmanaged<CFString>?
-            var nameSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            guard AudioObjectGetPropertyData(deviceID, &nameAddress, 0, nil, &nameSize, &nameRef) == noErr,
-                  let name = nameRef?.takeUnretainedValue() as String? else { continue }
-
-            devices.append(AudioDevice(id: deviceID, uid: uid, name: name))
-        }
-        return devices
-    }
-
-    static func deviceID(forUID uid: String) -> AudioDeviceID? {
-        // Look up through the enumerated devices to avoid CFString pointer issues
-        return availableInputDevices().first(where: { $0.uid == uid })?.id
-    }
-}
-
 enum AudioRecorderError: LocalizedError {
     case invalidInputFormat(String)
     case missingInputDevice
@@ -325,8 +238,12 @@ class AudioRecorder: NSObject, ObservableObject {
 
         let rms = sqrtf(sumOfSquares / Float(frames))
 
-        // Scale RMS (~0.01-0.1 for speech) to 0-1 range
-        let scaled = min(rms * 10.0, 1.0)
+        // Logarithmic scaling for better sensitivity to normal speech levels
+        // dB range: -50 (near-silence) to -10 (loud speech)
+        let db = 20 * log10f(max(rms, 1e-6))
+        let minDb: Float = -50
+        let maxDb: Float = -10
+        let scaled = max(0, min(1, (db - minDb) / (maxDb - minDb)))
 
         // Fast attack, slower release — follows speech dynamics closely
         if scaled > smoothedLevel {

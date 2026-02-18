@@ -65,9 +65,10 @@ struct MenuBarView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 6)
             } else {
-                Text(appState.recordingMode == .holdToRecord
-                     ? "Hold \(appState.selectedHotkey.displayName) to dictate"
-                     : "Press \(appState.selectedHotkey.displayName) to dictate")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hold \(appState.holdHotkey.displayName) to dictate")
+                    Text("Press \(appState.toggleHotkey.displayName) to toggle")
+                }
                     .foregroundStyle(.secondary)
                     .font(.caption)
                     .padding(.horizontal, 16)
@@ -109,13 +110,35 @@ struct MenuBarView: View {
 
             Divider()
 
-            // Hotkey picker
-            Menu("Recording Key") {
+            // Hotkey pickers
+            Menu("Toggle Key") {
                 ForEach(HotkeyOption.allCases) { option in
                     Button {
-                        appState.selectedHotkey = option
+                        let old = appState.toggleHotkey
+                        if option == appState.holdHotkey {
+                            appState.holdHotkey = old
+                        }
+                        appState.toggleHotkey = option
                     } label: {
-                        if appState.selectedHotkey == option {
+                        if appState.toggleHotkey == option {
+                            Text("✓ \(option.displayName)")
+                        } else {
+                            Text("  \(option.displayName)")
+                        }
+                    }
+                }
+            }
+
+            Menu("Hold Key") {
+                ForEach(HotkeyOption.allCases) { option in
+                    Button {
+                        let old = appState.holdHotkey
+                        if option == appState.toggleHotkey {
+                            appState.toggleHotkey = old
+                        }
+                        appState.holdHotkey = option
+                    } label: {
+                        if appState.holdHotkey == option {
                             Text("✓ \(option.displayName)")
                         } else {
                             Text("  \(option.displayName)")
