@@ -134,6 +134,10 @@ The framework is pre-built and bundled in `Resources/MediaRemoteAdapter/`.
 
 </details>
 
+## Roadmap
+
+- [ ] Local model support — run transcription and post-processing on-device instead of requiring Groq
+
 ## Privacy
 
 No servers, no accounts, no tracking. The only network calls are to Groq's API for transcription and context processing. Audio is processed and discarded — nothing is stored or retained externally.
