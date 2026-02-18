@@ -171,7 +171,7 @@ Date-based versioning: `YYYY.MM.DD` (e.g., `2026.02.19`). Multiple same-day rele
 Builds universal binary. Uses Developer ID signing when secrets exist, falls back to ad-hoc for fork PRs. Uploads DMG as artifact.
 
 ### release.yml (on tag push `v*`)
-Triggered by pushing a version tag (e.g., `v2026.02.19`). Always creates a GitHub Release with DMG. When signing secrets exist: Developer ID signed + Apple notarized. Without secrets: ad-hoc signed (users get Gatekeeper "unidentified developer" prompt, bypassed with right-click > Open).
+Triggered by pushing a version tag (e.g., `v2026.02.19`). Creates a GitHub Release titled "Wispah Flow Version {version}" with DMG. Release notes are auto-generated from commit messages since the previous tag. When signing secrets exist: Developer ID signed + Apple notarized. Without secrets: ad-hoc signed (users get Gatekeeper "unidentified developer" prompt, bypassed with right-click > Open).
 
 Optional secrets for signing: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
 
