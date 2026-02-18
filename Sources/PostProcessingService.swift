@@ -105,6 +105,7 @@ Your job:
 
 Output rules:
 - Return ONLY the cleaned transcript text, nothing else.
+- NEVER add preambles like "Here's the cleaned-up transcription:" or "Sure, here is..." or any commentary. Output the transcript text directly with zero additional words.
 - If the transcription is empty, return exactly: EMPTY
 - Do not add words, names, or content that are not in the transcription. The context is only for correcting spelling of words already spoken.
 - Do not change the meaning of what was said.
@@ -172,6 +173,21 @@ Model: \(model)
         )
     }
 
+    private static let preamblePatterns: [String] = [
+        "here's the cleaned-up transcription:",
+        "here's the cleaned up transcription:",
+        "here is the cleaned-up transcription:",
+        "here is the cleaned up transcription:",
+        "here's the cleaned transcription:",
+        "here is the cleaned transcription:",
+        "here's the transcription:",
+        "here is the transcription:",
+        "cleaned-up transcription:",
+        "cleaned up transcription:",
+        "sure, here",
+        "sure! here",
+    ]
+
     private func sanitizePostProcessedTranscript(_ value: String) -> String {
         var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { return "" }
@@ -181,6 +197,16 @@ Model: \(model)
             result.removeFirst()
             result.removeLast()
             result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        // Strip LLM preambles like "Here's the cleaned-up transcription:"
+        let lowered = result.lowercased()
+        for pattern in Self.preamblePatterns {
+            if lowered.hasPrefix(pattern) {
+                result = String(result.dropFirst(pattern.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                break
+            }
         }
 
         // Treat the sentinel value as empty

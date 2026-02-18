@@ -18,7 +18,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            if !appState.hasScreenRecordingPermission {
+            if appState.screenRecordingEnabled && !appState.hasScreenRecordingPermission {
                 Button {
                     appState.requestScreenCapturePermission()
                 } label: {
@@ -65,7 +65,9 @@ struct MenuBarView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 6)
             } else {
-                Text("Hold \(appState.selectedHotkey.displayName) to dictate")
+                Text(appState.recordingMode == .holdToRecord
+                     ? "Hold \(appState.selectedHotkey.displayName) to dictate"
+                     : "Press \(appState.selectedHotkey.displayName) to dictate")
                     .foregroundStyle(.secondary)
                     .font(.caption)
                     .padding(.horizontal, 16)
@@ -91,12 +93,13 @@ struct MenuBarView: View {
 
             if !appState.lastTranscript.isEmpty && !appState.isRecording && !appState.isTranscribing {
                 Divider()
-                Text(appState.lastTranscript)
+                Text(appState.lastTranscript.count > 40
+                     ? String(appState.lastTranscript.prefix(40)) + "..."
+                     : appState.lastTranscript)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
-                    .lineLimit(4)
-                    .frame(maxWidth: 280, alignment: .leading)
+                    .lineLimit(1)
 
                 Button("Copy Again") {
                     NSPasteboard.general.clearContents()
@@ -107,7 +110,7 @@ struct MenuBarView: View {
             Divider()
 
             // Hotkey picker
-            Menu("Push-to-Talk Key") {
+            Menu("Recording Key") {
                 ForEach(HotkeyOption.allCases) { option in
                     Button {
                         appState.selectedHotkey = option

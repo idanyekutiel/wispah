@@ -1,13 +1,28 @@
 import Foundation
+import AVFoundation
 
 class TranscriptionService {
     private let apiKey: String
     private let baseURL = "https://api.groq.com/openai/v1"
     private let transcriptionModel = "whisper-large-v3"
-    private let transcriptionTimeoutSeconds: TimeInterval = 20
+    private let minimumTimeoutSeconds: TimeInterval = 30
 
     init(apiKey: String) {
         self.apiKey = apiKey
+    }
+
+    /// Timeout: 30s base, plus 2s per second of audio beyond 10s
+    private func timeoutForFile(_ fileURL: URL) async -> TimeInterval {
+        let asset = AVURLAsset(url: fileURL)
+        do {
+            let duration = try await asset.load(.duration)
+            let durationSeconds = CMTimeGetSeconds(duration)
+            if durationSeconds.isFinite && durationSeconds > 0 {
+                let extraSeconds = max(0, durationSeconds - 10)
+                return max(minimumTimeoutSeconds, 30 + extraSeconds * 2)
+            }
+        } catch {}
+        return 120
     }
 
     // Validate API key by hitting a lightweight endpoint
@@ -29,7 +44,8 @@ class TranscriptionService {
 
     // Upload audio file, submit for transcription, poll until done, return text
     func transcribe(fileURL: URL) async throws -> String {
-        try await withThrowingTaskGroup(of: String.self) { group in
+        let timeout = await timeoutForFile(fileURL)
+        return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask { [weak self] in
                 guard let self else {
                     throw TranscriptionError.submissionFailed("Service deallocated")
@@ -38,8 +54,8 @@ class TranscriptionService {
             }
 
             group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(self.transcriptionTimeoutSeconds * 1_000_000_000))
-                throw TranscriptionError.transcriptionTimedOut(self.transcriptionTimeoutSeconds)
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                throw TranscriptionError.transcriptionTimedOut(timeout)
             }
 
             guard let result = try await group.next() else {
@@ -55,8 +71,8 @@ class TranscriptionService {
         let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
+        request.timeoutInterval = 300
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let boundary = UUID().uuidString
         let contentType = "multipart/form-data; boundary=\(boundary)"
         request.setValue(contentType, forHTTPHeaderField: "Content-Type")
@@ -70,7 +86,11 @@ class TranscriptionService {
         )
         request.httpBody = body
 
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300
+        config.timeoutIntervalForResource = 600
+        let session = URLSession(configuration: config)
+        let (data, response) = try await session.upload(for: request, from: body)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TranscriptionError.submissionFailed("No response from server")
