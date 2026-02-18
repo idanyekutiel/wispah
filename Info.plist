@@ -2,31 +2,31 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key>
-    <string>Wispah</string>
-    <key>CFBundleDisplayName</key>
-    <string>Wispah Flow</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.idanyekutiel.wispah</string>
-    <key>CFBundleVersion</key>
-    <string>0.1.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleExecutable</key>
-    <string>Wispah</string>
-    <key>CFBundleIconFile</key>
-    <string>AppIcon</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
-    <key>LSUIElement</key>
-    <true/>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>Wispah Flow needs microphone access to transcribe your speech.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Wispah Flow needs speech recognition to convert your voice to text.</string>
-    <key>NSAccessibilityUsageDescription</key>
-    <string>Wispah Flow needs accessibility access to detect the text cursor position and paste transcribed text.</string>
+	<key>CFBundleDisplayName</key>
+	<string>Wispah Flow</string>
+	<key>CFBundleExecutable</key>
+	<string>Wispah</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.idanyekutiel.wispah</string>
+	<key>CFBundleName</key>
+	<string>Wispah</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>2026.02.19</string>
+	<key>CFBundleVersion</key>
+	<string>2026.02.19</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAccessibilityUsageDescription</key>
+	<string>Wispah Flow needs accessibility access to detect the text cursor position and paste transcribed text.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Wispah Flow needs microphone access to transcribe your speech.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Wispah Flow needs speech recognition to convert your voice to text.</string>
 </dict>
 </plist>
