@@ -609,8 +609,13 @@ struct RunLogView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Run Log")
-                    .font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Run Log")
+                        .font(.headline)
+                    Text("Stored locally. Only the \(appState.maxPipelineHistoryCount) most recent runs are kept.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
                 Spacer()
                 Button("Clear History") {
                     appState.clearPipelineHistory()

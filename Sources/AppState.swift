@@ -36,7 +36,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let customVocabularyStorageKey = "custom_vocabulary"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
-    private let maxPipelineHistoryCount = 20
+    let maxPipelineHistoryCount = 20
 
     @Published var hasCompletedSetup: Bool {
         didSet {
