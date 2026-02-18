@@ -125,7 +125,7 @@ Dual hotkey support: separate "toggle" key (press to start/stop) and "hold" key 
 Uses [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) — runs `/usr/bin/perl` (which has `com.apple.perl` bundle ID) to load a compiled Obj-C framework that calls MediaRemote APIs. Needed because Apple blocks third-party bundle IDs from accessing `mediaremoted`. Framework + Perl script bundled in `Resources/MediaRemoteAdapter/`.
 
 ### Auto-Update
-`UpdateManager` checks GitHub Releases API (`idanyekutiel/wispah`). Compares `WispahBuildTag` from Info.plist against latest release tag. Downloads DMG → mounts → copies .app → relaunches.
+`UpdateManager` checks GitHub Releases API (`idanyekutiel/wispah`). Compares `WispahBuildTag` from Info.plist against latest release tag using numeric version comparison. Downloads DMG → mounts → copies .app → relaunches. 3-day stability buffer for auto-checks (skips very recent releases).
 
 ### CoreData
 `PipelineHistoryStore` uses a programmatic `NSManagedObjectModel` (no .xcdatamodeld file). SQLite at `~/Library/Application Support/Wispah/PipelineHistory.sqlite`. Stores transcription entries with raw/processed text, context, audio file reference, recording duration.
@@ -148,15 +148,32 @@ Uses [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) — ru
 | Accessibility | Paste at cursor, window title detection | `AXIsProcessTrustedWithOptions` |
 | Screen Recording | Screenshot for context | `SCShareableContent` / `CGPreflightScreenCaptureAccess` |
 
+## Versioning & Releases
+
+Date-based versioning: `YYYY.MM.DD` (e.g., `2026.02.19`). Multiple same-day releases: `2026.02.19.2`, `2026.02.19.3`, etc.
+
+**Release process** (use `/release` skill or just ask):
+1. Ensure clean working tree
+2. Determine version from today's date (check existing tags for same-day conflicts)
+3. Update `CFBundleShortVersionString` + `CFBundleVersion` in Info.plist
+4. Commit, tag `v{version}`, push commit + tag
+5. Tag push triggers release workflow automatically
+
+**Version in builds:**
+- Release builds: `WispahBuildTag` injected into Info.plist by release workflow (date version string)
+- Dev builds: no `WispahBuildTag` — UpdateManager skips auto-checks, allows manual checks
+
+**UpdateManager** compares versions numerically (dot-separated segments). `2026.02.20` > `2026.02.19.2` > `2026.02.19`.
+
 ## CI/CD
 
 ### build.yml (on push + PR)
 Builds universal binary. Uses Developer ID signing when secrets exist, falls back to ad-hoc for fork PRs. Uploads DMG as artifact.
 
-### release.yml (on push to main)
-Only runs when `DEVELOPER_ID_CERTIFICATE_BASE64` secret is set. Builds, signs, notarizes with Apple, creates GitHub Release with DMG. Tag format: `build-YYYYMMDD-HHMMSS-SHORT_SHA`.
+### release.yml (on tag push `v*`)
+Triggered by pushing a version tag (e.g., `v2026.02.19`). Always creates a GitHub Release with DMG. When signing secrets exist: Developer ID signed + Apple notarized. Without secrets: ad-hoc signed (users get Gatekeeper "unidentified developer" prompt, bypassed with right-click > Open).
 
-Required secrets: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
+Optional secrets for signing: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
 
 ## Development Guidelines
 
