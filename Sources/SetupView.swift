@@ -44,6 +44,7 @@ struct SetupView: View {
     @State private var testError: String? = nil
     @State private var testAudioLevelCancellable: AnyCancellable? = nil
     @State private var testMicPulsing = false
+    @State private var testRecordingStartTime: Date? = nil
 
     private let totalSteps: [SetupStep] = SetupStep.allCases
 
@@ -121,6 +122,17 @@ struct SetupView: View {
                         .keyboardShortcut(.defaultAction)
                         .disabled(testPhase != .done || testTranscript.isEmpty || testError != nil)
                     } else {
+                        if currentStep == .screenRecording && !appState.hasScreenRecordingPermission && appState.screenRecordingEnabled {
+                            Button("Skip") {
+                                appState.screenRecordingEnabled = false
+                                withAnimation {
+                                    currentStep = nextStep(currentStep)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                        }
+
                         Button("Continue") {
                             withAnimation {
                                 currentStep = nextStep(currentStep)
@@ -138,7 +150,7 @@ struct SetupView: View {
             }
             .padding(20)
         }
-        .frame(width: 520, height: 520)
+        .frame(width: 520, height: 580)
         .onAppear {
             apiKeyInput = appState.apiKey
             customVocabularyInput = appState.customVocabulary
@@ -444,6 +456,7 @@ struct SetupView: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
 
+
             HStack {
                 Image(systemName: "camera.viewfinder")
                     .frame(width: 24)
@@ -455,6 +468,11 @@ struct SetupView: View {
                         .foregroundStyle(.green)
                     Text("Granted")
                         .foregroundStyle(.green)
+                } else if !appState.screenRecordingEnabled {
+                    Image(systemName: "minus.circle.fill")
+                        .foregroundStyle(.secondary)
+                    Text("Skipped")
+                        .foregroundStyle(.secondary)
                 } else {
                     Button("Grant Access") {
                         appState.requestScreenCapturePermission()
@@ -481,14 +499,17 @@ struct SetupView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("Push-to-Talk Key")
+            Text("Recording Key")
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Choose which key to hold while speaking.\nPress and hold to record, release to transcribe.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Picker("Recording Mode", selection: $appState.recordingMode) {
+                ForEach(RecordingMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 300)
 
             VStack(spacing: 8) {
                 ForEach(HotkeyOption.allCases) { option in
@@ -501,7 +522,6 @@ struct SetupView: View {
                     )
                 }
             }
-            .padding(.top, 10)
 
             if appState.selectedHotkey == .fnKey {
                 Text("Tip: If Fn opens Emoji picker, go to\nSystem Settings > Keyboard and change\n\"Press fn key to\" to \"Do Nothing\".")
@@ -612,7 +632,9 @@ struct SetupView: View {
                             .font(.title)
                             .fontWeight(.bold)
 
-                        Text("Hold **\(appState.selectedHotkey.displayName)**")
+                        Text(appState.recordingMode == .holdToRecord
+                             ? "Hold **\(appState.selectedHotkey.displayName)**"
+                             : "Press **\(appState.selectedHotkey.displayName)**")
                             .font(.headline)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
@@ -671,7 +693,9 @@ struct SetupView: View {
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
 
-                            Text("Hold **\(appState.selectedHotkey.displayName)** to try again")
+                            Text(appState.recordingMode == .holdToRecord
+                             ? "Hold **\(appState.selectedHotkey.displayName)** to try again"
+                             : "Press **\(appState.selectedHotkey.displayName)** to try again")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else if testTranscript.isEmpty {
@@ -680,7 +704,9 @@ struct SetupView: View {
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.secondary)
 
-                            Text("Hold **\(appState.selectedHotkey.displayName)** to try again")
+                            Text(appState.recordingMode == .holdToRecord
+                             ? "Hold **\(appState.selectedHotkey.displayName)** to try again"
+                             : "Press **\(appState.selectedHotkey.displayName)** to try again")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
@@ -696,7 +722,9 @@ struct SetupView: View {
                                 .cornerRadius(10)
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
 
-                            Text("Hold **\(appState.selectedHotkey.displayName)** to try again")
+                            Text(appState.recordingMode == .holdToRecord
+                             ? "Hold **\(appState.selectedHotkey.displayName)** to try again"
+                             : "Press **\(appState.selectedHotkey.displayName)** to try again")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
@@ -734,8 +762,13 @@ struct SetupView: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 12) {
-                HowToRow(icon: "keyboard", text: "Hold \(appState.selectedHotkey.displayName) to record")
-                HowToRow(icon: "hand.raised", text: "Release to stop and transcribe")
+                if appState.recordingMode == .holdToRecord {
+                    HowToRow(icon: "keyboard", text: "Hold \(appState.selectedHotkey.displayName) to record")
+                    HowToRow(icon: "hand.raised", text: "Release to stop and transcribe")
+                } else {
+                    HowToRow(icon: "keyboard", text: "Press \(appState.selectedHotkey.displayName) to start recording")
+                    HowToRow(icon: "keyboard", text: "Press again to stop and transcribe")
+                }
                 HowToRow(icon: "doc.on.clipboard", text: "Text is typed at your cursor & copied")
             }
             .padding(.top, 10)
@@ -762,7 +795,7 @@ struct SetupView: View {
         case .accessibility:
             return accessibilityGranted
         case .screenRecording:
-            return appState.hasScreenRecordingPermission
+            return appState.hasScreenRecordingPermission || !appState.screenRecordingEnabled
         case .testTranscription:
             return testPhase == .done && !testTranscript.isEmpty && testError == nil
         default:
@@ -870,29 +903,101 @@ struct SetupView: View {
 
     // MARK: - Test Transcription
 
+    private let minimumRecordingDuration: TimeInterval = 0.5
+
+    private func startTestRecording() {
+        guard testPhase == .idle || testPhase == .done else { return }
+        if testPhase == .done {
+            resetTest()
+        }
+        do {
+            let recorder = AudioRecorder()
+            try recorder.startRecording(deviceUID: appState.selectedMicrophoneID)
+            testAudioRecorder = recorder
+            testRecordingStartTime = Date()
+            testAudioLevelCancellable = recorder.$audioLevel
+                .receive(on: DispatchQueue.main)
+                .sink { level in
+                    testAudioLevel = level
+                }
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                testPhase = .recording
+            }
+        } catch {
+            testError = error.localizedDescription
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                testPhase = .done
+            }
+        }
+    }
+
+    private func stopTestRecordingAndTranscribe() {
+        guard testPhase == .recording, let recorder = testAudioRecorder else { return }
+
+        // Ignore recordings that are too short
+        if let startTime = testRecordingStartTime,
+           Date().timeIntervalSince(startTime) < minimumRecordingDuration {
+            _ = recorder.stopRecording()
+            recorder.cleanup()
+            testAudioLevelCancellable?.cancel()
+            testAudioLevelCancellable = nil
+            testAudioLevel = 0.0
+            testRecordingStartTime = nil
+            resetTest()
+            return
+        }
+
+        let fileURL = recorder.stopRecording()
+        testAudioLevelCancellable?.cancel()
+        testAudioLevelCancellable = nil
+        testAudioLevel = 0.0
+        testRecordingStartTime = nil
+
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+            testPhase = .transcribing
+        }
+
+        guard let url = fileURL else {
+            testError = "No audio file was created."
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                testPhase = .done
+            }
+            return
+        }
+
+        Task {
+            do {
+                let service = TranscriptionService(apiKey: appState.apiKey)
+                let transcript = try await service.transcribe(fileURL: url)
+                await MainActor.run {
+                    testTranscript = transcript
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                        testPhase = .done
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    testError = error.localizedDescription
+                    withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                        testPhase = .done
+                    }
+                }
+            }
+            recorder.cleanup()
+        }
+    }
+
     private func startTestHotkeyMonitoring() {
         appState.hotkeyManager.onKeyDown = { [self] in
             DispatchQueue.main.async {
-                guard testPhase == .idle || testPhase == .done else { return }
-                if testPhase == .done {
-                    resetTest()
-                }
-                do {
-                    let recorder = AudioRecorder()
-                    try recorder.startRecording(deviceUID: appState.selectedMicrophoneID)
-                    testAudioRecorder = recorder
-                    testAudioLevelCancellable = recorder.$audioLevel
-                        .receive(on: DispatchQueue.main)
-                        .sink { level in
-                            testAudioLevel = level
-                        }
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        testPhase = .recording
-                    }
-                } catch {
-                    testError = error.localizedDescription
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        testPhase = .done
+                switch appState.recordingMode {
+                case .holdToRecord:
+                    startTestRecording()
+                case .toggleToRecord:
+                    if testPhase == .recording {
+                        stopTestRecordingAndTranscribe()
+                    } else {
+                        startTestRecording()
                     }
                 }
             }
@@ -900,44 +1005,11 @@ struct SetupView: View {
 
         appState.hotkeyManager.onKeyUp = { [self] in
             DispatchQueue.main.async {
-                guard testPhase == .recording, let recorder = testAudioRecorder else { return }
-                let fileURL = recorder.stopRecording()
-                testAudioLevelCancellable?.cancel()
-                testAudioLevelCancellable = nil
-                testAudioLevel = 0.0
-
-                withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                    testPhase = .transcribing
-                }
-
-                guard let url = fileURL else {
-                    testError = "No audio file was created."
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        testPhase = .done
-                    }
-                    return
-                }
-
-                Task {
-                    do {
-                        let service = TranscriptionService(apiKey: appState.apiKey)
-                        let transcript = try await service.transcribe(fileURL: url)
-                        await MainActor.run {
-                            testTranscript = transcript
-                            withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
-                                testPhase = .done
-                            }
-                        }
-                    } catch {
-                        await MainActor.run {
-                            testError = error.localizedDescription
-                            withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
-                                testPhase = .done
-                            }
-                        }
-                    }
-                    // Clean up temp file
-                    recorder.cleanup()
+                switch appState.recordingMode {
+                case .holdToRecord:
+                    stopTestRecordingAndTranscribe()
+                case .toggleToRecord:
+                    break
                 }
             }
         }

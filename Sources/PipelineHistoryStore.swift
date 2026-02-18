@@ -64,6 +64,24 @@ final class PipelineHistoryStore {
         return audioFileName
     }
 
+    func update(_ item: PipelineHistoryItem) throws {
+        let request = pipelineHistoryRequest()
+        request.predicate = NSPredicate(format: "id == %@", item.id as CVarArg)
+        guard let entity = try? container.viewContext.fetch(request).first else { return }
+        entity.rawTranscript = item.rawTranscript
+        entity.postProcessedTranscript = item.postProcessedTranscript
+        entity.postProcessingPrompt = item.postProcessingPrompt
+        entity.contextSummary = item.contextSummary
+        entity.contextPrompt = item.contextPrompt
+        entity.contextScreenshotDataURL = item.contextScreenshotDataURL
+        entity.contextScreenshotStatus = item.contextScreenshotStatus
+        entity.postProcessingStatus = item.postProcessingStatus
+        entity.debugStatus = item.debugStatus
+        entity.customVocabulary = item.customVocabulary
+        entity.audioFileName = item.audioFileName
+        try saveContext()
+    }
+
     func clearAll() throws -> [String] {
         let request = pipelineHistoryRequest()
         request.sortDescriptors = [NSSortDescriptor(key: "timestamp", ascending: false)]

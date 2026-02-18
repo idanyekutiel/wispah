@@ -239,16 +239,30 @@ class AudioRecorder: NSObject, ObservableObject {
             throw AudioRecorderError.invalidInputFormat("No stored input format")
         }
 
-        // Create a temp file to write audio to
+        // Create a temp file to write audio to (AAC for much smaller file size)
         let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".wav")
+        let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".m4a")
         self.tempFileURL = fileURL
 
-        // Try the input format first to avoid conversion issues, then fall back to 16-bit PCM.
         let newAudioFile: AVAudioFile
+        let aacSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: inputFormat.sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 128_000,
+        ]
         do {
-            newAudioFile = try AVAudioFile(forWriting: fileURL, settings: inputFormat.settings)
+            newAudioFile = try AVAudioFile(
+                forWriting: fileURL,
+                settings: aacSettings,
+                commonFormat: .pcmFormatFloat32,
+                interleaved: false
+            )
         } catch {
+            // Fall back to WAV if AAC encoding isn't available
+            os_log(.error, log: recordingLog, "AAC file creation failed, falling back to WAV: %{public}@", error.localizedDescription)
+            let wavURL = tempDir.appendingPathComponent(UUID().uuidString + ".wav")
+            self.tempFileURL = wavURL
             let fallbackSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
                 AVSampleRateKey: inputFormat.sampleRate,
@@ -259,7 +273,7 @@ class AudioRecorder: NSObject, ObservableObject {
                 AVLinearPCMIsNonInterleaved: inputFormat.isInterleaved ? 0 : 1,
             ]
             newAudioFile = try AVAudioFile(
-                forWriting: fileURL,
+                forWriting: wavURL,
                 settings: fallbackSettings,
                 commonFormat: .pcmFormatInt16,
                 interleaved: inputFormat.isInterleaved

@@ -1,8 +1,10 @@
+-include .env
 APP_NAME ?= FreeFlow Dev
 BUNDLE_ID ?= com.zachlatta.freeflow.dev
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
 CODESIGN_IDENTITY ?= FreeFlow Dev
+DEV_CODESIGN_IDENTITY ?= -
 CONTENTS = $(APP_BUNDLE)/Contents
 MACOS_DIR = $(CONTENTS)/MacOS
 
@@ -12,7 +14,7 @@ ARCH ?= $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 
-.PHONY: all clean run icon dmg codesign-dmg notarize
+.PHONY: all clean run dev dev-run watch icon dmg codesign-dmg notarize
 
 all: $(MACOS_DIR)/$(APP_NAME)
 
@@ -94,6 +96,37 @@ notarize:
 	xcrun notarytool submit $(BUILD_DIR)/$(APP_NAME).dmg \
 		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
 	xcrun stapler staple $(BUILD_DIR)/$(APP_NAME).dmg
+
+dev: $(SOURCES) Info.plist $(ICON_ICNS)
+	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
+	swiftc \
+		-parse-as-library \
+		-o "$(MACOS_DIR)/$(APP_NAME)" \
+		-sdk $(shell xcrun --show-sdk-path) \
+		-target $(ARCH)-apple-macosx13.0 \
+		$(SOURCES)
+	@cp Info.plist "$(CONTENTS)/"
+	@plutil -replace CFBundleName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleDisplayName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
+	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
+	@cp $(ICON_ICNS) "$(RESOURCES)/"
+	@codesign --force --sign "$(DEV_CODESIGN_IDENTITY)" "$(APP_BUNDLE)"
+	@echo "Dev build ready: $(APP_BUNDLE)"
+
+dev-run: dev
+	@pkill -f "$(APP_NAME)" 2>/dev/null || true
+	@sleep 0.5
+	@open "$(APP_BUNDLE)"
+
+watch:
+	@$(MAKE) dev-run
+	@echo "Watching Sources/ for changes... (Ctrl+C to stop)"
+	@fswatch -o Sources/ | while read; do \
+		echo ""; \
+		echo "=== Change detected, rebuilding... ==="; \
+		$(MAKE) dev-run && echo "=== Restarted ===" || echo "=== Build failed ==="; \
+	done
 
 clean:
 	rm -rf $(BUILD_DIR)

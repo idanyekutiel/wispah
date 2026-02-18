@@ -190,7 +190,7 @@ struct GeneralSettingsView: View {
                 settingsCard("API Key", icon: "key.fill") {
                     apiKeySection
                 }
-                settingsCard("Push-to-Talk Key", icon: "keyboard.fill") {
+                settingsCard("Recording Key", icon: "keyboard.fill") {
                     hotkeySection
                 }
                 settingsCard("Microphone", icon: "mic.fill") {
@@ -428,7 +428,14 @@ struct GeneralSettingsView: View {
 
     private var hotkeySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Hold this key to record, release to transcribe.")
+            Picker("Recording Mode", selection: $appState.recordingMode) {
+                ForEach(RecordingMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text(appState.recordingMode.description)
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -531,14 +538,23 @@ struct GeneralSettingsView: View {
                 }
             )
 
-            permissionRow(
-                title: "Screen Recording",
-                icon: "camera.viewfinder",
-                granted: appState.hasScreenRecordingPermission,
-                action: {
-                    appState.requestScreenCapturePermission()
-                }
-            )
+            Toggle("Use screen context for transcription", isOn: $appState.screenRecordingEnabled)
+                .padding(.top, 4)
+
+            Text("When enabled, FreeFlow captures a screenshot to improve transcription accuracy based on what's on screen.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if appState.screenRecordingEnabled {
+                permissionRow(
+                    title: "Screen Recording",
+                    icon: "camera.viewfinder",
+                    granted: appState.hasScreenRecordingPermission,
+                    action: {
+                        appState.requestScreenCapturePermission()
+                    }
+                )
+            }
         }
     }
 
@@ -617,6 +633,9 @@ struct RunLogView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
+                Stepper("Keep \(appState.maxPipelineHistoryCount)", value: $appState.maxPipelineHistoryCount, in: 10...500, step: 10)
+                    .font(.caption)
+                    .fixedSize()
                 Button("Clear History") {
                     appState.clearPipelineHistory()
                 }
@@ -658,13 +677,78 @@ struct RunLogEntryView: View {
     @State private var isExpanded = false
     @State private var showContextPrompt = false
     @State private var showPostProcessingPrompt = false
+    @State private var retryState: RetryState = .idle
+    @State private var retryStep: String = ""
+    @State private var retryElapsed: TimeInterval = 0
+    @State private var retryTimer: Timer?
+
+    private enum RetryState: Equatable {
+        case idle
+        case retrying
+        case succeeded
+        case failed(String)
+    }
 
     private var isError: Bool {
         item.postProcessingStatus.hasPrefix("Error:")
     }
 
+    private var canRetry: Bool {
+        isError && item.audioFileName != nil && retryState != .retrying
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Retry banner
+            if retryState == .retrying {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(retryStep)
+                            .font(.caption.weight(.semibold))
+                        Text(formatRetryElapsed(retryElapsed))
+                            .font(.caption2)
+                            .opacity(0.8)
+                    }
+                    Spacer()
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.blue)
+            } else if retryState == .succeeded {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                    Text("Transcription succeeded — copied to clipboard")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.green)
+            } else if case .failed(let msg) = retryState {
+                HStack(spacing: 8) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                    Text("Retry failed: \(msg)")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(2)
+                    Spacer()
+                    Button("Dismiss") {
+                        withAnimation { retryState = .idle }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.8))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.red)
+            }
+
             // Collapsed header
             HStack(spacing: 0) {
                 Button {
@@ -673,7 +757,10 @@ struct RunLogEntryView: View {
                     }
                 } label: {
                     HStack {
-                        if isError {
+                        if retryState == .retrying {
+                            ProgressView()
+                                .controlSize(.mini)
+                        } else if isError {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.red)
@@ -697,6 +784,20 @@ struct RunLogEntryView: View {
                 }
                 .buttonStyle(.plain)
 
+                if canRetry {
+                    Button {
+                        performRetry()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.caption)
+                            .foregroundStyle(.blue)
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Retry transcription")
+                }
+
                 Button {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         appState.deleteHistoryEntry(id: item.id)
@@ -710,6 +811,7 @@ struct RunLogEntryView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Delete this run")
+                .disabled(retryState == .retrying)
             }
             .padding(12)
 
@@ -721,7 +823,19 @@ struct RunLogEntryView: View {
                     // Audio player
                     if let audioFileName = item.audioFileName {
                         let audioURL = AppState.audioStorageDirectory().appendingPathComponent(audioFileName)
-                        AudioPlayerView(audioURL: audioURL)
+                        HStack {
+                            AudioPlayerView(audioURL: audioURL)
+                            Button {
+                                saveAudioToDesktop(audioURL: audioURL)
+                            } label: {
+                                Image(systemName: "square.and.arrow.down")
+                                    .font(.caption)
+                                    .frame(width: 28, height: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Save audio to Desktop")
+                        }
                     } else {
                         HStack(spacing: 6) {
                             Image(systemName: "waveform.slash")
@@ -896,6 +1010,102 @@ struct RunLogEntryView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(isError ? Color.red.opacity(0.4) : Color.secondary.opacity(0.2), lineWidth: 1)
         )
+    }
+
+    private func startRetryTimer() {
+        retryElapsed = 0
+        retryTimer?.invalidate()
+        retryTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+            retryElapsed += 0.1
+        }
+    }
+
+    private func stopRetryTimer() {
+        retryTimer?.invalidate()
+        retryTimer = nil
+    }
+
+    private func formatRetryElapsed(_ seconds: TimeInterval) -> String {
+        let s = Int(seconds)
+        return s < 60 ? "\(s)s" : "\(s / 60)m \(s % 60)s"
+    }
+
+    private func performRetry() {
+        guard let audioFileName = item.audioFileName else { return }
+        let audioURL = AppState.audioStorageDirectory().appendingPathComponent(audioFileName)
+        guard FileManager.default.fileExists(atPath: audioURL.path) else {
+            withAnimation { retryState = .failed("Audio file no longer exists") }
+            return
+        }
+
+        retryStep = "Uploading audio..."
+        startRetryTimer()
+        withAnimation { retryState = .retrying }
+
+        Task {
+            do {
+                await MainActor.run { retryStep = "Transcribing audio..." }
+                let service = TranscriptionService(apiKey: appState.apiKey)
+                let transcript = try await service.transcribe(fileURL: audioURL)
+                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                await MainActor.run {
+                    retryStep = "Copying to clipboard..."
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(trimmed, forType: .string)
+
+                    if let index = appState.pipelineHistory.firstIndex(where: { $0.id == item.id }) {
+                        let updated = PipelineHistoryItem(
+                            id: item.id,
+                            timestamp: item.timestamp,
+                            rawTranscript: trimmed,
+                            postProcessedTranscript: trimmed,
+                            postProcessingPrompt: item.postProcessingPrompt,
+                            contextSummary: item.contextSummary,
+                            contextPrompt: item.contextPrompt,
+                            contextScreenshotDataURL: item.contextScreenshotDataURL,
+                            contextScreenshotStatus: item.contextScreenshotStatus,
+                            postProcessingStatus: "Retried successfully",
+                            debugStatus: "Retry",
+                            customVocabulary: item.customVocabulary,
+                            audioFileName: item.audioFileName
+                        )
+                        appState.pipelineHistory[index] = updated
+                        try? appState.updateHistoryEntry(updated)
+                    }
+
+                    stopRetryTimer()
+                    withAnimation { retryState = .succeeded }
+                }
+
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                await MainActor.run {
+                    withAnimation { retryState = .idle }
+                }
+            } catch {
+                await MainActor.run {
+                    stopRetryTimer()
+                    withAnimation { retryState = .failed(error.localizedDescription) }
+                }
+            }
+        }
+    }
+
+    private func saveAudioToDesktop(audioURL: URL) {
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!
+        let timestamp = item.timestamp.formatted(date: .numeric, time: .standard)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: ".")
+        let destURL = desktop.appendingPathComponent("freeflow-\(timestamp).\(audioURL.pathExtension)")
+        do {
+            if FileManager.default.fileExists(atPath: destURL.path) {
+                try FileManager.default.removeItem(at: destURL)
+            }
+            try FileManager.default.copyItem(at: audioURL, to: destURL)
+            NSWorkspace.shared.selectFile(destURL.path, inFileViewerRootedAtPath: desktop.path)
+        } catch {
+            appState.errorMessage = "Failed to save audio: \(error.localizedDescription)"
+        }
     }
 
     private func parseVocabulary(_ text: String) -> [String] {

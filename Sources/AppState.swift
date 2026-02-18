@@ -10,6 +10,27 @@ import os.log
 
 private let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
 
+enum RecordingMode: String, CaseIterable, Identifiable {
+    case holdToRecord
+    case toggleToRecord
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .holdToRecord: return "Hold to Record"
+        case .toggleToRecord: return "Toggle to Record"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .holdToRecord: return "Hold the key to record, release to stop and transcribe."
+        case .toggleToRecord: return "Press once to start recording, press again to stop and transcribe."
+        }
+    }
+}
+
 enum SettingsTab: String, CaseIterable, Identifiable {
     case general
     case runLog
@@ -35,8 +56,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let apiKeyStorageKey = "groq_api_key"
     private let customVocabularyStorageKey = "custom_vocabulary"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
+    private let screenRecordingEnabledStorageKey = "screen_recording_enabled"
+    private let recordingModeStorageKey = "recording_mode"
     private let transcribingIndicatorDelay: TimeInterval = 1.0
-    let maxPipelineHistoryCount = 20
+    @Published var maxPipelineHistoryCount: Int {
+        didSet {
+            UserDefaults.standard.set(maxPipelineHistoryCount, forKey: "max_pipeline_history_count")
+        }
+    }
 
     @Published var hasCompletedSetup: Bool {
         didSet {
@@ -55,6 +82,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
         didSet {
             UserDefaults.standard.set(selectedHotkey.rawValue, forKey: "hotkey_option")
             restartHotkeyMonitoring()
+        }
+    }
+
+    @Published var screenRecordingEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(screenRecordingEnabled, forKey: screenRecordingEnabledStorageKey)
+        }
+    }
+
+    @Published var recordingMode: RecordingMode {
+        didSet {
+            UserDefaults.standard.set(recordingMode.rawValue, forKey: recordingModeStorageKey)
         }
     }
 
@@ -114,9 +153,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
+        let storedMaxHistory = UserDefaults.standard.object(forKey: "max_pipeline_history_count") as? Int ?? 50
+        self.maxPipelineHistoryCount = storedMaxHistory
         var removedAudioFileNames: [String] = []
         do {
-            removedAudioFileNames = try pipelineHistoryStore.trim(to: maxPipelineHistoryCount)
+            removedAudioFileNames = try pipelineHistoryStore.trim(to: storedMaxHistory)
         } catch {
             print("Failed to trim pipeline history during init: \(error)")
         }
@@ -127,10 +168,21 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
 
+        // Screen recording defaults to true (existing behavior)
+        let screenRecordingEnabled: Bool
+        if UserDefaults.standard.object(forKey: "screen_recording_enabled") != nil {
+            screenRecordingEnabled = UserDefaults.standard.bool(forKey: "screen_recording_enabled")
+        } else {
+            screenRecordingEnabled = true
+        }
+        let recordingMode = RecordingMode(rawValue: UserDefaults.standard.string(forKey: "recording_mode") ?? "") ?? .holdToRecord
+
         self.contextService = AppContextService(apiKey: apiKey)
         self.hasCompletedSetup = hasCompletedSetup
         self.apiKey = apiKey
         self.selectedHotkey = selectedHotkey
+        self.screenRecordingEnabled = screenRecordingEnabled
+        self.recordingMode = recordingMode
         self.customVocabulary = customVocabulary
         self.pipelineHistory = savedHistory
         self.hasAccessibility = initialAccessibility
@@ -194,6 +246,64 @@ final class AppState: ObservableObject, @unchecked Sendable {
         } catch {
             errorMessage = "Unable to clear run history: \(error.localizedDescription)"
         }
+    }
+
+    func retryHistoryEntry(item: PipelineHistoryItem) {
+        guard let audioFileName = item.audioFileName else {
+            errorMessage = "No audio file available to retry"
+            return
+        }
+        let audioURL = Self.audioStorageDirectory().appendingPathComponent(audioFileName)
+        guard FileManager.default.fileExists(atPath: audioURL.path) else {
+            errorMessage = "Audio file no longer exists"
+            return
+        }
+
+        Task {
+            do {
+                let service = TranscriptionService(apiKey: apiKey)
+                let transcript = try await service.transcribe(fileURL: audioURL)
+                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                await MainActor.run {
+                    // Copy to clipboard
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(trimmed, forType: .string)
+
+                    // Update the history entry
+                    if let index = pipelineHistory.firstIndex(where: { $0.id == item.id }) {
+                        let updated = PipelineHistoryItem(
+                            id: item.id,
+                            timestamp: item.timestamp,
+                            rawTranscript: trimmed,
+                            postProcessedTranscript: trimmed,
+                            postProcessingPrompt: item.postProcessingPrompt,
+                            contextSummary: item.contextSummary,
+                            contextPrompt: item.contextPrompt,
+                            contextScreenshotDataURL: item.contextScreenshotDataURL,
+                            contextScreenshotStatus: item.contextScreenshotStatus,
+                            postProcessingStatus: "Retried successfully",
+                            debugStatus: "Retry",
+                            customVocabulary: item.customVocabulary,
+                            audioFileName: item.audioFileName
+                        )
+                        pipelineHistory[index] = updated
+                        try? pipelineHistoryStore.update(updated)
+                    }
+
+                    lastTranscript = trimmed
+                    statusText = "Copied to clipboard!"
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = "Retry failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func updateHistoryEntry(_ item: PipelineHistoryItem) throws {
+        try pipelineHistoryStore.update(item)
     }
 
     func deleteHistoryEntry(id: UUID) {
@@ -320,14 +430,26 @@ final class AppState: ObservableObject, @unchecked Sendable {
     }
 
     private func handleHotkeyDown() {
-        os_log(.info, log: recordingLog, "handleHotkeyDown() fired, isRecording=%{public}d, isTranscribing=%{public}d", isRecording, isTranscribing)
-        guard !isRecording && !isTranscribing else { return }
-        startRecording()
+        os_log(.info, log: recordingLog, "handleHotkeyDown() fired, isRecording=%{public}d, isTranscribing=%{public}d, mode=%{public}@", isRecording, isTranscribing, recordingMode.rawValue)
+        switch recordingMode {
+        case .holdToRecord:
+            guard !isRecording && !isTranscribing else { return }
+            startRecording()
+        case .toggleToRecord:
+            guard !isTranscribing else { return }
+            toggleRecording()
+        }
     }
 
     private func handleHotkeyUp() {
-        guard isRecording else { return }
-        stopAndTranscribe()
+        switch recordingMode {
+        case .holdToRecord:
+            guard isRecording else { return }
+            stopAndTranscribe()
+        case .toggleToRecord:
+            // In toggle mode, key release does nothing
+            break
+        }
     }
 
     func toggleRecording() {
@@ -611,8 +733,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
                             self.overlayManager.dismiss()
                         }
 
+                        let textToPaste = self.needsLeadingSpace() ? " " + trimmedFinalTranscript : trimmedFinalTranscript
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(trimmedFinalTranscript, forType: .string)
+                        NSPasteboard.general.setString(textToPaste, forType: .string)
 
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                             self.pasteAtCursor()
@@ -702,9 +825,41 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private func startContextCapture() {
         contextCaptureTask?.cancel()
         capturedContext = nil
-        lastContextSummary = "Collecting app context..."
         lastPostProcessingStatus = ""
         lastContextScreenshotDataURL = nil
+
+        if !screenRecordingEnabled {
+            // Screen recording disabled — collect text-only context
+            lastContextSummary = "Collecting app context (text only)..."
+            lastContextScreenshotStatus = "Screen recording disabled"
+
+            contextCaptureTask = Task { [weak self] in
+                guard let self else { return nil }
+                let frontmostApp = NSWorkspace.shared.frontmostApplication
+                let windowTitle = self.focusedWindowTitle(for: frontmostApp)
+                let context = AppContext(
+                    appName: frontmostApp?.localizedName,
+                    bundleIdentifier: frontmostApp?.bundleIdentifier,
+                    windowTitle: windowTitle,
+                    selectedText: nil,
+                    currentActivity: "Screen recording disabled. Using text-only context: \(frontmostApp?.localizedName ?? "Unknown") — \(windowTitle ?? "Unknown window").",
+                    contextPrompt: nil,
+                    screenshotDataURL: nil,
+                    screenshotMimeType: nil,
+                    screenshotError: nil
+                )
+                await MainActor.run {
+                    self.capturedContext = context
+                    self.lastContextSummary = context.contextSummary
+                    self.lastContextScreenshotStatus = "Screen recording disabled"
+                    self.lastPostProcessingStatus = "App context captured (text only)"
+                }
+                return context
+            }
+            return
+        }
+
+        lastContextSummary = "Collecting app context..."
         lastContextScreenshotStatus = "Collecting screenshot..."
 
         contextCaptureTask = Task { [weak self] in
@@ -788,27 +943,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
             return
         }
 
-        errorMessage = "Screenshot capture issue: \(message)"
-        NSSound(named: "Basso")?.play()
-
-        if isScreenCapturePermissionError(message) && !hasShownScreenshotPermissionAlert {
-            hasShownScreenshotPermissionAlert = true
-            showScreenshotPermissionAlert(message: message)
-        } else {
-            showScreenshotCaptureErrorAlert(message: message)
-        }
-
-        // Stop the recording — a screenshot is required
-        _ = audioRecorder.stopRecording()
-        audioRecorder.cleanup()
-        audioLevelCancellable?.cancel()
-        audioLevelCancellable = nil
-        contextCaptureTask?.cancel()
-        contextCaptureTask = nil
-        capturedContext = nil
-        isRecording = false
-        statusText = "Screenshot Required"
-        overlayManager.dismiss()
+        // Never stop recording due to screenshot issues — just log and continue
+        os_log(.info, log: recordingLog, "Screenshot capture issue (non-fatal): %{public}@", message)
     }
 
     private func isScreenCapturePermissionError(_ message: String) -> Bool {
@@ -876,6 +1012,45 @@ final class AppState: ObservableObject, @unchecked Sendable {
     func toggleDebugPanel() {
         selectedSettingsTab = .runLog
         NotificationCenter.default.post(name: .showSettings, object: nil)
+    }
+
+    private func needsLeadingSpace() -> Bool {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else { return false }
+        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
+
+        // Get the focused text element
+        var focusedValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success else {
+            return false
+        }
+        let focusedElement = focusedValue as! AXUIElement
+
+        // Get the full text value
+        var textValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(focusedElement, kAXValueAttribute as CFString, &textValue) == .success,
+              let text = textValue as? String, !text.isEmpty else {
+            return false
+        }
+
+        // Get the selected text range (cursor position)
+        var rangeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(focusedElement, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success else {
+            return false
+        }
+        var range = CFRange(location: 0, length: 0)
+        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else {
+            return false
+        }
+
+        // Check the character just before the cursor
+        let cursorPos = range.location
+        guard cursorPos > 0 else { return false }
+
+        let index = text.index(text.startIndex, offsetBy: min(cursorPos, text.count))
+        let charBefore = text[text.index(before: index)]
+
+        // Add space if the character before isn't already a space or newline
+        return !charBefore.isWhitespace
     }
 
     private func pasteAtCursor() {
