@@ -10,7 +10,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text("FreeFlow v\(appVersion)")
+            Text("Wispah v\(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
@@ -66,8 +66,15 @@ struct MenuBarView: View {
                     .padding(.vertical, 6)
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Hold \(appState.holdHotkey.displayName) to dictate")
-                    Text("Press \(appState.toggleHotkey.displayName) to toggle")
+                    if !appState.holdHotkey.isDisabled {
+                        Text("Hold \(appState.holdHotkey.displayName) to dictate")
+                    }
+                    if !appState.toggleHotkey.isDisabled {
+                        Text("Press \(appState.toggleHotkey.displayName) to toggle")
+                    }
+                    if appState.holdHotkey.isDisabled && appState.toggleHotkey.isDisabled {
+                        Text("No hotkeys configured")
+                    }
                 }
                     .foregroundStyle(.secondary)
                     .font(.caption)
@@ -110,43 +117,6 @@ struct MenuBarView: View {
 
             Divider()
 
-            // Hotkey pickers
-            Menu("Toggle Key") {
-                ForEach(HotkeyOption.allCases) { option in
-                    Button {
-                        let old = appState.toggleHotkey
-                        if option == appState.holdHotkey {
-                            appState.holdHotkey = old
-                        }
-                        appState.toggleHotkey = option
-                    } label: {
-                        if appState.toggleHotkey == option {
-                            Text("✓ \(option.displayName)")
-                        } else {
-                            Text("  \(option.displayName)")
-                        }
-                    }
-                }
-            }
-
-            Menu("Hold Key") {
-                ForEach(HotkeyOption.allCases) { option in
-                    Button {
-                        let old = appState.holdHotkey
-                        if option == appState.toggleHotkey {
-                            appState.toggleHotkey = old
-                        }
-                        appState.holdHotkey = option
-                    } label: {
-                        if appState.holdHotkey == option {
-                            Text("✓ \(option.displayName)")
-                        } else {
-                            Text("  \(option.displayName)")
-                        }
-                    }
-                }
-            }
-
             Menu("Microphone") {
                 Button {
                     appState.selectedMicrophoneID = "default"
@@ -170,8 +140,10 @@ struct MenuBarView: View {
                 }
             }
 
-            Button("Re-run Setup...") {
-                NotificationCenter.default.post(name: .showSetup, object: nil)
+            Button {
+                appState.screenRecordingEnabled.toggle()
+            } label: {
+                Text(appState.screenRecordingEnabled ? "✓ Screen Context" : "  Screen Context")
             }
 
             Button("Settings") {
@@ -179,6 +151,10 @@ struct MenuBarView: View {
             }
 
             Divider()
+
+            Button("Re-run Setup...") {
+                NotificationCenter.default.post(name: .showSetup, object: nil)
+            }
 
             Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
                 appState.toggleDebugOverlay()
@@ -233,7 +209,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Quit FreeFlow") {
+            Button("Quit Wispah") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")

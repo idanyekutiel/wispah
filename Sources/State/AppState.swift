@@ -8,7 +8,7 @@ import ApplicationServices
 import ScreenCaptureKit
 import os.log
 
-let recordingLog = OSLog(subsystem: "com.zachlatta.freeflow", category: "Recording")
+let recordingLog = OSLog(subsystem: "com.idanyekutiel.wispah", category: "Recording")
 
 final class AppState: ObservableObject, @unchecked Sendable {
     let apiKeyStorageKey = "groq_api_key"
@@ -37,16 +37,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    @Published var toggleHotkey: HotkeyOption {
+    @Published var toggleHotkey: HotkeyBinding {
         didSet {
-            UserDefaults.standard.set(toggleHotkey.rawValue, forKey: "toggle_hotkey")
+            if let data = try? JSONEncoder().encode(toggleHotkey) {
+                UserDefaults.standard.set(data, forKey: "toggle_hotkey")
+            }
             restartHotkeyMonitoring()
         }
     }
 
-    @Published var holdHotkey: HotkeyOption {
+    @Published var holdHotkey: HotkeyBinding {
         didSet {
-            UserDefaults.standard.set(holdHotkey.rawValue, forKey: "hold_hotkey")
+            if let data = try? JSONEncoder().encode(holdHotkey) {
+                UserDefaults.standard.set(data, forKey: "hold_hotkey")
+            }
             restartHotkeyMonitoring()
         }
     }
@@ -90,6 +94,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var keepAudioOnErrors: Bool {
         didSet {
             UserDefaults.standard.set(keepAudioOnErrors, forKey: "keep_audio_on_errors")
+        }
+    }
+
+    @Published var collectStats: Bool {
+        didSet {
+            UserDefaults.standard.set(collectStats, forKey: "collect_stats")
         }
     }
 
@@ -150,7 +160,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
     @Published var isDebugOverlayActive = false
-    @Published var selectedSettingsTab: SettingsTab? = .general
+    @Published var selectedSettingsTab: SettingsTab? = nil
     @Published var pipelineHistory: [PipelineHistoryItem] = []
     @Published var debugStatusMessage = "Idle"
     @Published var lastRawTranscript = ""
@@ -185,14 +195,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
     var hasShownScreenshotPermissionAlert = false
     var audioDeviceListenerBlock: AudioObjectPropertyListenerBlock?
     let pipelineHistoryStore = PipelineHistoryStore()
+    let statsStore = StatsStore()
     var wasMediaPlayingBeforeRecording = false
     var wasSystemMutedBeforeRecording = false
 
     init() {
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
         let apiKey = Self.loadStoredAPIKey(account: apiKeyStorageKey)
-        let toggleHotkey = HotkeyOption(rawValue: UserDefaults.standard.string(forKey: "toggle_hotkey") ?? "fn") ?? .fnKey
-        let holdHotkey = HotkeyOption(rawValue: UserDefaults.standard.string(forKey: "hold_hotkey") ?? "rightOption") ?? .rightOption
+        let toggleHotkey = Self.loadHotkeyBinding(forKey: "toggle_hotkey", default: .fnKey)
+        let holdHotkey = Self.loadHotkeyBinding(forKey: "hold_hotkey", default: .disabled)
         let customVocabulary = UserDefaults.standard.string(forKey: customVocabularyStorageKey) ?? ""
         let initialAccessibility = AXIsProcessTrusted()
         let initialScreenCapturePermission = CGPreflightScreenCaptureAccess()
@@ -247,6 +258,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
             keepAudioOnErrors = true
         }
 
+        let collectStats: Bool
+        if UserDefaults.standard.object(forKey: "collect_stats") != nil {
+            collectStats = UserDefaults.standard.bool(forKey: "collect_stats")
+        } else {
+            collectStats = true
+        }
+
         let whisperModel = WhisperModel(rawValue: UserDefaults.standard.string(forKey: "whisper_model") ?? "") ?? .largeV3
 
         let storedLanguage = UserDefaults.standard.string(forKey: "transcription_language") ?? ""
@@ -280,13 +298,34 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.saveRunHistory = saveRunHistory
         self.saveAudioFiles = saveAudioFiles
         self.keepAudioOnErrors = keepAudioOnErrors
+        self.collectStats = collectStats
         self.whisperModel = whisperModel
         self.transcriptionLanguage = transcriptionLanguage
         self.smartFormattingEnabled = smartFormattingEnabled
         self.developerModeEnabled = developerModeEnabled
         self.audioWhileRecording = audioWhileRecording
+        self.selectedSettingsTab = collectStats ? .stats : .runLog
 
         refreshAvailableMicrophones()
         installAudioDeviceListener()
+    }
+
+    /// Load a HotkeyBinding from UserDefaults, migrating from legacy string format if needed
+    private static func loadHotkeyBinding(forKey key: String, default defaultBinding: HotkeyBinding) -> HotkeyBinding {
+        // Try JSON data (new format)
+        if let data = UserDefaults.standard.data(forKey: key),
+           let binding = try? JSONDecoder().decode(HotkeyBinding.self, from: data) {
+            return binding
+        }
+        // Try legacy string format (old HotkeyOption rawValue)
+        if let legacyString = UserDefaults.standard.string(forKey: key),
+           let binding = HotkeyBinding.fromLegacy(legacyString) {
+            // Migrate: save as JSON
+            if let data = try? JSONEncoder().encode(binding) {
+                UserDefaults.standard.set(data, forKey: key)
+            }
+            return binding
+        }
+        return defaultBinding
     }
 }

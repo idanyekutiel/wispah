@@ -1,4 +1,4 @@
-# FreeFlow - CLAUDE.md
+# Wispah - CLAUDE.md
 
 ## Build & Run
 
@@ -13,7 +13,7 @@ make clean        # Delete build/
 - Uses `swiftc` directly (no Xcode project)
 - Minimum macOS 13.0, targets arm64
 - `.env` file (gitignored) holds `DEV_CODESIGN_IDENTITY` for persistent permissions
-- Entitlements: `FreeFlow.entitlements` (audio input)
+- Entitlements: `Wispah.entitlements` (audio input)
 
 ## Architecture
 
@@ -30,32 +30,35 @@ Menu bar app (LSUIElement). Central `AppState` (ObservableObject) orchestrates e
 ### Source Structure (Sources/)
 - **App.swift** — SwiftUI entry point, menu bar extra
 - **AppDelegate.swift** — Window management, setup/settings windows
-- **AppState.swift** — Central state, recording logic, settings persistence (~1070 lines)
+- **AppState.swift** — Central state, recording logic, settings persistence
 - **AudioRecorder.swift** — AVAudioEngine recording, device enumeration
-- **HotkeyManager.swift** — NSEvent monitors for Fn/RightOption/F5
+- **HotkeyManager.swift** — NSEvent monitors for configurable hotkeys
 - **TranscriptionService.swift** — Groq Whisper API client
 - **PostProcessingService.swift** — Groq LLM post-processing
 - **AppContextService.swift** — Screenshot capture, context inference
 - **MenuBarView.swift** — Menu bar dropdown UI
-- **SettingsView.swift** — Settings panel with General + Run Log tabs (~1300 lines)
-- **SetupView.swift** — 10-step onboarding wizard (~1200 lines)
+- **SettingsView.swift** — Settings panel with Stats, Transcriptions, Settings tabs
+- **StatsView.swift** — Usage stats dashboard with persistent tracking
+- **SetupView.swift** — Onboarding wizard
 - **RecordingOverlay.swift** — Floating glass overlay during recording
 - **PipelineHistoryStore.swift** — CoreData persistence for run history
 - **PipelineHistoryItem.swift** — Data model for history entries
+- **StatsStore.swift** — Persistent stats accumulator (JSON file)
 - **KeychainStorage.swift** — API key + settings in ~/Library/Application Support
 - **UpdateManager.swift** — GitHub release checking + auto-update
 - **PipelineDebugContentView.swift** / **PipelineDebugPanelView.swift** — Debug views
-- **Notification+VoiceToText.swift** — Notification name constants
 
 ### External Dependencies
 - Groq API (transcription via Whisper + LLM post-processing)
 - GitHub API (update checking)
 - macOS frameworks: AVFoundation, AppKit, Accessibility, ScreenCaptureKit, CoreData
+- [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) — media pause/resume on macOS 15.4+
 
 ### Data Storage
-- API key: ~/Library/Application Support/FreeFlow/
-- Audio files: ~/Library/Application Support/FreeFlow/audio/
-- History DB: ~/Library/Application Support/FreeFlow/PipelineHistory.sqlite
+- API key: ~/Library/Application Support/Wispah/
+- Audio files: ~/Library/Application Support/Wispah/audio/
+- History DB: ~/Library/Application Support/Wispah/PipelineHistory.sqlite
+- Stats: ~/Library/Application Support/Wispah/stats.json
 - Settings: UserDefaults
 
 ## Development Guidelines

@@ -100,7 +100,7 @@ struct RunLogView: View {
                         .frame(maxWidth: .infinity)
                     } else {
                         ScrollView {
-                            VStack(spacing: 12) {
+                            LazyVStack(spacing: 12) {
                                 ForEach(filteredHistory) { item in
                                     RunLogEntryView(item: item)
                                 }

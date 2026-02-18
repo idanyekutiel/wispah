@@ -9,7 +9,7 @@ final class PipelineHistoryStore {
         container = NSPersistentContainer(name: "PipelineHistory", managedObjectModel: model)
 
         if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
-            let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "FreeFlow"
+            let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Wispah"
             let baseURL = appSupport.appendingPathComponent(appName, isDirectory: true)
             try? FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
             let storeURL = baseURL.appendingPathComponent("PipelineHistory.sqlite")
@@ -79,6 +79,7 @@ final class PipelineHistoryStore {
         entity.debugStatus = item.debugStatus
         entity.customVocabulary = item.customVocabulary
         entity.audioFileName = item.audioFileName
+        entity.recordingDurationSeconds = item.recordingDurationSeconds ?? 0
         try saveContext()
     }
 
@@ -134,6 +135,7 @@ final class PipelineHistoryStore {
         entity.debugStatus = item.debugStatus
         entity.customVocabulary = item.customVocabulary
         entity.audioFileName = item.audioFileName
+        entity.recordingDurationSeconds = item.recordingDurationSeconds ?? 0
         try saveContext()
     }
 
@@ -165,7 +167,8 @@ final class PipelineHistoryStore {
             postProcessingStatus: entity.postProcessingStatus ?? "",
             debugStatus: entity.debugStatus ?? "",
             customVocabulary: entity.customVocabulary ?? "",
-            audioFileName: entity.audioFileName
+            audioFileName: entity.audioFileName,
+            recordingDurationSeconds: entity.recordingDurationSeconds > 0 ? entity.recordingDurationSeconds : nil
         )
     }
 
@@ -189,7 +192,8 @@ final class PipelineHistoryStore {
             makeAttribute(name: "postProcessingStatus", type: .stringAttributeType, isOptional: false),
             makeAttribute(name: "debugStatus", type: .stringAttributeType, isOptional: false),
             makeAttribute(name: "customVocabulary", type: .stringAttributeType, isOptional: false),
-            makeAttribute(name: "audioFileName", type: .stringAttributeType, isOptional: true)
+            makeAttribute(name: "audioFileName", type: .stringAttributeType, isOptional: true),
+            makeAttribute(name: "recordingDurationSeconds", type: .doubleAttributeType, isOptional: true)
         ]
 
         model.entities = [entity]
@@ -220,4 +224,5 @@ final class PipelineHistoryEntry: NSManagedObject {
     @NSManaged var debugStatus: String?
     @NSManaged var customVocabulary: String?
     @NSManaged var audioFileName: String?
+    @NSManaged var recordingDurationSeconds: Double
 }

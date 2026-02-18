@@ -192,6 +192,9 @@ class RecordingOverlayManager {
             return
         }
 
+        // Release immediately so a new recording can create a fresh panel
+        self.overlayWindow = nil
+
         let hiddenY = screenHasNotch ? screen.visibleFrame.maxY : screen.frame.maxY
         let frame = panel.frame
 
@@ -201,7 +204,6 @@ class RecordingOverlayManager {
             panel.animator().setFrame(NSRect(x: frame.origin.x, y: hiddenY, width: frame.width, height: frame.height), display: true)
         }, completionHandler: {
             panel.orderOut(nil)
-            self.overlayWindow = nil
             completion()
         })
     }

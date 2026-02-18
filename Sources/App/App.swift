@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct FreeFlowApp: App {
+struct WispahApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     var body: some Scene {

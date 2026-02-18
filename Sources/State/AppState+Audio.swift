@@ -1,21 +1,36 @@
 import Foundation
 import AppKit
 import CoreAudio
+import os.log
 
 extension AppState {
     func refreshAvailableMicrophones() {
         availableMicrophones = AudioDevice.availableInputDevices()
     }
 
-    // MARK: - Audio While Recording
+    // MARK: - Media Playback Detection & Control
+    //
+    // macOS 15.4+ blocks direct MediaRemote access for third-party apps.
+    // Detection: mediaremote-adapter (Perl trick — /usr/bin/perl has com.apple.perl bundle ID)
+    // Pause/Resume: CGEvent media key simulation (works universally)
 
     func handleAudioOnRecordingStart() {
         switch audioWhileRecording {
         case .doNothing:
             break
         case .pauseMedia:
-            wasMediaPlayingBeforeRecording = true
-            sendMediaPlayPause()
+            isMediaCurrentlyPlaying { [weak self] isPlaying in
+                guard let self else { return }
+                if let isPlaying {
+                    os_log(.info, log: recordingLog, "pauseMedia: detected isPlaying=%{public}@", isPlaying ? "yes" : "no")
+                    self.wasMediaPlayingBeforeRecording = isPlaying
+                    if isPlaying { self.sendMediaKeyEvent() }
+                } else {
+                    // Detection failed — do nothing (don't risk starting/stopping music blindly)
+                    os_log(.info, log: recordingLog, "pauseMedia: detection failed, skipping")
+                    self.wasMediaPlayingBeforeRecording = false
+                }
+            }
         case .muteSystem:
             wasSystemMutedBeforeRecording = isSystemMuted()
             if !wasSystemMutedBeforeRecording {
@@ -30,7 +45,8 @@ extension AppState {
             break
         case .pauseMedia:
             if wasMediaPlayingBeforeRecording {
-                sendMediaPlayPause()
+                os_log(.info, log: recordingLog, "pauseMedia: resuming playback")
+                sendMediaKeyEvent()
                 wasMediaPlayingBeforeRecording = false
             }
         case .muteSystem:
@@ -41,7 +57,74 @@ extension AppState {
         }
     }
 
-    private func sendMediaPlayPause() {
+    /// Detect if media is playing via mediaremote-adapter (works on macOS 15.4+).
+    /// Uses /usr/bin/perl which has com.apple.perl bundle ID — allowed to use MediaRemote.
+    /// Returns Bool? — true/false if detection worked, nil if it failed.
+    private func isMediaCurrentlyPlaying(completion: @escaping (Bool?) -> Void) {
+        guard let bundleResources = Bundle.main.resourcePath else {
+            os_log(.error, log: recordingLog, "mediaremote-adapter: no bundle resource path")
+            completion(nil); return
+        }
+        let scriptPath = (bundleResources as NSString).appendingPathComponent("mediaremote-adapter.pl")
+        let frameworkPath = (bundleResources as NSString).appendingPathComponent("MediaRemoteAdapter.framework")
+
+        // Verify files exist
+        guard FileManager.default.fileExists(atPath: scriptPath) else {
+            os_log(.error, log: recordingLog, "mediaremote-adapter: script not found at %{public}@", scriptPath)
+            completion(nil); return
+        }
+        guard FileManager.default.fileExists(atPath: frameworkPath) else {
+            os_log(.error, log: recordingLog, "mediaremote-adapter: framework not found at %{public}@", frameworkPath)
+            completion(nil); return
+        }
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+        task.arguments = [scriptPath, frameworkPath, "get"]
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = FileHandle.nullDevice
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try task.run()
+                // Read output BEFORE waitUntilExit to avoid pipe buffer deadlock
+                // (adapter output with artwork can be >64KB, exceeding pipe buffer)
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                task.waitUntilExit()
+                let output = String(data: data, encoding: .utf8)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+                DispatchQueue.main.async {
+                    os_log(.info, log: recordingLog, "mediaremote-adapter: exit=%d output_bytes=%d", task.terminationStatus, data.count)
+                    if output == "null" || output.isEmpty || task.terminationStatus != 0 {
+                        os_log(.info, log: recordingLog, "mediaremote-adapter: no media detected")
+                        completion(nil)
+                        return
+                    }
+                    if let jsonData = output.data(using: .utf8),
+                       let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+                       let playing = json["playing"] as? Bool {
+                        let title = json["title"] as? String ?? "unknown"
+                        os_log(.info, log: recordingLog, "mediaremote-adapter: playing=%{public}@ title=%{public}@", playing ? "yes" : "no", title)
+                        completion(playing)
+                    } else {
+                        os_log(.error, log: recordingLog, "mediaremote-adapter: failed to parse JSON, first 200 chars: %{public}@", String(output.prefix(200)))
+                        completion(nil)
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    os_log(.error, log: recordingLog, "mediaremote-adapter error: %{public}@", error.localizedDescription)
+                    completion(nil)
+                }
+            }
+        }
+    }
+
+    /// Simulate media play/pause key event (works on all macOS versions)
+    private func sendMediaKeyEvent() {
         let keyCode: UInt16 = 0x10  // NX_KEYTYPE_PLAY
         let downEvent = NSEvent.otherEvent(
             with: .systemDefined,

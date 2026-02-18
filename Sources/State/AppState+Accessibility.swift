@@ -54,7 +54,7 @@ extension AppState {
     func showMicrophonePermissionAlert() {
         let alert = NSAlert()
         alert.messageText = "Microphone Permission Required"
-        alert.informativeText = "FreeFlow cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable FreeFlow."
+        alert.informativeText = "Wispah cannot record audio without Microphone access.\n\nGo to System Settings > Privacy & Security > Microphone and enable Wispah."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -72,7 +72,7 @@ extension AppState {
     func showAccessibilityAlert() {
         let alert = NSAlert()
         alert.messageText = "Accessibility Permission Required"
-        alert.informativeText = "FreeFlow cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable FreeFlow."
+        alert.informativeText = "Wispah cannot type transcriptions without Accessibility access.\n\nGo to System Settings > Privacy & Security > Accessibility and enable Wispah."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -87,7 +87,7 @@ extension AppState {
     func showScreenshotPermissionAlert(message: String) {
         let alert = NSAlert()
         alert.messageText = "Screen Recording Permission Required"
-        alert.informativeText = "\(message)\n\nFreeFlow requires Screen Recording permission to capture screenshots for context-aware transcription.\n\nGo to System Settings > Privacy & Security > Screen Recording and enable FreeFlow."
+        alert.informativeText = "\(message)\n\nWispah requires Screen Recording permission to capture screenshots for context-aware transcription.\n\nGo to System Settings > Privacy & Security > Screen Recording and enable Wispah."
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Dismiss")
@@ -119,12 +119,7 @@ extension AppState {
         }
         let focusedElement = focusedValue as! AXUIElement
 
-        var textValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(focusedElement, kAXValueAttribute as CFString, &textValue) == .success,
-              let text = textValue as? String, !text.isEmpty else {
-            return false
-        }
-
+        // Get cursor position
         var rangeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(focusedElement, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success else {
             return false
@@ -137,10 +132,31 @@ extension AppState {
         let cursorPos = range.location
         guard cursorPos > 0 else { return false }
 
-        let index = text.index(text.startIndex, offsetBy: min(cursorPos, text.count))
-        let charBefore = text[text.index(before: index)]
+        // Try parameterized attribute first — works with more apps (browsers, Electron)
+        var charBeforeCursor = CFRange(location: cursorPos - 1, length: 1)
+        if let rangeVal = AXValueCreate(.cfRange, &charBeforeCursor) {
+            var charValue: CFTypeRef?
+            if AXUIElementCopyParameterizedAttributeValue(
+                focusedElement,
+                kAXStringForRangeParameterizedAttribute as CFString,
+                rangeVal,
+                &charValue
+            ) == .success, let charStr = charValue as? String, let ch = charStr.last {
+                return !ch.isWhitespace
+            }
+        }
 
-        return !charBefore.isWhitespace
+        // Fallback: read full text value
+        var textValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(focusedElement, kAXValueAttribute as CFString, &textValue) == .success,
+           let text = textValue as? String, !text.isEmpty {
+            let index = text.index(text.startIndex, offsetBy: min(cursorPos, text.count))
+            let charBefore = text[text.index(before: index)]
+            return !charBefore.isWhitespace
+        }
+
+        // Can't determine — safer to add a space (double space < missing space)
+        return true
     }
 
     func pasteAtCursor() {

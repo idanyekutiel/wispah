@@ -46,14 +46,14 @@ class TranscriptionService {
     }
 
     // Upload audio file, submit for transcription, poll until done, return text
-    func transcribe(fileURL: URL) async throws -> String {
+    func transcribe(fileURL: URL, prompt: String? = nil) async throws -> String {
         let timeout = await timeoutForFile(fileURL)
         return try await withThrowingTaskGroup(of: String.self) { group in
             group.addTask { [weak self] in
                 guard let self else {
                     throw TranscriptionError.submissionFailed("Service deallocated")
                 }
-                return try await self.transcribeAudio(fileURL: fileURL)
+                return try await self.transcribeAudio(fileURL: fileURL, prompt: prompt)
             }
 
             group.addTask {
@@ -70,7 +70,7 @@ class TranscriptionService {
     }
 
     // Send audio file for transcription and return text
-    private func transcribeAudio(fileURL: URL) async throws -> String {
+    private func transcribeAudio(fileURL: URL, prompt: String? = nil) async throws -> String {
         let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -86,7 +86,8 @@ class TranscriptionService {
             fileName: fileURL.lastPathComponent,
             model: transcriptionModel,
             boundary: boundary,
-            language: transcriptionLanguage
+            language: transcriptionLanguage,
+            prompt: prompt
         )
         request.httpBody = body
 
@@ -108,7 +109,7 @@ class TranscriptionService {
         return try parseTranscript(from: data)
     }
 
-    private func makeMultipartBody(audioData: Data, fileName: String, model: String, boundary: String, language: String? = nil) -> Data {
+    private func makeMultipartBody(audioData: Data, fileName: String, model: String, boundary: String, language: String? = nil, prompt: String? = nil) -> Data {
         var body = Data()
 
         func append(_ value: String) {
@@ -123,6 +124,12 @@ class TranscriptionService {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
             append("\(language)\r\n")
+        }
+
+        if let prompt, !prompt.isEmpty {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
+            append("\(prompt)\r\n")
         }
 
         append("--\(boundary)\r\n")

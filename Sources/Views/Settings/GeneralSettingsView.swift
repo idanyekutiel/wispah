@@ -12,14 +12,15 @@ struct GeneralSettingsView: View {
     @State private var keyValidationError: String?
     @State private var keyValidationSuccess = false
     @State private var customVocabularyInput: String = ""
+    @State private var showStatsDeleteConfirmation = false
     @State private var micPermissionGranted = false
     @StateObject private var githubCache = GitHubMetadataCache.shared
     @ObservedObject private var updateManager = UpdateManager.shared
-    private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
+    private let repoURL = URL(string: "https://github.com/idanyekutiel/wispah")!
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 20) {
+            LazyVStack(spacing: 20) {
                 // App branding header
                 VStack(spacing: 12) {
                     Image(nsImage: NSApp.applicationIconImage)
@@ -27,7 +28,7 @@ struct GeneralSettingsView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 64, height: 64)
 
-                    Text("FreeFlow")
+                    Text("Wispah")
                         .font(.system(size: 20, weight: .bold, design: .rounded))
 
                     Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
@@ -37,7 +38,7 @@ struct GeneralSettingsView: View {
                     // GitHub card
                     VStack(spacing: 10) {
                         HStack(spacing: 8) {
-                            AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
+                            AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/54131016")) { phase in
                                 switch phase {
                                 case .success(let image):
                                     image.resizable().aspectRatio(contentMode: .fill)
@@ -49,9 +50,9 @@ struct GeneralSettingsView: View {
                             .clipShape(Circle())
 
                             Button {
-                                openURL(freeflowRepoURL)
+                                openURL(repoURL)
                             } label: {
-                                Text("zachlatta/freeflow")
+                                Text("idanyekutiel/wispah")
                                     .font(.system(.caption, design: .monospaced).weight(.medium))
                             }
                             .buttonStyle(.plain)
@@ -59,24 +60,24 @@ struct GeneralSettingsView: View {
 
                             Spacer()
 
-                            HStack(spacing: 4) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(.yellow)
-                                    .font(.caption2)
-                                if githubCache.isLoading {
-                                    ProgressView().scaleEffect(0.5)
-                                } else if let count = githubCache.starCount {
+                            if githubCache.isLoading {
+                                ProgressView().scaleEffect(0.5)
+                            } else if let count = githubCache.starCount, count > 0 {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "star.fill")
+                                        .foregroundStyle(.yellow)
+                                        .font(.caption2)
                                     Text("\(count.formatted()) \(count == 1 ? "star" : "stars")")
                                         .font(.caption2.weight(.semibold))
                                         .foregroundStyle(.secondary)
                                 }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(Color.yellow.opacity(0.14)))
                             }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.yellow.opacity(0.14)))
 
                             Button {
-                                openURL(freeflowRepoURL)
+                                openURL(repoURL)
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "star")
@@ -208,7 +209,7 @@ struct GeneralSettingsView: View {
 
     private var startupSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("Launch FreeFlow at login", isOn: $appState.launchAtLogin)
+            Toggle("Launch Wispah at login", isOn: $appState.launchAtLogin)
 
             if SMAppService.mainApp.status == .requiresApproval {
                 HStack(spacing: 6) {
@@ -323,7 +324,7 @@ struct GeneralSettingsView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "arrow.down.circle.fill")
                                 .foregroundStyle(.blue)
-                            Text("A new version of FreeFlow is available!")
+                            Text("A new version of Wispah is available!")
                                 .font(.caption.weight(.semibold))
                             Spacer()
                             Button("Update Now") {
@@ -346,7 +347,7 @@ struct GeneralSettingsView: View {
 
     private var apiKeySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("FreeFlow uses Groq's whisper-large-v3 model for transcription.")
+            Text("Wispah uses Groq's whisper-large-v3 model for transcription.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -412,16 +413,6 @@ struct GeneralSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            if appState.whisperModel == .distilWhisper && appState.transcriptionLanguage != nil && appState.transcriptionLanguage != "en" {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                    Text("Distil-Whisper only supports English. Language selection will be ignored.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
         }
     }
 
@@ -455,21 +446,10 @@ struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                VStack(spacing: 4) {
-                    ForEach(HotkeyOption.allCases) { option in
-                        HotkeyOptionRow(
-                            option: option,
-                            isSelected: appState.toggleHotkey == option,
-                            action: {
-                                let old = appState.toggleHotkey
-                                if option == appState.holdHotkey {
-                                    appState.holdHotkey = old
-                                }
-                                appState.toggleHotkey = option
-                            }
-                        )
-                    }
-                }
+                HotkeyRecorderButton(
+                    label: "Toggle Key",
+                    binding: $appState.toggleHotkey
+                )
             }
 
             Divider()
@@ -481,24 +461,13 @@ struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                VStack(spacing: 4) {
-                    ForEach(HotkeyOption.allCases) { option in
-                        HotkeyOptionRow(
-                            option: option,
-                            isSelected: appState.holdHotkey == option,
-                            action: {
-                                let old = appState.holdHotkey
-                                if option == appState.toggleHotkey {
-                                    appState.toggleHotkey = old
-                                }
-                                appState.holdHotkey = option
-                            }
-                        )
-                    }
-                }
+                HotkeyRecorderButton(
+                    label: "Hold Key",
+                    binding: $appState.holdHotkey
+                )
             }
 
-            if appState.toggleHotkey == .fnKey || appState.holdHotkey == .fnKey {
+            if appState.toggleHotkey.keyCode == 63 || appState.holdHotkey.keyCode == 63 {
                 Text("Tip: If Fn opens Emoji picker, go to System Settings > Keyboard and change \"Press fn key to\" to \"Do Nothing\".")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -607,8 +576,17 @@ struct GeneralSettingsView: View {
                 .foregroundStyle(.secondary)
 
             if appState.saveRunHistory {
-                Stepper("Maximum history entries: \(appState.maxPipelineHistoryCount)", value: $appState.maxPipelineHistoryCount, in: 10...500, step: 10)
-                    .font(.caption)
+                HStack {
+                    Text("Maximum history entries:")
+                        .font(.caption)
+                    TextField("", value: $appState.maxPipelineHistoryCount, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 60)
+                        .multilineTextAlignment(.center)
+                        .onSubmit {
+                            appState.maxPipelineHistoryCount = max(1, appState.maxPipelineHistoryCount)
+                        }
+                }
 
                 Toggle("Save audio files", isOn: $appState.saveAudioFiles)
                 Text("Keep the recorded audio for playback and retry.")
@@ -634,6 +612,31 @@ struct GeneralSettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+
+                Divider()
+
+                Toggle("Collect usage stats (local)", isOn: Binding(
+                    get: { appState.collectStats },
+                    set: { newValue in
+                        if !newValue && appState.statsStore.stats.totalTranscriptions > 0 {
+                            showStatsDeleteConfirmation = true
+                        } else {
+                            appState.collectStats = newValue
+                        }
+                    }
+                ))
+                .alert("Delete Stats?", isPresented: $showStatsDeleteConfirmation) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Delete", role: .destructive) {
+                        appState.statsStore.reset()
+                        appState.collectStats = false
+                    }
+                } message: {
+                    Text("Disabling stats will permanently delete all collected data. This cannot be undone.")
+                }
+                Text("Track words, speed, and activity locally on this device. Nothing is sent anywhere.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -675,21 +678,53 @@ struct GeneralSettingsView: View {
                 }
             )
 
-            Toggle("Use screen context for transcription", isOn: $appState.screenRecordingEnabled)
-                .padding(.top, 4)
-
-            Text("When enabled, FreeFlow captures a screenshot to improve transcription accuracy based on what's on screen.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            permissionRow(
-                title: "Screen Recording",
-                icon: "camera.viewfinder",
-                granted: appState.hasScreenRecordingPermission,
-                action: {
-                    appState.requestScreenCapturePermission()
+            VStack(spacing: 8) {
+                HStack {
+                    Image(systemName: "camera.viewfinder")
+                        .frame(width: 20)
+                        .foregroundStyle(.blue)
+                    Text("Screen Context")
+                    Spacer()
+                    Toggle("", isOn: $appState.screenRecordingEnabled)
+                        .labelsHidden()
                 }
-            )
+
+                if appState.screenRecordingEnabled {
+                    Text("Captures a screenshot to improve transcription accuracy based on what's on screen.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if !appState.hasScreenRecordingPermission {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
+                            Text("Permission required")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button("Grant Access") {
+                                appState.requestScreenCapturePermission()
+                            }
+                            .font(.caption)
+                        }
+                    } else {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.caption)
+                            Text("Permission granted")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(10)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .cornerRadius(6)
         }
     }
 
