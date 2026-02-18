@@ -117,6 +117,7 @@ extension AppState {
         guard AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success else {
             return false
         }
+        // CF type casts always succeed — the AX API guarantees these types
         let focusedElement = focusedValue as! AXUIElement
 
         // Get cursor position

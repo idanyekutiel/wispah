@@ -505,12 +505,17 @@ final class UpdateManager: ObservableObject {
         let currentAppPath = Bundle.main.bundlePath
         let pid = ProcessInfo.processInfo.processIdentifier
 
+        // Shell-escape paths by wrapping in single quotes and escaping any embedded single quotes
+        func shellEscape(_ s: String) -> String {
+            "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        }
+
         let script = """
         while kill -0 \(pid) 2>/dev/null; do sleep 0.2; done
-        rm -rf "\(currentAppPath)"
-        mv "\(stagedApp.path)" "\(currentAppPath)"
-        open "\(currentAppPath)"
-        rm -rf "\(stagingDir.path)"
+        rm -rf \(shellEscape(currentAppPath))
+        mv \(shellEscape(stagedApp.path)) \(shellEscape(currentAppPath))
+        open \(shellEscape(currentAppPath))
+        rm -rf \(shellEscape(stagingDir.path))
         """
 
         let process = Process()

@@ -71,7 +71,9 @@ class AudioRecorder: NSObject, ObservableObject {
             if let uid = deviceUID, !uid.isEmpty, uid != "default",
                let deviceID = AudioDevice.deviceID(forUID: uid) {
                 os_log(.info, log: recordingLog, "device lookup resolved to %d: %.3fms", deviceID, (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-                let inputUnit = engine.inputNode.audioUnit!
+                guard let inputUnit = engine.inputNode.audioUnit else {
+                    throw AudioRecorderError.invalidInputFormat("Could not access audio input unit")
+                }
                 var id = deviceID
                 AudioUnitSetProperty(
                     inputUnit,
@@ -203,7 +205,7 @@ class AudioRecorder: NSObject, ObservableObject {
         os_log(.info, log: recordingLog, "audio file created: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
 
         audioFileQueue.sync { self.audioFile = newAudioFile }
-        self.isRecording = true
+        DispatchQueue.main.async { self.isRecording = true }
         os_log(.info, log: recordingLog, "startRecording() complete: %.3fms total", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
 
@@ -220,7 +222,7 @@ class AudioRecorder: NSObject, ObservableObject {
         os_log(.info, log: recordingLog, "last non-silent audio at %.2fs", lastNonSilentTime)
 
         audioFileQueue.sync { audioFile = nil }
-        isRecording = false
+        DispatchQueue.main.async { self.isRecording = false }
         smoothedLevel = 0.0
         DispatchQueue.main.async { self.audioLevel = 0.0 }
 
