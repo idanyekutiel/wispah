@@ -59,20 +59,20 @@ jobs:
         run: echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
 
       - name: Build
-        run: make ARCH=universal APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        run: make ARCH=universal APP_NAME=Wispah BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Create DMG
-        run: make dmg ARCH=universal APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        run: make dmg ARCH=universal APP_NAME=Wispah BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Sign DMG
         if: steps.codesign.outputs.signed == 'true'
-        run: codesign --force --sign "$CODESIGN_IDENTITY" build/FreeFlow.dmg
+        run: codesign --force --sign "$CODESIGN_IDENTITY" build/Wispah.dmg
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FreeFlow
-          path: build/FreeFlow.dmg
+          name: Wispah
+          path: build/Wispah.dmg
 
       - name: Cleanup signing artifacts
         if: always()

@@ -23,7 +23,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Embed build tag in Info.plist
-        run: plutil -insert FreeFlowBuildTag -string "${{ steps.version.outputs.tag }}" Info.plist
+        run: plutil -insert WispahBuildTag -string "${{ steps.version.outputs.tag }}" Info.plist
 
       - name: Install create-dmg
         run: brew install create-dmg
@@ -88,39 +88,39 @@ jobs:
 
       # --- Build universal ---
       - name: Build universal
-        run: make ARCH=universal APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        run: make ARCH=universal APP_NAME=Wispah BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Create universal DMG
-        run: make dmg ARCH=universal APP_NAME=FreeFlow BUNDLE_ID=com.zachlatta.freeflow CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        run: make dmg ARCH=universal APP_NAME=Wispah BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Sign universal DMG
-        run: codesign --force --sign "$CODESIGN_IDENTITY" build/FreeFlow.dmg
+        run: codesign --force --sign "$CODESIGN_IDENTITY" build/Wispah.dmg
 
       - name: Notarize universal DMG
         run: |
-          xcrun notarytool submit build/FreeFlow.dmg \
+          xcrun notarytool submit build/Wispah.dmg \
             --keychain-profile "notarytool-profile" \
             --keychain "$KEYCHAIN_PATH" \
             --wait
-          xcrun stapler staple build/FreeFlow.dmg
+          xcrun stapler staple build/Wispah.dmg
 
       - name: Save universal DMG
-        run: mv build/FreeFlow.dmg FreeFlow.dmg
+        run: mv build/Wispah.dmg Wispah.dmg
 
       # --- Release ---
       - name: Create Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: FreeFlow ${{ steps.version.outputs.tag }}
+          name: Wispah ${{ steps.version.outputs.tag }}
           body: |
             ## Download
 
-            **[FreeFlow.dmg](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg)** — Universal build for all Macs (Apple Silicon + Intel).
+            **[Wispah.dmg](https://github.com/idanyekutiel/wispah/releases/latest/download/Wispah.dmg)** — Universal build for all Macs (Apple Silicon + Intel).
           generate_release_notes: true
           make_latest: true
           files: |
-            FreeFlow.dmg
+            Wispah.dmg
 
       # --- Cleanup ---
       - name: Cleanup signing artifacts

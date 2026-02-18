@@ -14,6 +14,7 @@ struct PipelineHistoryItem: Identifiable, Codable {
     let debugStatus: String
     let customVocabulary: String
     let audioFileName: String?
+    let recordingDurationSeconds: Double?
 
     init(
         id: UUID = UUID(),
@@ -28,7 +29,8 @@ struct PipelineHistoryItem: Identifiable, Codable {
         postProcessingStatus: String,
         debugStatus: String,
         customVocabulary: String,
-        audioFileName: String? = nil
+        audioFileName: String? = nil,
+        recordingDurationSeconds: Double? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -43,5 +45,6 @@ struct PipelineHistoryItem: Identifiable, Codable {
         self.debugStatus = debugStatus
         self.customVocabulary = customVocabulary
         self.audioFileName = audioFileName
+        self.recordingDurationSeconds = recordingDurationSeconds
     }
 }

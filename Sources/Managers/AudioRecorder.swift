@@ -21,7 +21,7 @@ class AudioRecorder: NSObject, ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
     private var tempFileURL: URL?
-    private let audioFileQueue = DispatchQueue(label: "com.zachlatta.freeflow.audiofile")
+    private let audioFileQueue = DispatchQueue(label: "com.idanyekutiel.wispah.audiofile")
     private var recordingStartTime: CFAbsoluteTime = 0
     private var firstBufferLogged = false
     private var bufferCount: Int = 0
@@ -31,6 +31,9 @@ class AudioRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
     @Published var audioLevel: Float = 0.0
     private var smoothedLevel: Float = 0.0
+    /// Tracks time of last non-silent audio buffer for trailing silence trimming
+    private var lastNonSilentTime: TimeInterval = 0
+    private let silenceThresholdRMS: Float = 0.005
 
     /// Called on the audio thread when the first non-silent buffer arrives.
     var onRecordingReady: (() -> Void)?
@@ -107,6 +110,11 @@ class AudioRecorder: NSObject, ObservableObject {
                     var sum: Float = 0
                     for i in 0..<frames { sum += samples[i] * samples[i] }
                     rms = sqrtf(sum / Float(frames))
+                }
+
+                // Track last non-silent buffer for trailing silence trimming
+                if rms > self.silenceThresholdRMS {
+                    self.lastNonSilentTime = CFAbsoluteTimeGetCurrent() - self.recordingStartTime
                 }
 
                 if self.bufferCount <= 40 {
@@ -199,9 +207,17 @@ class AudioRecorder: NSObject, ObservableObject {
         os_log(.info, log: recordingLog, "startRecording() complete: %.3fms total", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
 
+    /// Duration (in seconds) of the recording up to the last non-silent audio.
+    /// Use this to trim trailing silence before uploading.
+    var lastNonSilentDuration: TimeInterval {
+        // Add a small buffer (0.3s) to avoid cutting off speech tails
+        return lastNonSilentTime > 0 ? lastNonSilentTime + 0.3 : 0
+    }
+
     func stopRecording() -> URL? {
         let elapsed = (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000
         os_log(.info, log: recordingLog, "stopRecording() called: %.3fms after start, %d buffers received", elapsed, bufferCount)
+        os_log(.info, log: recordingLog, "last non-silent audio at %.2fs", lastNonSilentTime)
 
         audioFileQueue.sync { audioFile = nil }
         isRecording = false
@@ -255,6 +271,89 @@ class AudioRecorder: NSObject, ObservableObject {
         DispatchQueue.main.async {
             self.audioLevel = self.smoothedLevel
         }
+    }
+
+    /// Downsample audio to 16KHz mono AAC and optionally trim trailing silence.
+    /// Returns the URL of the preprocessed file (caller should clean up).
+    func preprocessAudio(inputURL: URL, trimToSeconds: Double? = nil) async throws -> URL {
+        let asset = AVURLAsset(url: inputURL)
+        let outputURL = inputURL.deletingLastPathComponent()
+            .appendingPathComponent("upload_\(UUID().uuidString).m4a")
+
+        let reader = try AVAssetReader(asset: asset)
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
+
+        guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw AudioRecorderError.invalidInputFormat("No audio track found")
+        }
+
+        // Trim: only read up to trimToSeconds
+        if let trim = trimToSeconds, trim > 0 {
+            let duration = try await asset.load(.duration)
+            let totalSeconds = CMTimeGetSeconds(duration)
+            if trim < totalSeconds {
+                let endTime = CMTime(seconds: trim, preferredTimescale: 44100)
+                reader.timeRange = CMTimeRange(start: .zero, end: endTime)
+            }
+        }
+
+        // Reader: decode to 16KHz mono PCM
+        let readerSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16000.0,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        let readerOutput = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: readerSettings)
+        readerOutput.alwaysCopiesSampleData = false
+        reader.add(readerOutput)
+
+        // Writer: encode as 16KHz mono AAC
+        let writerSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 16000.0,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderBitRateKey: 32000,
+        ]
+        let writerInput = AVAssetWriterInput(mediaType: .audio, outputSettings: writerSettings)
+        writerInput.expectsMediaDataInRealTime = false
+        writer.add(writerInput)
+
+        reader.startReading()
+        writer.startWriting()
+        writer.startSession(atSourceTime: .zero)
+
+        // nonisolated(unsafe) silences Sendable warnings — these are only accessed
+        // sequentially on the writer's serial queue, so there's no data race.
+        nonisolated(unsafe) let writerInputRef = writerInput
+        nonisolated(unsafe) let readerOutputRef = readerOutput
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            writerInputRef.requestMediaDataWhenReady(on: DispatchQueue(label: "com.idanyekutiel.wispah.audiopreprocess")) {
+                while writerInputRef.isReadyForMoreMediaData {
+                    if let sampleBuffer = readerOutputRef.copyNextSampleBuffer() {
+                        writerInputRef.append(sampleBuffer)
+                    } else {
+                        writerInputRef.markAsFinished()
+                        continuation.resume()
+                        return
+                    }
+                }
+            }
+        }
+
+        await writer.finishWriting()
+
+        guard writer.status == .completed else {
+            let errorMsg = writer.error?.localizedDescription ?? "Unknown error"
+            throw AudioRecorderError.invalidInputFormat("Audio preprocessing failed: \(errorMsg)")
+        }
+
+        os_log(.info, log: recordingLog, "preprocessed audio: %{public}@", outputURL.lastPathComponent)
+        return outputURL
     }
 
     func cleanup() {

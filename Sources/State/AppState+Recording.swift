@@ -6,31 +6,31 @@ import os.log
 
 extension AppState {
     func startHotkeyMonitoring() {
-        hotkeyManager.onKeyDown = { [weak self] option in
+        hotkeyManager.onKeyDown = { [weak self] binding in
             DispatchQueue.main.async {
-                self?.handleHotkeyDown(option: option)
+                self?.handleHotkeyDown(binding: binding)
             }
         }
-        hotkeyManager.onKeyUp = { [weak self] option in
+        hotkeyManager.onKeyUp = { [weak self] binding in
             DispatchQueue.main.async {
-                self?.handleHotkeyUp(option: option)
+                self?.handleHotkeyUp(binding: binding)
             }
         }
-        let uniqueKeys = Array(Set([toggleHotkey, holdHotkey]))
-        hotkeyManager.start(options: uniqueKeys)
+        let uniqueBindings = Array(Set([toggleHotkey, holdHotkey]))
+        hotkeyManager.start(bindings: uniqueBindings)
     }
 
     func restartHotkeyMonitoring() {
-        let uniqueKeys = Array(Set([toggleHotkey, holdHotkey]))
-        hotkeyManager.start(options: uniqueKeys)
+        let uniqueBindings = Array(Set([toggleHotkey, holdHotkey]))
+        hotkeyManager.start(bindings: uniqueBindings)
     }
 
-    func handleHotkeyDown(option: HotkeyOption) {
-        os_log(.info, log: recordingLog, "handleHotkeyDown() fired, key=%{public}@, isRecording=%{public}d, isTranscribing=%{public}d", option.rawValue, isRecording, isTranscribing)
-        if option == holdHotkey && option != toggleHotkey {
+    func handleHotkeyDown(binding: HotkeyBinding) {
+        os_log(.info, log: recordingLog, "handleHotkeyDown() fired, key=%{public}@, isRecording=%{public}d, isTranscribing=%{public}d", binding.displayName, isRecording, isTranscribing)
+        if binding == holdHotkey && binding != toggleHotkey {
             guard !isRecording && !isTranscribing else { return }
             startRecording()
-        } else if option == toggleHotkey && option != holdHotkey {
+        } else if binding == toggleHotkey && binding != holdHotkey {
             guard !isTranscribing else { return }
             toggleRecording()
         } else {
@@ -45,11 +45,11 @@ extension AppState {
         }
     }
 
-    func handleHotkeyUp(option: HotkeyOption) {
-        if option == holdHotkey && option != toggleHotkey {
+    func handleHotkeyUp(binding: HotkeyBinding) {
+        if binding == holdHotkey && binding != toggleHotkey {
             guard isRecording else { return }
             stopAndTranscribe()
-        } else if option == toggleHotkey && option != holdHotkey {
+        } else if binding == toggleHotkey && binding != holdHotkey {
             return
         } else {
             switch recordingMode {
@@ -211,6 +211,7 @@ extension AppState {
         lastContextScreenshotDataURL = nil
         lastContextScreenshotStatus = "No screenshot"
 
+        let trimDuration = audioRecorder.lastNonSilentDuration
         guard let fileURL = audioRecorder.stopRecording() else {
             errorMessage = "No audio recorded"
             isRecording = false
@@ -221,7 +222,7 @@ extension AppState {
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."
-        debugStatusMessage = "Transcribing audio"
+        debugStatusMessage = "Processing audio"
         errorMessage = nil
         if playSoundsEnabled { NSSound(named: "Pop")?.play() }
         overlayManager.slideUpToNotch { }
@@ -242,10 +243,42 @@ extension AppState {
         let transcriptionService = TranscriptionService(apiKey: apiKey, model: whisperModel.rawValue, language: transcriptionLanguage)
         let postProcessingService = PostProcessingService(apiKey: apiKey)
 
+        // Build Whisper prompt from custom vocabulary — hints for specific words/spellings
+        let whisperPrompt: String? = {
+            let vocab = customVocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !vocab.isEmpty else { return nil }
+            let terms = vocab
+                .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            guard !terms.isEmpty else { return nil }
+            return terms.joined(separator: ", ")
+        }()
+
         Task {
             do {
-                async let transcript = transcriptionService.transcribe(fileURL: fileURL)
+                // Preprocess: downsample to 16KHz mono AAC + trim trailing silence
+                let uploadURL: URL
+                do {
+                    uploadURL = try await audioRecorder.preprocessAudio(
+                        inputURL: fileURL,
+                        trimToSeconds: trimDuration > 0 ? trimDuration : nil
+                    )
+                } catch {
+                    os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
+                    uploadURL = fileURL
+                }
+                await MainActor.run { [weak self] in
+                    self?.debugStatusMessage = "Transcribing audio"
+                }
+
+                async let transcript = transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
                 let rawTranscript = try await transcript
+
+                // Clean up preprocessed file if different from original
+                if uploadURL != fileURL {
+                    try? FileManager.default.removeItem(at: uploadURL)
+                }
                 let appContext: AppContext
                 if let sessionContext {
                     appContext = sessionContext
@@ -293,7 +326,8 @@ extension AppState {
                         postProcessingPrompt: postProcessingPrompt,
                         context: appContext,
                         processingStatus: processingStatus,
-                        audioFileName: savedAudioFileName
+                        audioFileName: savedAudioFileName,
+                        recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil
                     )
                     self.transcribingIndicatorTask?.cancel()
                     self.transcribingIndicatorTask = nil
@@ -359,7 +393,8 @@ extension AppState {
                         postProcessingPrompt: "",
                         context: resolvedContext,
                         processingStatus: "Error: \(error.localizedDescription)",
-                        audioFileName: savedAudioFileName
+                        audioFileName: savedAudioFileName,
+                        recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil
                     )
                 }
             }

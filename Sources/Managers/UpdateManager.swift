@@ -71,7 +71,7 @@ final class UpdateManager: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: "updateSkippedVersion") }
     }
 
-    private let releasesURL = URL(string: "https://api.github.com/repos/zachlatta/freeflow/releases/latest")!
+    private let releasesURL = URL(string: "https://api.github.com/repos/idanyekutiel/wispah/releases/latest")!
     private let stabilityBufferDays: TimeInterval = 3
     private let checkIntervalSeconds: TimeInterval = 7 * 24 * 60 * 60 // 7 days
     private var periodicTimer: Timer?
@@ -115,7 +115,7 @@ final class UpdateManager: ObservableObject {
     // MARK: - Check for Updates
 
     func checkForUpdates(userInitiated: Bool) async {
-        let currentBuildTag = Bundle.main.infoDictionary?["FreeFlowBuildTag"] as? String
+        let currentBuildTag = Bundle.main.infoDictionary?["WispahBuildTag"] as? String
 
         // Dev builds (no embedded tag): skip auto-checks, but allow manual checks
         if !userInitiated && currentBuildTag == nil {
@@ -224,7 +224,7 @@ final class UpdateManager: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "A New Version is Available"
-        alert.informativeText = "A new version of FreeFlow (released \(latestReleaseDate)) is available.\n\nWould you like to download the update?"
+        alert.informativeText = "A new version of Wispah (released \(latestReleaseDate)) is available.\n\nWould you like to download the update?"
         alert.alertStyle = .informational
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "Download Update")
@@ -252,7 +252,7 @@ final class UpdateManager: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "New Release Available"
-        alert.informativeText = "A new version of FreeFlow was released \(ageText). It's very recent — you can download it now or wait a few days for stability.\n\nWould you like to download it?"
+        alert.informativeText = "A new version of Wispah was released \(ageText). It's very recent — you can download it now or wait a few days for stability.\n\nWould you like to download it?"
         alert.alertStyle = .informational
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "Download Now")
@@ -267,7 +267,7 @@ final class UpdateManager: ObservableObject {
     func showUpToDateAlert() {
         let alert = NSAlert()
         alert.messageText = "You're Up to Date"
-        alert.informativeText = "You're running the latest version of FreeFlow."
+        alert.informativeText = "You're running the latest version of Wispah."
         alert.alertStyle = .informational
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "OK")
@@ -311,7 +311,7 @@ final class UpdateManager: ObservableObject {
 
     private func performUpdate(downloadURL: URL, expectedSize: Int) async {
         let fm = FileManager.default
-        let tempDir = fm.temporaryDirectory.appendingPathComponent("freeflow-update-\(UUID().uuidString)")
+        let tempDir = fm.temporaryDirectory.appendingPathComponent("wispah-update-\(UUID().uuidString)")
 
         do {
             try fm.createDirectory(at: tempDir, withIntermediateDirectories: true)
@@ -320,7 +320,7 @@ final class UpdateManager: ObservableObject {
             return
         }
 
-        let dmgPath = tempDir.appendingPathComponent("FreeFlow.dmg")
+        let dmgPath = tempDir.appendingPathComponent("Wispah.dmg")
 
         // MARK: Download phase
         updateStatus = .downloading
@@ -422,7 +422,7 @@ final class UpdateManager: ObservableObject {
             }
 
             // Copy app to staging directory
-            let stagingDir = fm.temporaryDirectory.appendingPathComponent("freeflow-staged-\(UUID().uuidString)")
+            let stagingDir = fm.temporaryDirectory.appendingPathComponent("wispah-staged-\(UUID().uuidString)")
             try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
             let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
             try fm.copyItem(at: appBundle, to: stagedApp)

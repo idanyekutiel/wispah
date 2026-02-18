@@ -1,9 +1,9 @@
 -include .env
-APP_NAME ?= FreeFlow Dev
-BUNDLE_ID ?= com.zachlatta.freeflow.dev
+APP_NAME ?= Wispah Dev
+BUNDLE_ID ?= com.idanyekutiel.wispah.dev
 BUILD_DIR = build
 APP_BUNDLE = $(BUILD_DIR)/$(APP_NAME).app
-CODESIGN_IDENTITY ?= FreeFlow Dev
+CODESIGN_IDENTITY ?= Wispah Dev
 DEV_CODESIGN_IDENTITY ?= -
 CONTENTS = $(APP_BUNDLE)/Contents
 MACOS_DIR = $(CONTENTS)/MacOS
@@ -13,6 +13,7 @@ RESOURCES = $(CONTENTS)/Resources
 ARCH ?= $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
+ADAPTER_DIR = Resources/MediaRemoteAdapter
 
 .PHONY: all clean run dev dev-run watch icon dmg codesign-dmg notarize
 
@@ -51,7 +52,9 @@ endif
 	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
-	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements FreeFlow.entitlements "$(APP_BUNDLE)"
+	@cp -R "$(ADAPTER_DIR)/MediaRemoteAdapter.framework" "$(RESOURCES)/"
+	@cp "$(ADAPTER_DIR)/mediaremote-adapter.pl" "$(RESOURCES)/"
+	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements Wispah.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 icon: $(ICON_ICNS)
@@ -111,6 +114,8 @@ dev: $(SOURCES) Info.plist $(ICON_ICNS)
 	@plutil -replace CFBundleExecutable -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleIdentifier -string "$(BUNDLE_ID)" "$(CONTENTS)/Info.plist"
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
+	@cp -R "$(ADAPTER_DIR)/MediaRemoteAdapter.framework" "$(RESOURCES)/"
+	@cp "$(ADAPTER_DIR)/mediaremote-adapter.pl" "$(RESOURCES)/"
 	@codesign --force --sign "$(DEV_CODESIGN_IDENTITY)" "$(APP_BUNDLE)"
 	@echo "Dev build ready: $(APP_BUNDLE)"
 

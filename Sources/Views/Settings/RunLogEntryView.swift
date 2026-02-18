@@ -157,6 +157,10 @@ struct RunLogEntryView: View {
                         let audioURL = AppState.audioStorageDirectory().appendingPathComponent(audioFileName)
                         HStack {
                             AudioPlayerView(audioURL: audioURL)
+                            Text(formattedFileSize(url: audioURL))
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
                             Button {
                                 saveAudioToDesktop(audioURL: audioURL)
                             } label: {
@@ -409,7 +413,8 @@ struct RunLogEntryView: View {
                             postProcessingStatus: "Retried successfully",
                             debugStatus: "Retry",
                             customVocabulary: item.customVocabulary,
-                            audioFileName: item.audioFileName
+                            audioFileName: item.audioFileName,
+                            recordingDurationSeconds: item.recordingDurationSeconds
                         )
                         appState.pipelineHistory[index] = updated
                         try? appState.updateHistoryEntry(updated)
@@ -437,7 +442,7 @@ struct RunLogEntryView: View {
         let timestamp = item.timestamp.formatted(date: .numeric, time: .standard)
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: ".")
-        let destURL = desktop.appendingPathComponent("freeflow-\(timestamp).\(audioURL.pathExtension)")
+        let destURL = desktop.appendingPathComponent("wispah-\(timestamp).\(audioURL.pathExtension)")
         do {
             if FileManager.default.fileExists(atPath: destURL.path) {
                 try FileManager.default.removeItem(at: destURL)
@@ -447,6 +452,14 @@ struct RunLogEntryView: View {
         } catch {
             appState.errorMessage = "Failed to save audio: \(error.localizedDescription)"
         }
+    }
+
+    private func formattedFileSize(url: URL) -> String {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int64 else { return "" }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: size)
     }
 
     private func parseVocabulary(_ text: String) -> [String] {

@@ -1,48 +1,68 @@
 <p align="center">
-  <img src="Resources/AppIcon-README.png" width="128" height="128" alt="FreeFlow icon">
+  <img src="Resources/AppIcon-README.png" width="128" height="128" alt="Wispah icon">
 </p>
 
-<h1 align="center">FreeFlow</h1>
+<h1 align="center">Wispah</h1>
 
 <p align="center">
-  Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.
+  Free, open source voice-to-text for macOS. Context-aware transcription that pastes at your cursor.
 </p>
 
 <p align="center">
-  <a href="https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg"><b>⬇ Download FreeFlow.dmg</b></a><br>
-  <sub>Works on all Macs (Apple Silicon + Intel)</sub>
+  <a href="https://github.com/idanyekutiel/wispah/releases/latest/download/Wispah.dmg"><b>Download Wispah.dmg</b></a><br>
+  <sub>macOS 13+ (Apple Silicon + Intel)</sub>
 </p>
 
 ---
 
-<p align="center">
-  <img src="Resources/demo.gif" alt="FreeFlow demo" width="600">
-</p>
+## How it works
 
-I like the concept of apps like [Wispr Flow](https://wisprflow.ai/), [Superwhisper](https://superwhisper.com/), and [Monologue](https://www.monologue.to/) that use AI to add accurate and easy-to-use transcription to your computer, but they all charge fees of ~$10/month when the underlying AI models are free to use or cost pennies.
+1. Press a hotkey to start recording
+2. Speak — Wispah captures audio and takes a screenshot for context
+3. Release (or press again) to stop
+4. Your transcription is pasted at the cursor, adapted to context
 
-So over the weekend I vibe-coded my own free version!
+Context-aware: if you're replying to an email, it reads names and spells them correctly. Same for terminal commands, code, or any app.
 
-It's called FreeFlow. Here's how it works:
+## Setup
 
-1. Download the app from above or [click here](https://github.com/zachlatta/freeflow/releases/latest/download/FreeFlow.dmg)
-2. Get a free Groq API key from [groq.com](https://groq.com/)
-3. Press and hold `Fn` anytime to start recording and have whatever you say pasted into the current text field
+1. Download from [Releases](https://github.com/idanyekutiel/wispah/releases)
+2. Get a free API key from [groq.com](https://groq.com/)
+3. Run the app and follow the setup wizard
 
-One of the cool features is that it's context aware. If you're replying to an email, it'll read the names of the people you're replying to and make sure to spell their names correctly. Same with if you're dictating into a terminal or another app. This is the same thing as Monologue's "Deep Context" feature.
+## Build from source
 
-An added bonus is that there's no FreeFlow server, so no data is stored or retained - making it more privacy friendly than the SaaS apps. The only information that leaves your computer are the API calls to Groq's transcription and LLM API (LLM is for post-processing the transcription to adapt to context).
+```bash
+# Clone
+git clone https://github.com/idanyekutiel/wispah.git
+cd wispah
 
-### FAQ
+# Dev build + auto-reload
+make watch
 
-**Why does this use Groq instead of a local transcription model?**
+# Release build (universal binary)
+ARCH=universal make all
+```
 
-I love this idea, and originally planned to build FreeFlow using local models, but to have post-processing (that's where you get correctly spelled names when replying to emails / etc), you need to have a local LLM too.
+Requires: Xcode Command Line Tools, fswatch (`brew install fswatch`)
 
-If you do that, the total pipeline takes too long for the UX to be good (5-10 seconds per transcription instead of <1s). I also had concerns around battery life.
+## Stack
 
-Some day!
+- Swift + SwiftUI (no Xcode project — built with `swiftc` directly)
+- Groq API for transcription (Whisper) and post-processing (LLM)
+- macOS Accessibility API for cursor detection and text pasting
+- [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) for media pause/resume detection on macOS 15.4+
+
+## Privacy
+
+No servers. The only network calls are to Groq's API for transcription and context processing. Nothing is stored or retained externally.
+
+## Credits
+
+Wispah is a fork of [FreeFlow](https://github.com/zachlatta/freeflow) by [Zach Latta](https://github.com/zachlatta). Original project licensed under MIT.
 
 ## License
 
-Licensed under the MIT license.
+MIT License. See [LICENSE](LICENSE).
+
+Third-party dependencies are listed in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md).

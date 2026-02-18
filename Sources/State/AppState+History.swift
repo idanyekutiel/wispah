@@ -49,7 +49,8 @@ extension AppState {
                             postProcessingStatus: "Retried successfully",
                             debugStatus: "Retry",
                             customVocabulary: item.customVocabulary,
-                            audioFileName: item.audioFileName
+                            audioFileName: item.audioFileName,
+                            recordingDurationSeconds: item.recordingDurationSeconds
                         )
                         pipelineHistory[index] = updated
                         try? pipelineHistoryStore.update(updated)
@@ -88,7 +89,8 @@ extension AppState {
         postProcessingPrompt: String,
         context: AppContext,
         processingStatus: String,
-        audioFileName: String? = nil
+        audioFileName: String? = nil,
+        recordingDurationSeconds: Double? = nil
     ) {
         let isError = processingStatus.hasPrefix("Error:")
 
@@ -122,7 +124,8 @@ extension AppState {
             postProcessingStatus: processingStatus,
             debugStatus: debugStatusMessage,
             customVocabulary: customVocabulary,
-            audioFileName: effectiveAudioFileName
+            audioFileName: effectiveAudioFileName,
+            recordingDurationSeconds: recordingDurationSeconds
         )
         do {
             let removedAudioFileNames = try pipelineHistoryStore.append(newEntry, maxCount: maxPipelineHistoryCount)
@@ -132,6 +135,12 @@ extension AppState {
             pipelineHistory = pipelineHistoryStore.loadAllHistory()
         } catch {
             errorMessage = "Unable to save run history entry: \(error.localizedDescription)"
+        }
+
+        // Accumulate persistent stats (survives history trimming)
+        if collectStats && !isError && !postProcessedTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let words = postProcessedTranscript.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
+            statsStore.record(wordCount: words, recordingDurationSeconds: recordingDurationSeconds, timestamp: Date())
         }
     }
 }

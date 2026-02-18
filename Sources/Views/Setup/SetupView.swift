@@ -8,7 +8,7 @@ struct SetupView: View {
     var onComplete: () -> Void
     @EnvironmentObject var appState: AppState
     @Environment(\.openURL) private var openURL
-    private let freeflowRepoURL = URL(string: "https://github.com/zachlatta/freeflow")!
+    private let repoURL = URL(string: "https://github.com/idanyekutiel/wispah")!
     private enum SetupStep: Int, CaseIterable {
         case welcome = 0
         case apiKey
@@ -179,7 +179,7 @@ struct SetupView: View {
                 .frame(width: 128, height: 128)
 
             VStack(spacing: 6) {
-                Text("Welcome to FreeFlow")
+                Text("Welcome to Wispah")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
 
                 Text("Dictate text anywhere on your Mac.\nHold a key to record, release to transcribe.")
@@ -190,7 +190,7 @@ struct SetupView: View {
 
             VStack(spacing: 10) {
                 HStack(spacing: 8) {
-                    AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/992248")) { phase in
+                    AsyncImage(url: URL(string: "https://avatars.githubusercontent.com/u/54131016")) { phase in
                         switch phase {
                         case .success(let image):
                             image.resizable().aspectRatio(contentMode: .fill)
@@ -202,9 +202,9 @@ struct SetupView: View {
                     .clipShape(Circle())
 
                     Button {
-                        openURL(freeflowRepoURL)
+                        openURL(repoURL)
                     } label: {
-                        Text("zachlatta/freeflow")
+                        Text("idanyekutiel/wispah")
                             .font(.system(.caption, design: .monospaced).weight(.medium))
                     }
                     .buttonStyle(.plain)
@@ -229,7 +229,7 @@ struct SetupView: View {
                     .background(Capsule().fill(Color.yellow.opacity(0.14)))
 
                     Button {
-                        openURL(freeflowRepoURL)
+                        openURL(repoURL)
                     } label: {
                         HStack(spacing: 4) {
                             Image(systemName: "star")
@@ -300,7 +300,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow uses Groq for fast, high-accuracy transcription.")
+            Text("Wispah uses Groq for fast, high-accuracy transcription.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -355,7 +355,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow needs access to your microphone to record audio for transcription.")
+            Text("Wispah needs access to your microphone to record audio for transcription.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -395,7 +395,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow needs Accessibility access to paste transcribed text into your apps.")
+            Text("Wispah needs Accessibility access to paste transcribed text into your apps.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -448,12 +448,12 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow intelligently adapts the transcription to the current app you're working in (ex. spelling names in an email correctly).")
+            Text("Wispah intelligently adapts the transcription to the current app you're working in (ex. spelling names in an email correctly).")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("It needs this permission to see which app you're working in and any in-progress work. Nothing is stored on FreeFlow's servers (FreeFlow doesn't have servers).")
+            Text("It needs this permission to see which app you're working in and any in-progress work. Nothing is stored on Wispah's servers (Wispah doesn't have servers).")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .font(.callout)
@@ -507,58 +507,36 @@ struct SetupView: View {
                 .fontWeight(.bold)
 
             VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Toggle to Record")
                         .font(.subheadline.weight(.semibold))
                     Text("Press once to start, press again to stop.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    VStack(spacing: 4) {
-                        ForEach(HotkeyOption.allCases) { option in
-                            HotkeyOptionRow(
-                                option: option,
-                                isSelected: appState.toggleHotkey == option,
-                                action: {
-                                    let old = appState.toggleHotkey
-                                    if option == appState.holdHotkey {
-                                        appState.holdHotkey = old
-                                    }
-                                    appState.toggleHotkey = option
-                                }
-                            )
-                        }
-                    }
+                    HotkeyRecorderButton(
+                        label: "Toggle Key",
+                        binding: $appState.toggleHotkey
+                    )
                 }
 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text("Hold to Record")
                         .font(.subheadline.weight(.semibold))
                     Text("Hold the key to record, release to stop.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    VStack(spacing: 4) {
-                        ForEach(HotkeyOption.allCases) { option in
-                            HotkeyOptionRow(
-                                option: option,
-                                isSelected: appState.holdHotkey == option,
-                                action: {
-                                    let old = appState.holdHotkey
-                                    if option == appState.toggleHotkey {
-                                        appState.toggleHotkey = old
-                                    }
-                                    appState.holdHotkey = option
-                                }
-                            )
-                        }
-                    }
+                    HotkeyRecorderButton(
+                        label: "Hold Key",
+                        binding: $appState.holdHotkey
+                    )
                 }
             }
 
-            if appState.toggleHotkey == .fnKey || appState.holdHotkey == .fnKey {
+            if appState.toggleHotkey.keyCode == 63 || appState.holdHotkey.keyCode == 63 {
                 Text("Tip: If Fn opens Emoji picker, go to\nSystem Settings > Keyboard and change\n\"Press fn key to\" to \"Do Nothing\".")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -644,7 +622,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Start FreeFlow automatically when you log in so it's always ready.")
+            Text("Start Wispah automatically when you log in so it's always ready.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -653,7 +631,7 @@ struct SetupView: View {
                 Image(systemName: "sunrise.fill")
                     .frame(width: 24)
                     .foregroundStyle(.blue)
-                Toggle("Launch FreeFlow at login", isOn: $appState.launchAtLogin)
+                Toggle("Launch Wispah at login", isOn: $appState.launchAtLogin)
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
@@ -779,7 +757,7 @@ struct SetupView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("Perfect — FreeFlow is ready to go.")
+                            Text("Perfect — Wispah is ready to go.")
                                 .font(.title2)
                                 .fontWeight(.semibold)
 
@@ -825,7 +803,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("FreeFlow lives in your menu bar.")
+            Text("Wispah lives in your menu bar.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
@@ -1051,11 +1029,11 @@ struct SetupView: View {
     }
 
     private func startTestHotkeyMonitoring() {
-        appState.hotkeyManager.onKeyDown = { [self] option in
+        appState.hotkeyManager.onKeyDown = { [self] binding in
             DispatchQueue.main.async {
-                if option == appState.holdHotkey && option != appState.toggleHotkey {
+                if binding == appState.holdHotkey && binding != appState.toggleHotkey {
                     startTestRecording()
-                } else if option == appState.toggleHotkey && option != appState.holdHotkey {
+                } else if binding == appState.toggleHotkey && binding != appState.holdHotkey {
                     if testPhase == .recording {
                         stopTestRecordingAndTranscribe()
                     } else {
@@ -1077,11 +1055,11 @@ struct SetupView: View {
             }
         }
 
-        appState.hotkeyManager.onKeyUp = { [self] option in
+        appState.hotkeyManager.onKeyUp = { [self] binding in
             DispatchQueue.main.async {
-                if option == appState.holdHotkey && option != appState.toggleHotkey {
+                if binding == appState.holdHotkey && binding != appState.toggleHotkey {
                     stopTestRecordingAndTranscribe()
-                } else if option == appState.toggleHotkey && option != appState.holdHotkey {
+                } else if binding == appState.toggleHotkey && binding != appState.holdHotkey {
                     // Toggle key released — no action
                 } else {
                     switch appState.recordingMode {
@@ -1094,8 +1072,8 @@ struct SetupView: View {
             }
         }
 
-        let uniqueKeys = Array(Set([appState.toggleHotkey, appState.holdHotkey]))
-        appState.hotkeyManager.start(options: uniqueKeys)
+        let uniqueBindings = Array(Set([appState.toggleHotkey, appState.holdHotkey]))
+        appState.hotkeyManager.start(bindings: uniqueBindings)
     }
 
     private func stopTestHotkeyMonitoring() {
