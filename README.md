@@ -33,6 +33,7 @@ Wispah Flow uses [Groq](https://groq.com) for both transcription (Whisper) and p
 
 1. **It's free.** Groq offers free API access, so using Wispah Flow costs nothing. No subscription, no credits, no hidden limits that matter for normal use. Just grab an API key and go.
 2. **It's fast.** Groq runs on custom LPU hardware designed for inference speed. Transcriptions come back near-instantly, making the whole flow feel like native dictation.
+3. **It's what we inherited.** Wispah Flow is a fork of FreeFlow, which was built on Groq from the start. It works well, so we kept it — and plan to add local model support down the road.
 
 ## Setup
 
