@@ -112,16 +112,25 @@ jobs:
         run: mv build/Wispah.dmg Wispah.dmg
 
       # --- Release ---
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Find previous tag
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "$GITHUB_REF_NAME" | head -1)
+          if [ -n "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s" "$PREV_TAG".."$GITHUB_REF_NAME" | grep -v "^- Release v")
+          else
+            CHANGELOG=$(git log --pretty=format:"- %s" "$GITHUB_REF_NAME" | head -20 | grep -v "^- Release v")
+          fi
+          # Write to file to preserve newlines
+          echo "$CHANGELOG" > "$RUNNER_TEMP/changelog.txt"
+
       - name: Create Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Wispah Flow v${{ steps.version.outputs.version }}
-          body: |
-            ## Download
-
-            **[Wispah.dmg](https://github.com/idanyekutiel/wispah/releases/latest/download/Wispah.dmg)** — Universal build for all Macs (Apple Silicon + Intel).
-          generate_release_notes: true
+          name: Version ${{ steps.version.outputs.version }}
+          body_path: ${{ runner.temp }}/changelog.txt
           make_latest: true
           files: |
             Wispah.dmg
