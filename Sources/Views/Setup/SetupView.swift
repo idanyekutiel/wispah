@@ -601,7 +601,7 @@ struct SetupView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("Language")
+            Text("Language & Mode")
                 .font(.title)
                 .fontWeight(.bold)
 
@@ -619,6 +619,23 @@ struct SetupView: View {
                 }
             }
             .frame(maxWidth: 300)
+
+            VStack(spacing: 6) {
+                HStack {
+                    Image(systemName: "chevron.left.forwardslash.chevron.right")
+                        .frame(width: 24)
+                        .foregroundStyle(.blue)
+                    Toggle("Developer mode", isOn: $appState.developerModeEnabled)
+                }
+                .padding(12)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
+
+                Text("Recognizes variable names, code keywords, and terms like camelCase and snake_case.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
 
             stepIndicator
         }

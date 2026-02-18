@@ -2,7 +2,7 @@
   <img src="Resources/AppIcon-README.png" width="128" height="128" alt="Wispah Flow icon">
 </p>
 
-<h1 align="center">Wispah Flow</h1>
+<h1 align="center">Wispah Flow — Open Source Wispr Alternative</h1>
 
 <p align="center">
   Free, open source, fully local voice-to-text for macOS. No accounts, no subscriptions — just a free API key.<br>
@@ -25,7 +25,7 @@
 - **Transcription history** — searchable log of every transcription with audio playback
 - **Usage stats** — words transcribed, recording time, streaks, words per minute
 - **Auto-updates** — checks GitHub Releases in the background with a 3-day stability buffer. Downloads the DMG, replaces the app, and relaunches — all with one click.
-- **Pause media while recording** — optionally pauses music/video during recording, resumes when done. Uses [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) to work around Apple's macOS 15.4+ MediaRemote restrictions.
+- **Pause media while recording** — optionally pauses music/video during recording, resumes when done
 - **Privacy-first** — no servers, no accounts, no telemetry. The only network calls are to Groq's API. Audio is processed and discarded, nothing stored externally.
 
 ## Why Groq
@@ -44,31 +44,19 @@ Wispah Flow uses [Groq](https://groq.com) for both transcription (Whisper) and p
 
 The wizard walks you through granting permissions (microphone, accessibility, screen recording) and configuring your hotkeys.
 
-## Build from source
+## Privacy
 
-```bash
-git clone https://github.com/idanyekutiel/wispah.git
-cd wispah
-
-make watch        # Dev build + auto-rebuild on changes
-make dev          # One-shot dev build
-make dev-run      # Build and launch
-
-ARCH=universal make all   # Release build (universal binary)
-make dmg                  # Create DMG installer
-```
-
-Requires Xcode Command Line Tools and fswatch (`brew install fswatch`).
-
-No Xcode project — compiles with `swiftc` directly via Makefile.
+No servers, no accounts, no tracking. The only network calls are to Groq's API for transcription and context processing. Audio is processed and discarded — nothing is stored or retained externally.
 
 ## Roadmap
 
 - [ ] Local model support — run transcription and post-processing on-device instead of requiring Groq
+- [ ] IDE integrations — feed workspace file names and active context from Cursor, Windsurf, VS Code for even smarter developer transcription
+- [ ] CLI integrations — work alongside Claude Code, Codex, and other AI coding tools
 
-## Privacy
+## For Developers
 
-No servers, no accounts, no tracking. The only network calls are to Groq's API for transcription and context processing. Audio is processed and discarded — nothing is stored or retained externally.
+See [TECHNICAL_README.md](TECHNICAL_README.md) for build instructions, architecture, and how to contribute. The project includes full [Claude Code](https://claude.com/claude-code) setup (CLAUDE.md + skills) for AI-assisted development.
 
 ## Credits
 
