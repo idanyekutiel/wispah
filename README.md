@@ -28,11 +28,11 @@
 - **Pause media while recording** - optionally pauses music/video during recording, resumes when done
 - **Privacy-first** - no servers, no accounts, no telemetry. The only network calls are to Groq's API. Audio is processed and discarded, nothing stored externally.
 
-## Why Build This?
+## Why I Built This
 
-I tried everything - Wispr Flow, other open source alternatives - and nothing quite worked. Paid options were missing small features I cared about. Open source ones were either too slow, unreliable, or just buggy. None of them had things like auto-pausing music while recording, context-aware formatting, or a proper developer mode.
+Honestly, I built this for myself. I tried Wispr Flow, other open source alternatives, and nothing had everything I wanted in one place. Context-aware formatting existed in some tools. Developer mode existed in others. But they were either too slow, unreliable, buggy, or missing that one feature I really wanted: auto-pausing music while recording. Sounds small, but it was the dealbreaker.
 
-So I built my own. Wispah Flow started as a fork of [FreeFlow](https://github.com/zachlatta/freeflow) and grew from there - adding the features I actually wanted, polishing the UX, and making it all free.
+So I forked [FreeFlow](https://github.com/zachlatta/freeflow), added everything I was missing, and polished it into something I actually enjoy using. This isn't meant to be some giant project - but I use it every day, so I'll keep improving it. Check the [roadmap](#roadmap), it's a fun one.
 
 ## Why Groq
 
