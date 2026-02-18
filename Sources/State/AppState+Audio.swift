@@ -20,7 +20,7 @@ extension AppState {
             break
         case .pauseMedia:
             isMediaCurrentlyPlaying { [weak self] isPlaying in
-                guard let self else { return }
+                guard let self, self.isRecording else { return } // Ignore if recording already stopped
                 if let isPlaying {
                     os_log(.info, log: recordingLog, "pauseMedia: detected isPlaying=%{public}@", isPlaying ? "yes" : "no")
                     self.wasMediaPlayingBeforeRecording = isPlaying

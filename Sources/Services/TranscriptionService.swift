@@ -91,11 +91,7 @@ class TranscriptionService {
         )
         request.httpBody = body
 
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 300
-        config.timeoutIntervalForResource = 600
-        let session = URLSession(configuration: config)
-        let (data, response) = try await session.upload(for: request, from: body)
+        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TranscriptionError.submissionFailed("No response from server")

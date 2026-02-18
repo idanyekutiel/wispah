@@ -178,14 +178,6 @@ struct GeneralSettingsView: View {
                     permissionsSection
                 }
 
-                // Credits
-                VStack(spacing: 4) {
-                    Text("Built on [FreeFlow](https://github.com/zachlatta/freeflow) by Zach Latta")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.top, 8)
             }
             .padding(24)
         }

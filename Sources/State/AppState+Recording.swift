@@ -118,6 +118,8 @@ extension AppState {
         errorMessage = nil
 
         isRecording = true
+        isStartingRecording = true
+        pendingStop = false
         statusText = "Starting..."
         hasShownScreenshotPermissionAlert = false
         handleAudioOnRecordingStart()
@@ -157,6 +159,12 @@ extension AppState {
                 try self.audioRecorder.startRecording(deviceUID: deviceUID)
                 os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
                 DispatchQueue.main.async {
+                    self.isStartingRecording = false
+                    if self.pendingStop {
+                        self.pendingStop = false
+                        self.stopAndTranscribe()
+                        return
+                    }
                     self.startContextCapture()
                     self.audioLevelCancellable = self.audioRecorder.$audioLevel
                         .receive(on: DispatchQueue.main)
@@ -167,6 +175,8 @@ extension AppState {
             } catch {
                 DispatchQueue.main.async {
                     initTimer.cancel()
+                    self.isStartingRecording = false
+                    self.pendingStop = false
                     self.isRecording = false
                     self.errorMessage = self.formattedRecordingStartError(error)
                     self.statusText = "Error"
@@ -195,6 +205,12 @@ extension AppState {
     }
 
     func stopAndTranscribe() {
+        // Don't try to stop if the audio engine hasn't finished starting — defer it
+        guard !isStartingRecording else {
+            os_log(.info, log: recordingLog, "stopAndTranscribe() deferred — still starting")
+            pendingStop = true
+            return
+        }
         handleAudioOnRecordingStop()
         audioLevelCancellable?.cancel()
         audioLevelCancellable = nil

@@ -154,6 +154,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     ]
 
     @Published var isRecording = false
+    /// True while the audio engine is still starting (between beginRecording and startRecording success/failure)
+    var isStartingRecording = false
+    /// Set when user releases hold key during engine startup — deferred stop fires once engine is ready
+    var pendingStop = false
     @Published var isTranscribing = false
     @Published var lastTranscript: String = ""
     @Published var errorMessage: String?

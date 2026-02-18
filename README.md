@@ -5,7 +5,8 @@
 <h1 align="center">Wispah Flow</h1>
 
 <p align="center">
-  Free, open source voice-to-text for macOS. Press a hotkey, speak, and your words appear at the cursor — adapted to what's on screen.
+  Free, open source, fully local voice-to-text for macOS. No accounts, no subscriptions — just a free API key.<br>
+  Press a hotkey, speak, and your words appear at the cursor — adapted to what's on screen.
 </p>
 
 <p align="center">
