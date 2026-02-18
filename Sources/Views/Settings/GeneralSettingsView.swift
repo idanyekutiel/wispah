@@ -31,7 +31,7 @@ struct GeneralSettingsView: View {
                     Text("Wispah Flow")
                         .font(.system(size: 20, weight: .bold, design: .rounded))
 
-                    Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
+                    Text("Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
