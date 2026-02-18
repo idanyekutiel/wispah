@@ -2,6 +2,8 @@
 
 Create and push a new release with date-based versioning (`YYYY.MM.DD` format).
 
+**IMPORTANT:** Always wait for explicit user approval before running `git push`.
+
 ## Steps
 
 1. **Verify clean working tree**
@@ -32,14 +34,18 @@ Create and push a new release with date-based versioning (`YYYY.MM.DD` format).
    git commit -m "Release v{version}"
    ```
 
-5. **Create and push tag**
+5. **Create tag**
    ```bash
    git tag "v{version}"
+   ```
+
+6. **Ask user for approval to push**, then:
+   ```bash
    git push origin main
    git push origin "v{version}"
    ```
 
-6. **Confirm** — tell the user the release workflow has been triggered and link to the Actions page.
+7. **Confirm** — tell the user the release workflow has been triggered and link to the Actions page.
 
 ## Version Format
 
@@ -49,9 +55,15 @@ Create and push a new release with date-based versioning (`YYYY.MM.DD` format).
 | Second release same day | `2026.02.19.2` |
 | Third release same day | `2026.02.19.3` |
 
+## Release Title Format
+
+`Wispah Flow Version {version}` (e.g., "Wispah Flow Version 2026.02.19")
+
 ## Notes
 
 - The tag push triggers `.github/workflows/release.yml` automatically
-- Release workflow builds universal binary, signs, notarizes, and creates a GitHub Release
-- Only works when GitHub secrets are configured (Developer ID cert, Apple notarization creds)
+- Release workflow builds universal binary and creates a GitHub Release with DMG
+- Release notes are auto-generated from commit messages since the previous tag
+- Works without Apple Developer secrets (ad-hoc signing fallback — users bypass Gatekeeper with right-click > Open)
+- With secrets configured: Developer ID signed + Apple notarized
 - Dev builds don't have `WispahBuildTag` in Info.plist — the release workflow injects it
