@@ -187,6 +187,9 @@ Optional secrets for signing: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_C
 - Click targets should be generous — entire rows should be clickable, not just text
 - Empty states should use consistent pattern: large icon (.system(size: 40)) + headline + caption
 
+### Git
+- **NEVER push without explicit user approval.** Always wait for the user to confirm before running `git push`.
+
 ### Code Standards
 - Keep files focused — split large files into logical units (AppState extensions pattern)
 - Use MARK comments for sections within files
