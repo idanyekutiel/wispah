@@ -179,7 +179,7 @@ struct SetupView: View {
                 .frame(width: 128, height: 128)
 
             VStack(spacing: 6) {
-                Text("Welcome to Wispah")
+                Text("Welcome to Wispah Flow")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
 
                 Text("Dictate text anywhere on your Mac.\nHold a key to record, release to transcribe.")
@@ -300,7 +300,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Wispah uses Groq for fast, high-accuracy transcription.")
+            Text("Wispah Flow uses Groq for fast, high-accuracy transcription.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -355,7 +355,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Wispah needs access to your microphone to record audio for transcription.")
+            Text("Wispah Flow needs access to your microphone to record audio for transcription.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -395,7 +395,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Wispah needs Accessibility access to paste transcribed text into your apps.")
+            Text("Wispah Flow needs Accessibility access to paste transcribed text into your apps.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -448,12 +448,12 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Wispah intelligently adapts the transcription to the current app you're working in (ex. spelling names in an email correctly).")
+            Text("Wispah Flow intelligently adapts the transcription to the current app you're working in (ex. spelling names in an email correctly).")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("It needs this permission to see which app you're working in and any in-progress work. Nothing is stored on Wispah's servers (Wispah doesn't have servers).")
+            Text("It needs this permission to see which app you're working in and any in-progress work. Nothing is stored on Wispah Flow's servers (Wispah Flow doesn't have servers).")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .font(.callout)
@@ -497,7 +497,7 @@ struct SetupView: View {
     }
 
     var hotkeyStep: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
             Image(systemName: "keyboard.fill")
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
@@ -506,34 +506,46 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Toggle to Record")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Press once to start, press again to stop.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Text("Set up one or both recording modes.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
 
-                    HotkeyRecorderButton(
-                        label: "Toggle Key",
-                        binding: $appState.toggleHotkey
-                    )
-                }
-
-                Divider()
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Hold to Record")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Hold the key to record, release to stop.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
+            VStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Hold to Record")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Hold the key to record, release to stop.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     HotkeyRecorderButton(
                         label: "Hold Key",
                         binding: $appState.holdHotkey
                     )
                 }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Toggle to Record")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Press once to start, press again to stop.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    HotkeyRecorderButton(
+                        label: "Toggle Key",
+                        binding: $appState.toggleHotkey
+                    )
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
             }
 
             if appState.toggleHotkey.keyCode == 63 || appState.holdHotkey.keyCode == 63 {
@@ -622,7 +634,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Start Wispah automatically when you log in so it's always ready.")
+            Text("Start Wispah Flow automatically when you log in so it's always ready.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -631,7 +643,7 @@ struct SetupView: View {
                 Image(systemName: "sunrise.fill")
                     .frame(width: 24)
                     .foregroundStyle(.blue)
-                Toggle("Launch Wispah at login", isOn: $appState.launchAtLogin)
+                Toggle("Launch Wispah Flow at login", isOn: $appState.launchAtLogin)
             }
             .padding(12)
             .background(Color(nsColor: .controlBackgroundColor))
@@ -641,19 +653,29 @@ struct SetupView: View {
         }
     }
 
+    /// Microphones shown in onboarding: built-in mic + system default only.
+    /// Full list is available in Settings.
+    private var onboardingMicOptions: [(uid: String, name: String)] {
+        var options: [(uid: String, name: String)] = []
+        if let builtIn = appState.availableMicrophones.first(where: { $0.isBuiltIn }) {
+            options.append((uid: builtIn.uid, name: builtIn.name))
+        }
+        options.append((uid: "default", name: "System Default"))
+        return options
+    }
+
     var testTranscriptionStep: some View {
         VStack(spacing: 20) {
-            // Microphone picker
+            // Simplified microphone picker (full list in Settings)
             VStack(spacing: 4) {
                 Picker("Microphone:", selection: $appState.selectedMicrophoneID) {
-                    Text("System Default").tag("default")
-                    ForEach(appState.availableMicrophones) { device in
-                        Text(device.name).tag(device.uid)
+                    ForEach(onboardingMicOptions, id: \.uid) { option in
+                        Text(option.name).tag(option.uid)
                     }
                 }
                 .frame(maxWidth: 340)
 
-                Text("You can change this later in the menu bar or settings.")
+                Text("More options available in Settings.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -757,7 +779,7 @@ struct SetupView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         } else {
-                            Text("Perfect — Wispah is ready to go.")
+                            Text("Perfect — Wispah Flow is ready to go.")
                                 .font(.title2)
                                 .fontWeight(.semibold)
 
@@ -803,7 +825,7 @@ struct SetupView: View {
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Wispah lives in your menu bar.")
+            Text("Wispah Flow lives in your menu bar.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 

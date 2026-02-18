@@ -10,7 +10,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text("Wispah v\(appVersion)")
+            Text("Wispah Flow v\(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
@@ -209,7 +209,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Quit Wispah") {
+            Button("Quit Wispah Flow") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")

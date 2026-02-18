@@ -220,7 +220,15 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
         let savedHistory = pipelineHistoryStore.loadAllHistory()
 
-        let selectedMicrophoneID = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) ?? "default"
+        let selectedMicrophoneID: String
+        if let storedMic = UserDefaults.standard.string(forKey: selectedMicrophoneStorageKey) {
+            selectedMicrophoneID = storedMic
+        } else if let builtIn = AudioDevice.builtInMicrophoneUID() {
+            // First launch: prefer built-in mic over system default (which often picks headphones)
+            selectedMicrophoneID = builtIn
+        } else {
+            selectedMicrophoneID = "default"
+        }
 
         let screenRecordingEnabled: Bool
         if UserDefaults.standard.object(forKey: "screen_recording_enabled") != nil {

@@ -20,10 +20,10 @@ struct RunLogView: View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Run Log")
+                    Text("Transcriptions")
                         .font(.headline)
                     if appState.saveRunHistory {
-                        Text("Stored locally. Only the \(appState.maxPipelineHistoryCount) most recent runs are kept.")
+                        Text("Stored locally. Only the \(appState.maxPipelineHistoryCount) most recent are kept.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
@@ -43,29 +43,33 @@ struct RunLogView: View {
             Divider()
 
             if !appState.saveRunHistory {
-                VStack {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "clock.arrow.circlepath")
-                            .font(.title)
-                            .foregroundStyle(.secondary)
-                        Text("Run history is disabled.")
-                            .foregroundStyle(.secondary)
-                        Text("Enable it in Settings > Log Settings.")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-            } else if appState.pipelineHistory.isEmpty {
-                VStack {
-                    Spacer()
-                    Text("No runs yet. Use dictation to populate history.")
+                VStack(spacing: 12) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.tertiary)
+                    Text("Run history is disabled")
+                        .font(.headline)
                         .foregroundStyle(.secondary)
-                    Spacer()
+                    Text("Enable it in Settings > Log Settings")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
                 .frame(maxWidth: .infinity)
+                .padding(.vertical, 60)
+            } else if appState.pipelineHistory.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "waveform.badge.plus")
+                        .font(.system(size: 40))
+                        .foregroundStyle(.tertiary)
+                    Text("No transcriptions yet")
+                        .font(.headline)
+                        .foregroundStyle(.secondary)
+                    Text("Use dictation to populate history")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 60)
             } else {
                 VStack(spacing: 0) {
                     HStack(spacing: 8) {
@@ -91,13 +95,19 @@ struct RunLogView: View {
                     .padding(.bottom, 4)
 
                     if filteredHistory.isEmpty {
-                        VStack {
-                            Spacer()
+                        VStack(spacing: 12) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 40))
+                                .foregroundStyle(.tertiary)
                             Text("No results for \"\(searchText)\"")
+                                .font(.headline)
                                 .foregroundStyle(.secondary)
-                            Spacer()
+                            Text("Try a different search term")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
                         }
                         .frame(maxWidth: .infinity)
+                        .padding(.vertical, 60)
                     } else {
                         ScrollView {
                             LazyVStack(spacing: 12) {

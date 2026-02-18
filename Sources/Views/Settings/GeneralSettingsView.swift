@@ -28,7 +28,7 @@ struct GeneralSettingsView: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 64, height: 64)
 
-                    Text("Wispah")
+                    Text("Wispah Flow")
                         .font(.system(size: 20, weight: .bold, design: .rounded))
 
                     Text("v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
@@ -177,6 +177,15 @@ struct GeneralSettingsView: View {
                 settingsCard("Permissions", icon: "lock.shield.fill") {
                     permissionsSection
                 }
+
+                // Credits
+                VStack(spacing: 4) {
+                    Text("Built on [FreeFlow](https://github.com/zachlatta/freeflow) by Zach Latta")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 8)
             }
             .padding(24)
         }
@@ -209,7 +218,7 @@ struct GeneralSettingsView: View {
 
     private var startupSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("Launch Wispah at login", isOn: $appState.launchAtLogin)
+            Toggle("Launch Wispah Flow at login", isOn: $appState.launchAtLogin)
 
             if SMAppService.mainApp.status == .requiresApproval {
                 HStack(spacing: 6) {
@@ -324,7 +333,7 @@ struct GeneralSettingsView: View {
                         HStack(spacing: 8) {
                             Image(systemName: "arrow.down.circle.fill")
                                 .foregroundStyle(.blue)
-                            Text("A new version of Wispah is available!")
+                            Text("A new version of Wispah Flow is available!")
                                 .font(.caption.weight(.semibold))
                             Spacer()
                             Button("Update Now") {
@@ -347,7 +356,7 @@ struct GeneralSettingsView: View {
 
     private var apiKeySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Wispah uses Groq's whisper-large-v3 model for transcription.")
+            Text("Wispah Flow uses Groq's whisper-large-v3 model for transcription.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 

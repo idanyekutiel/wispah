@@ -224,7 +224,7 @@ final class UpdateManager: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "A New Version is Available"
-        alert.informativeText = "A new version of Wispah (released \(latestReleaseDate)) is available.\n\nWould you like to download the update?"
+        alert.informativeText = "A new version of Wispah Flow (released \(latestReleaseDate)) is available.\n\nWould you like to download the update?"
         alert.alertStyle = .informational
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "Download Update")
@@ -252,7 +252,7 @@ final class UpdateManager: ObservableObject {
 
         let alert = NSAlert()
         alert.messageText = "New Release Available"
-        alert.informativeText = "A new version of Wispah was released \(ageText). It's very recent — you can download it now or wait a few days for stability.\n\nWould you like to download it?"
+        alert.informativeText = "A new version of Wispah Flow was released \(ageText). It's very recent — you can download it now or wait a few days for stability.\n\nWould you like to download it?"
         alert.alertStyle = .informational
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "Download Now")
@@ -267,7 +267,7 @@ final class UpdateManager: ObservableObject {
     func showUpToDateAlert() {
         let alert = NSAlert()
         alert.messageText = "You're Up to Date"
-        alert.informativeText = "You're running the latest version of Wispah."
+        alert.informativeText = "You're running the latest version of Wispah Flow."
         alert.alertStyle = .informational
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "OK")

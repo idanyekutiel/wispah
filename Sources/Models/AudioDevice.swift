@@ -98,4 +98,24 @@ struct AudioDevice: Identifiable {
     static func deviceID(forUID uid: String) -> AudioDeviceID? {
         return availableInputDevices().first(where: { $0.uid == uid })?.id
     }
+
+    /// Whether this device uses the built-in transport type (e.g. MacBook Pro Microphone).
+    var isBuiltIn: Bool {
+        var transportAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var transportType: UInt32 = 0
+        var transportSize = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &transportAddress, 0, nil, &transportSize, &transportType) == noErr else {
+            return false
+        }
+        return transportType == kAudioDeviceTransportTypeBuiltIn
+    }
+
+    /// Returns the UID of the built-in microphone, if available.
+    static func builtInMicrophoneUID() -> String? {
+        availableInputDevices().first(where: { $0.isBuiltIn })?.uid
+    }
 }
