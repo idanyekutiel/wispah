@@ -16,12 +16,6 @@
 
 ---
 
-## Why Build This?
-
-I tried everything - Wispr Flow, other open source alternatives - and nothing quite worked. Paid options were missing small features I cared about. Open source ones were either too slow, unreliable, or just buggy. None of them had things like auto-pausing music while recording, context-aware formatting, or a proper developer mode.
-
-So I built my own. Wispah Flow started as a fork of [FreeFlow](https://github.com/zachlatta/freeflow) and grew from there - adding the features I actually wanted, polishing the UX, and making it all free.
-
 ## Features
 
 - **Context-aware transcription** - takes a screenshot when you start recording, then uses it to get names, terminology, and formatting right. Replying to an email? It'll spell the person's name correctly. Writing code? It'll match the syntax.
@@ -33,6 +27,12 @@ So I built my own. Wispah Flow started as a fork of [FreeFlow](https://github.co
 - **Auto-updates** - checks GitHub Releases in the background with a 3-day stability buffer. Downloads the DMG, replaces the app, and relaunches - all with one click.
 - **Pause media while recording** - optionally pauses music/video during recording, resumes when done
 - **Privacy-first** - no servers, no accounts, no telemetry. The only network calls are to Groq's API. Audio is processed and discarded, nothing stored externally.
+
+## Why Build This?
+
+I tried everything - Wispr Flow, other open source alternatives - and nothing quite worked. Paid options were missing small features I cared about. Open source ones were either too slow, unreliable, or just buggy. None of them had things like auto-pausing music while recording, context-aware formatting, or a proper developer mode.
+
+So I built my own. Wispah Flow started as a fork of [FreeFlow](https://github.com/zachlatta/freeflow) and grew from there - adding the features I actually wanted, polishing the UX, and making it all free.
 
 ## Why Groq
 
