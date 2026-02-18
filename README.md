@@ -23,9 +23,9 @@
 - **Paste at cursor** — transcription goes straight to wherever your cursor is, with smart leading-space detection so it doesn't smash into existing text
 - **Transcription history** — searchable log of every transcription with audio playback
 - **Usage stats** — words transcribed, recording time, streaks, words per minute
-- **Auto-updates** — checks GitHub Releases in the background, downloads and installs with one click
-- **Pause media while recording** — optionally pauses music/video during recording, resumes when done (macOS 15.4+)
-- **Privacy-first** — no servers, no accounts, no telemetry. The only network calls are to Groq's API.
+- **Auto-updates** — checks GitHub Releases in the background with a 3-day stability buffer. Downloads the DMG, replaces the app, and relaunches — all with one click.
+- **Pause media while recording** — optionally pauses music/video during recording, resumes when done. Uses [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) to work around Apple's macOS 15.4+ MediaRemote restrictions.
+- **Privacy-first** — no servers, no accounts, no telemetry. The only network calls are to Groq's API. Audio is processed and discarded, nothing stored externally.
 
 ## Why Groq
 
@@ -60,15 +60,6 @@ make dmg                  # Create DMG installer
 Requires Xcode Command Line Tools and fswatch (`brew install fswatch`).
 
 No Xcode project — compiles with `swiftc` directly via Makefile.
-
-## Stack
-
-- **Swift + SwiftUI** — menu bar app, no Xcode project
-- **Groq API** — Whisper large-v3 for transcription, LLM for context-aware post-processing
-- **macOS Accessibility API** — cursor detection, text pasting
-- **ScreenCaptureKit** — screenshot capture for context
-- **CoreData** — transcription history (programmatic model, no .xcdatamodeld)
-- **[mediaremote-adapter](https://github.com/ungive/mediaremote-adapter)** — media pause/resume on macOS 15.4+ (works around Apple's MediaRemote restrictions)
 
 ## Roadmap
 
