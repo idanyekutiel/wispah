@@ -5,7 +5,7 @@
     <key>CFBundleName</key>
     <string>Wispah</string>
     <key>CFBundleDisplayName</key>
-    <string>Wispah</string>
+    <string>Wispah Flow</string>
     <key>CFBundleIdentifier</key>
     <string>com.idanyekutiel.wispah</string>
     <key>CFBundleVersion</key>
@@ -23,10 +23,10 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Wispah needs microphone access to transcribe your speech.</string>
+    <string>Wispah Flow needs microphone access to transcribe your speech.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Wispah needs speech recognition to convert your voice to text.</string>
+    <string>Wispah Flow needs speech recognition to convert your voice to text.</string>
     <key>NSAccessibilityUsageDescription</key>
-    <string>Wispah needs accessibility access to detect the text cursor position and paste transcribed text.</string>
+    <string>Wispah Flow needs accessibility access to detect the text cursor position and paste transcribed text.</string>
 </dict>
 </plist>
