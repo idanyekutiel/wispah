@@ -20,9 +20,10 @@ jobs:
       # Import Developer ID certificate when secrets are available (pushes to main).
       # PRs from forks won't have access to secrets, so this step is skipped.
       - name: Import Developer ID certificate
-        if: secrets.DEVELOPER_ID_CERTIFICATE_BASE64 != ''
+        if: env.CERT != ''
         id: codesign
         env:
+          CERT: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
         run: |

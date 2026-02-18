@@ -173,8 +173,13 @@ final class UpdateManager: ObservableObject {
             dateFormatter.timeStyle = .none
             let releaseDateString = dateFormatter.string(from: publishedDate)
 
-            // If this is the same build we're running, no update available
-            if let currentTag = currentBuildTag, release.tagName == currentTag {
+            // Compare versions: strip 'v' prefix from tag, compare numerically
+            let remoteVersion = release.tagName.hasPrefix("v")
+                ? String(release.tagName.dropFirst())
+                : release.tagName
+
+            if let currentVersion = currentBuildTag,
+               Self.compareVersions(currentVersion, remoteVersion) >= 0 {
                 updateAvailable = false
                 latestRelease = nil
                 if userInitiated { showUpToDateAlert() }
@@ -282,6 +287,22 @@ final class UpdateManager: ObservableObject {
         alert.icon = NSApp.applicationIconImage
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    // MARK: - Version Comparison
+
+    /// Compare two dot-separated numeric version strings (e.g. "2026.02.19" vs "2026.02.19.2").
+    /// Returns negative if a < b, zero if equal, positive if a > b.
+    nonisolated static func compareVersions(_ a: String, _ b: String) -> Int {
+        let partsA = a.split(separator: ".").compactMap { Int($0) }
+        let partsB = b.split(separator: ".").compactMap { Int($0) }
+        let count = max(partsA.count, partsB.count)
+        for i in 0..<count {
+            let valA = i < partsA.count ? partsA[i] : 0
+            let valB = i < partsB.count ? partsB[i] : 0
+            if valA != valB { return valA - valB }
+        }
+        return 0
     }
 
     // MARK: - Download and Install

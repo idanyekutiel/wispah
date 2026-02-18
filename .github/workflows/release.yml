@@ -2,58 +2,43 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags: ['v*']
 
 permissions:
   contents: write
 
 jobs:
-  # Secrets can't be referenced in job-level `if` expressions directly.
-  # Use a lightweight pre-job to detect whether signing secrets exist.
-  check-secrets:
-    runs-on: ubuntu-latest
-    outputs:
-      has-signing: ${{ steps.check.outputs.has-signing }}
-    steps:
-      - id: check
-        env:
-          CERT: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
-        run: |
-          if [ -n "$CERT" ]; then
-            echo "has-signing=true" >> "$GITHUB_OUTPUT"
-          fi
-
-  build-and-release:
-    needs: check-secrets
-    if: needs.check-secrets.outputs.has-signing == 'true'
+  release:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Generate version tag
+      - name: Extract version from tag
         id: version
         run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          TAG="build-$(date -u +'%Y%m%d-%H%M%S')-${SHORT_SHA}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Embed build tag in Info.plist
-        run: plutil -insert WispahBuildTag -string "${{ steps.version.outputs.tag }}" Info.plist
+      - name: Embed version in Info.plist
+        run: |
+          plutil -replace CFBundleShortVersionString -string "${{ steps.version.outputs.version }}" Info.plist
+          plutil -replace CFBundleVersion -string "${{ steps.version.outputs.version }}" Info.plist
+          plutil -insert WispahBuildTag -string "${{ steps.version.outputs.version }}" Info.plist
 
       - name: Install create-dmg
         run: brew install create-dmg
 
-      # --- Code signing setup ---
-      # Required GitHub secrets:
-      #   DEVELOPER_ID_CERTIFICATE_BASE64 — base64-encoded .p12 Developer ID certificate
-      #   DEVELOPER_ID_CERTIFICATE_PASSWORD — password for the .p12
-      #   APPLE_ID — Apple ID email for notarization
-      #   APPLE_TEAM_ID — 10-character Apple Team ID
-      #   APPLE_APP_PASSWORD — app-specific password for notarization
+      # --- Code signing setup (optional) ---
+      # When secrets exist: Developer ID signed + notarized
+      # When no secrets: ad-hoc signed (users get Gatekeeper prompt)
       - name: Import Developer ID certificate
+        if: env.CERT != ''
+        id: codesign
         env:
+          CERT: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
         run: |
@@ -61,15 +46,12 @@ jobs:
           KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 20)"
 
-          # Decode certificate
           echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
 
-          # Create temporary keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Import certificate and delete .p12 from disk immediately
           security import "$CERTIFICATE_PATH" \
             -P "$CERTIFICATE_PASSWORD" \
             -A \
@@ -78,20 +60,23 @@ jobs:
             -k "$KEYCHAIN_PATH"
           rm -f "$CERTIFICATE_PATH"
 
-          # Allow codesign to access the keychain without UI prompt
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
 
-          # Add temporary keychain to search list
           security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
 
-          # Extract signing identity
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "CODESIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "signed=true" >> "$GITHUB_OUTPUT"
           echo "Found signing identity: $IDENTITY"
 
+      - name: Fall back to ad-hoc signing
+        if: steps.codesign.outputs.signed != 'true'
+        run: echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
+
       - name: Store notarization credentials
+        if: steps.codesign.outputs.signed == 'true'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -103,17 +88,19 @@ jobs:
             --password "$APPLE_APP_PASSWORD" \
             --keychain "$KEYCHAIN_PATH"
 
-      # --- Build universal ---
+      # --- Build ---
       - name: Build universal
         run: make ARCH=universal APP_NAME=Wispah DISPLAY_NAME="Wispah Flow" BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: Create universal DMG
+      - name: Create DMG
         run: make dmg ARCH=universal APP_NAME=Wispah BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
-      - name: Sign universal DMG
+      - name: Sign DMG
+        if: steps.codesign.outputs.signed == 'true'
         run: codesign --force --sign "$CODESIGN_IDENTITY" build/Wispah.dmg
 
-      - name: Notarize universal DMG
+      - name: Notarize DMG
+        if: steps.codesign.outputs.signed == 'true'
         run: |
           xcrun notarytool submit build/Wispah.dmg \
             --keychain-profile "notarytool-profile" \
@@ -121,7 +108,7 @@ jobs:
             --wait
           xcrun stapler staple build/Wispah.dmg
 
-      - name: Save universal DMG
+      - name: Prepare DMG
         run: mv build/Wispah.dmg Wispah.dmg
 
       # --- Release ---
@@ -129,7 +116,7 @@ jobs:
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: Wispah Flow ${{ steps.version.outputs.tag }}
+          name: Wispah Flow v${{ steps.version.outputs.version }}
           body: |
             ## Download
 
