@@ -597,44 +597,64 @@ struct SetupView: View {
 
     var languageStep: some View {
         VStack(spacing: 20) {
-            Image(systemName: "globe")
+            Image(systemName: "slider.horizontal.3")
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("Language & Mode")
+            Text("Preferences")
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Setting a specific language improves transcription accuracy.")
+            Text("Fine-tune how transcription works for you.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Picker("Transcription language:", selection: Binding(
-                get: { appState.transcriptionLanguage ?? "" },
-                set: { appState.transcriptionLanguage = $0.isEmpty ? nil : $0 }
-            )) {
-                ForEach(AppState.supportedLanguages, id: \.displayName) { lang in
-                    Text(lang.displayName).tag(lang.code ?? "")
-                }
-            }
-            .frame(maxWidth: 300)
+            VStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "globe")
+                            .frame(width: 24)
+                            .foregroundStyle(.blue)
+                        Text("Language")
+                        Spacer()
+                        Picker("", selection: Binding(
+                            get: { appState.transcriptionLanguage ?? "" },
+                            set: { appState.transcriptionLanguage = $0.isEmpty ? nil : $0 }
+                        )) {
+                            ForEach(AppState.supportedLanguages, id: \.displayName) { lang in
+                                Text(lang.displayName).tag(lang.code ?? "")
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 160)
+                    }
 
-            VStack(spacing: 6) {
-                HStack {
-                    Image(systemName: "chevron.left.forwardslash.chevron.right")
-                        .frame(width: 24)
-                        .foregroundStyle(.blue)
-                    Toggle("Developer mode", isOn: $appState.developerModeEnabled)
+                    Text("Setting a specific language improves accuracy.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 36)
                 }
                 .padding(12)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .cornerRadius(8)
 
-                Text("Recognizes variable names, code keywords, and terms like camelCase and snake_case.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "curlybraces")
+                            .frame(width: 24)
+                            .foregroundStyle(.blue)
+                        Toggle("Developer Mode", isOn: $appState.developerModeEnabled)
+                    }
+
+                    Text("Recognizes camelCase, snake_case, technical terms, and code keywords.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 36)
+                }
+                .padding(12)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
             }
 
             stepIndicator
