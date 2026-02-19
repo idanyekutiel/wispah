@@ -64,27 +64,8 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 6)
-            } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    if !appState.holdHotkey.isDisabled {
-                        Text("Hold \(appState.holdHotkey.displayName) to dictate")
-                    }
-                    if !appState.toggleHotkey.isDisabled {
-                        Text("Press \(appState.toggleHotkey.displayName) to toggle")
-                    }
-                    if appState.holdHotkey.isDisabled && appState.toggleHotkey.isDisabled {
-                        Text("No hotkeys configured")
-                    }
-                }
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
             }
 
-            Divider()
-
-            // Manual toggle
             Button(appState.isRecording ? "Stop Recording" : "Start Dictating") {
                 appState.toggleRecording()
             }
