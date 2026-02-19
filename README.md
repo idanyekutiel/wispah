@@ -74,7 +74,6 @@ No servers, no accounts, no tracking. The only network calls are to Groq's API f
 - [ ] Custom post-processing prompt - add your own instructions to the post-processing pipeline (e.g. "I say 'so like' a lot, remove it" or "keep my sentences short and direct") so the output matches your personal writing style
 - [ ] Writing styles - presets for how your speech gets formatted depending on context (casual, professional, technical, etc.)
 - [ ] Better vocabulary UI - proper tag-based editor for custom vocabulary instead of a plain text box
-- [ ] Custom recording sounds - replace the default start/stop sounds with better ones
 - [ ] Automatic Fn key emoji picker suppression - currently requires a manual System Settings change; working on intercepting it programmatically
 
 ## For Developers
