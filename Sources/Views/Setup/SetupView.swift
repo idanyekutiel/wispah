@@ -168,6 +168,11 @@ struct SetupView: View {
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             checkAccessibility()
+            // Resume from where we left off if the app restarted mid-setup
+            let savedStep = UserDefaults.standard.integer(forKey: "setupResumeStep")
+            if savedStep > 0, let step = SetupStep(rawValue: savedStep) {
+                currentStep = step
+            }
             Task {
                 await githubCache.fetchIfNeeded()
             }
@@ -175,6 +180,9 @@ struct SetupView: View {
         .onDisappear {
             accessibilityTimer?.invalidate()
             screenRecordingTimer?.invalidate()
+        }
+        .onChange(of: currentStep) { newStep in
+            UserDefaults.standard.set(newStep.rawValue, forKey: "setupResumeStep")
         }
     }
 
@@ -430,7 +438,7 @@ struct SetupView: View {
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8)
 
-            if !accessibilityGranted {
+            if !accessibilityGranted && Bundle.main.infoDictionary?["WispahBuildTag"] == nil {
                 Text("Note: If you rebuilt the app, you may need to\nremove and re-add it in Accessibility settings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
