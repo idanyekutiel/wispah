@@ -36,7 +36,9 @@
 
 Honestly, I built this for myself. I tried Wispr Flow, other open source alternatives, and nothing had everything I wanted in one place. Context-aware formatting existed in some tools. Developer mode existed in others. But they were either too slow, unreliable, buggy, or missing that one feature I really wanted: auto-pausing music while recording. Sounds small, but it was the dealbreaker.
 
-So I forked [FreeFlow](https://github.com/zachlatta/freeflow), added everything I was missing, and polished it into something I actually enjoy using. This isn't meant to be some giant project - but I use it every day, so I'll keep improving it. Check the [roadmap](#roadmap), it's a fun one.
+I forked [FreeFlow](https://github.com/zachlatta/freeflow) by [Zach Latta](https://github.com/zachlatta) because it had the best UI/UX and was the most reliable of everything I tried. From there I added everything I was missing: full customizability, stats, optional screen context recording, custom hotkeys, sound toggles, failed transcription retry, post-processing with developer mode, cleanup to ensure the output is always good, and a bunch of other things - and of course, my beloved pause music on record.
+
+I use it every day, so I'll keep improving it - but it'll always be free, open source, and yours to own. Check the [roadmap](#roadmap), it's a fun one.
 
 ## Why Groq
 
