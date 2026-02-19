@@ -57,8 +57,13 @@ No servers, no accounts, no tracking. The only network calls are to Groq's API f
 ## Roadmap
 
 - [ ] Local model support - run transcription and post-processing on-device instead of requiring Groq
+- [ ] Bring your own API key - use OpenAI, Claude, or any other provider instead of just Groq
+- [ ] Supercharged formatting - a mode that rewrites and compresses your speech into polished, pre-written-sounding text instead of just transcribing it
+- [ ] Audio file transcription - drag and drop audio files to transcribe them the same way live recordings work
 - [ ] IDE integrations - feed workspace file names and active context from Cursor, Windsurf, VS Code for even smarter developer transcription
 - [ ] CLI integrations - work alongside Claude Code, Codex, and other AI coding tools
+- [ ] Standalone app mode - open settings/history as a proper app window that shows in the dock and app switcher
+- [ ] Custom recording sounds - replace the default start/stop sounds with better ones
 
 ## For Developers
 
