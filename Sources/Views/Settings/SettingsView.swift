@@ -49,6 +49,8 @@ struct SettingsView: View {
                     }
                 case .runLog, .none:
                     RunLogView()
+                case .dictionary:
+                    DictionaryView()
                 case .general:
                     GeneralSettingsView()
                 }

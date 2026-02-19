@@ -62,6 +62,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Resume media if we had paused it during recording
+        appState.handleAudioOnRecordingStop()
+    }
+
     // MARK: - Activation Policy
 
     /// Show in dock/app switcher when any window is open, hide when all closed
