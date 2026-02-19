@@ -114,6 +114,7 @@ extension AppState {
     }
 
     func beginRecording() {
+        guard !isStartingRecording else { return }
         os_log(.info, log: recordingLog, "beginRecording() entered")
         errorMessage = nil
 
@@ -271,7 +272,8 @@ extension AppState {
             return terms.joined(separator: ", ")
         }()
 
-        Task {
+        transcriptionTask?.cancel()
+        transcriptionTask = Task {
             do {
                 // Preprocess: downsample to 16KHz mono AAC + trim trailing silence
                 let uploadURL: URL
@@ -282,6 +284,9 @@ extension AppState {
                     )
                 } catch {
                     os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
+                    await MainActor.run { [weak self] in
+                        self?.debugStatusMessage = "Audio preprocessing failed, using original"
+                    }
                     uploadURL = fileURL
                 }
                 await MainActor.run { [weak self] in

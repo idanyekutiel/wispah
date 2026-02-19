@@ -45,6 +45,7 @@ class GitHubMetadataCache: ObservableObject {
     @Published var starCount: Int?
     @Published var recentStargazers: [GitHubStarRecord] = []
     @Published var isLoading = true
+    @Published var fetchFailed = false
 
     private var lastFetchDate: Date?
     private let cacheDuration: TimeInterval = 5 * 60 // 5 minutes
@@ -58,6 +59,7 @@ class GitHubMetadataCache: ObservableObject {
         }
 
         isLoading = true
+        fetchFailed = false
 
         do {
             let repoResult = try await URLSession.shared.data(from: repoAPIURL)
@@ -88,6 +90,7 @@ class GitHubMetadataCache: ObservableObject {
             lastFetchDate = Date()
         } catch {
             isLoading = false
+            fetchFailed = true
         }
     }
 }

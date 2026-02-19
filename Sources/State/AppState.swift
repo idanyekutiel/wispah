@@ -193,6 +193,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     var audioLevelCancellable: AnyCancellable?
     var debugOverlayTimer: Timer?
     var transcribingIndicatorTask: Task<Void, Never>?
+    var transcriptionTask: Task<Void, Never>?
     var contextService: AppContextService
     var contextCaptureTask: Task<AppContext?, Never>?
     var capturedContext: AppContext?

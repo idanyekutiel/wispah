@@ -1,5 +1,6 @@
 import Foundation
 import ServiceManagement
+import os.log
 
 extension AppState {
     static func loadStoredAPIKey(account: String) -> String {
@@ -19,7 +20,10 @@ extension AppState {
     }
 
     static func audioStorageDirectory() -> URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            os_log(.error, log: recordingLog, "Application Support directory not found, falling back to temporary directory")
+            return FileManager.default.temporaryDirectory.appendingPathComponent("WispahAudio", isDirectory: true)
+        }
         let appName = Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Wispah"
         let audioDir = appSupport.appendingPathComponent("\(appName)/audio", isDirectory: true)
         if !FileManager.default.fileExists(atPath: audioDir.path) {

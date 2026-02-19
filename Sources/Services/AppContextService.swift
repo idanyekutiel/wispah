@@ -1,6 +1,7 @@
 import Foundation
 import ApplicationServices
 import AppKit
+import os
 
 struct AppContext {
     let appName: String?
@@ -216,6 +217,7 @@ Return only two sentences, no labels, no markdown, no extra commentary.
             guard !cleaned.isEmpty else { return nil }
             return (activity: normalizedActivitySummary(cleaned), prompt: fullPrompt)
         } catch {
+            os_log(.error, "Context inference failed: %{public}@", error.localizedDescription)
             return nil
         }
     }

@@ -72,12 +72,11 @@ extension AppState {
     }
 
     func deleteHistoryEntry(id: UUID) {
-        guard let index = pipelineHistory.firstIndex(where: { $0.id == id }) else { return }
         do {
             if let audioFileName = try pipelineHistoryStore.delete(id: id) {
                 Self.deleteAudioFile(audioFileName)
             }
-            pipelineHistory.remove(at: index)
+            pipelineHistory.removeAll(where: { $0.id == id })
         } catch {
             errorMessage = "Unable to delete run history entry: \(error.localizedDescription)"
         }

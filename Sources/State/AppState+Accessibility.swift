@@ -117,16 +117,19 @@ extension AppState {
         guard AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success else {
             return false
         }
-        // CF type casts always succeed — the AX API guarantees these types
-        let focusedElement = focusedValue as! AXUIElement
+        guard let focused = focusedValue else { return false }
+        guard CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
+        let focusedElement = focused as! AXUIElement
 
         // Get cursor position
         var rangeValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(focusedElement, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success else {
             return false
         }
+        guard let rv = rangeValue else { return false }
+        guard CFGetTypeID(rv) == AXValueGetTypeID() else { return false }
         var range = CFRange(location: 0, length: 0)
-        guard AXValueGetValue(rangeValue as! AXValue, .cfRange, &range) else {
+        guard AXValueGetValue(rv as! AXValue, .cfRange, &range) else {
             return false
         }
 

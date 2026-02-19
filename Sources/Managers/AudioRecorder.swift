@@ -204,6 +204,11 @@ class AudioRecorder: NSObject, ObservableObject {
         }
         os_log(.info, log: recordingLog, "audio file created: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
 
+        // Set audio file permissions to owner-only read/write
+        if let audioPath = self.tempFileURL?.path {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: audioPath)
+        }
+
         audioFileQueue.sync { self.audioFile = newAudioFile }
         DispatchQueue.main.async { self.isRecording = true }
         os_log(.info, log: recordingLog, "startRecording() complete: %.3fms total", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
@@ -353,6 +358,9 @@ class AudioRecorder: NSObject, ObservableObject {
             let errorMsg = writer.error?.localizedDescription ?? "Unknown error"
             throw AudioRecorderError.invalidInputFormat("Audio preprocessing failed: \(errorMsg)")
         }
+
+        // Set preprocessed audio file permissions to owner-only read/write
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
 
         os_log(.info, log: recordingLog, "preprocessed audio: %{public}@", outputURL.lastPathComponent)
         return outputURL
