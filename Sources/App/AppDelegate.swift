@@ -36,8 +36,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Cmd+Comma opens settings (standard macOS convention)
-        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "," {
+                guard self?.appState.hasCompletedSetup == true else { return event }
+                self?.appState.selectedSettingsTab = .general
                 NotificationCenter.default.post(name: .showSettings, object: nil)
                 return nil
             }
