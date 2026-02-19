@@ -6,16 +6,12 @@
 
 ## Changelog
 
-- Context-aware transcription - takes a screenshot and uses it to get names, terminology, and formatting right
-- Developer mode - recognizes camelCase, snake_case, code keywords, and technical terms
-- Two recording modes - hold-to-record and toggle, each with its own configurable hotkey
-- Live recording overlay - floating pill with waveform visualization and smooth animations
-- Smart paste - transcription goes to your cursor with automatic leading-space detection
-- Pause media while recording - auto-pauses music/video, resumes when done
-- Transcription history - searchable log with audio playback
-- Usage stats - words, recording time, streaks, words per minute
-- Auto-updates - checks for new versions in the background, one-click install
-- Custom vocabulary - add your own terms and names for better accuracy
+- Security hardening and crash prevention across the codebase
+- Improved onboarding UX with updated app icon
+- Skipping screen recording permission now shows a confirmation so you know what you're opting out of
+- Start recording sound changed to Purr for a smoother feel
+- Version label now shows "Version" instead of "v" prefix in settings
+- CI now skips builds for non-code changes (docs, images, config)
 
 ## Requirements
 
