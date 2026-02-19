@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2026.02.19.3</string>
+	<string>2026.02.19.4</string>
 	<key>CFBundleVersion</key>
-	<string>2026.02.19.3</string>
+	<string>2026.02.19.4</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -28,5 +28,7 @@
 	<string>Wispah Flow needs microphone access to transcribe your speech.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Wispah Flow needs speech recognition to convert your voice to text.</string>
+	<key>WispahBuildTag</key>
+	<string>2026.02.19.4</string>
 </dict>
 </plist>
