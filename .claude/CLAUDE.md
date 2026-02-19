@@ -15,6 +15,7 @@ make dmg          # Build + create DMG installer
 make clean        # Delete build/
 ```
 
+- **Do NOT run `make dev` or `make clean` while `make watch` is running** — it causes build collisions and signing errors. The user runs `make watch` during dev; just edit files and let it auto-rebuild.
 - **No Xcode project** — compiles with `swiftc` directly via Makefile
 - Minimum macOS 13.0
 - Dev builds: ad-hoc signed (`DEV_CODESIGN_IDENTITY=-`) by default, arm64 only

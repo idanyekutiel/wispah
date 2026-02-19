@@ -73,6 +73,7 @@ No servers, no accounts, no tracking. The only network calls are to Groq's API f
 - [ ] Writing styles - customize how your speech gets formatted depending on context (casual, professional, technical, etc.)
 - [ ] Better vocabulary UI - proper tag-based editor for custom vocabulary instead of a plain text box
 - [ ] Custom recording sounds - replace the default start/stop sounds with better ones
+- [ ] Automatic Fn key emoji picker suppression - currently requires a manual System Settings change; working on intercepting it programmatically
 
 ## For Developers
 

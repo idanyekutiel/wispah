@@ -102,39 +102,10 @@ jobs:
       - name: Notarize DMG
         if: steps.codesign.outputs.signed == 'true'
         run: |
-          SUBMISSION=$(xcrun notarytool submit build/Wispah.dmg \
+          xcrun notarytool submit build/Wispah.dmg \
             --keychain-profile "notarytool-profile" \
             --keychain "$KEYCHAIN_PATH" \
-            --output-format json)
-          echo "$SUBMISSION"
-          ID=$(echo "$SUBMISSION" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-          echo "Submission ID: $ID"
-
-          # Poll with timeout (15 minutes)
-          for i in $(seq 1 90); do
-            sleep 10
-            STATUS=$(xcrun notarytool info "$ID" \
-              --keychain-profile "notarytool-profile" \
-              --keychain "$KEYCHAIN_PATH" \
-              --output-format json)
-            CURRENT=$(echo "$STATUS" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
-            echo "[$((i * 10))s] Status: $CURRENT"
-            if [ "$CURRENT" != "In Progress" ]; then
-              break
-            fi
-          done
-
-          # Fetch log regardless of outcome
-          echo "--- Notarization Log ---"
-          xcrun notarytool log "$ID" \
-            --keychain-profile "notarytool-profile" \
-            --keychain "$KEYCHAIN_PATH" || echo "Log not available yet"
-
-          if [ "$CURRENT" != "Accepted" ]; then
-            echo "Notarization failed with status: $CURRENT"
-            exit 1
-          fi
-
+            --wait
           xcrun stapler staple build/Wispah.dmg
 
       - name: Prepare DMG

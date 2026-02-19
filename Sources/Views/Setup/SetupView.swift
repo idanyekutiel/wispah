@@ -33,6 +33,7 @@ struct SetupView: View {
     @State private var screenRecordingTimer: Timer?
     @State private var customVocabularyInput: String = ""
     @State private var showSkipScreenRecordingAlert = false
+    @State private var fnEmojiPickerEnabled = true
     @StateObject private var githubCache = GitHubMetadataCache.shared
 
     // Test transcription state
@@ -162,7 +163,7 @@ struct SetupView: View {
             }
             .padding(20)
         }
-        .frame(width: 520, height: 580)
+        .frame(width: 520)
         .onAppear {
             apiKeyInput = appState.apiKey
             customVocabularyInput = appState.customVocabulary
@@ -566,13 +567,75 @@ struct SetupView: View {
             }
 
             if appState.toggleHotkey.keyCode == 63 || appState.holdHotkey.keyCode == 63 {
-                Text("Tip: If Fn opens Emoji picker, go to\nSystem Settings > Keyboard and change\n\"Press fn key to\" to \"Do Nothing\".")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
+                if fnEmojiPickerEnabled {
+                    VStack(spacing: 8) {
+                        Label("Fn key opens the Emoji picker by default", systemImage: "exclamationmark.triangle.fill")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.orange)
+                        Text("Change \"Press \u{1F310} key to\" to **Do Nothing** in Keyboard settings.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button {
+                            NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
+                        } label: {
+                            Text("Open Keyboard Settings")
+                                .font(.subheadline)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.orange.opacity(0.08))
+                    .cornerRadius(8)
+                } else {
+                    Label("Fn key is ready to use", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
             }
 
             stepIndicator
+        }
+        .onAppear {
+            checkFnSetting()
+            resizeSetupWindow(height: 620)
+        }
+        .onDisappear {
+            resizeSetupWindow(height: 480)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if currentStep == .hotkey { checkFnSetting() }
+        }
+    }
+
+    private func resizeSetupWindow(height: CGFloat) {
+        guard let window = (NSApp.delegate as? AppDelegate)?.setupWindow else { return }
+        guard abs(window.frame.size.height - height) > 1 else { return }
+        var frame = window.frame
+        let delta = height - frame.size.height
+        frame.origin.y -= delta
+        frame.size.height = height
+        window.minSize = NSSize(width: 520, height: min(height, 480))
+        window.animator().setFrame(frame, display: true)
+    }
+
+    private func checkFnSetting() {
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        process.arguments = ["read", "com.apple.HIToolbox", "AppleFnUsageType"]
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        if let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let val = Int(str) {
+            fnEmojiPickerEnabled = val != 0
+        } else {
+            fnEmojiPickerEnabled = true
         }
     }
 
