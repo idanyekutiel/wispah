@@ -16,6 +16,10 @@
 
 ---
 
+<p align="center">
+  <img src="Resources/demo.gif" alt="Wispah Flow demo" width="600">
+</p>
+
 ## Features
 
 - **Context-aware transcription** - takes a screenshot when you start recording, then uses it to get names, terminology, and formatting right. Replying to an email? It'll spell the person's name correctly. Writing code? It'll match the syntax.
