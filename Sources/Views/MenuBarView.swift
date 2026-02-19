@@ -142,6 +142,7 @@ struct MenuBarView: View {
             } label: {
                 Label("Settings", systemImage: "gearshape")
             }
+            .keyboardShortcut(",", modifiers: .command)
 
             Divider()
 
