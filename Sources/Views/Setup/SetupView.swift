@@ -735,6 +735,23 @@ struct SetupView: View {
                 .padding(12)
                 .background(Color(nsColor: .controlBackgroundColor))
                 .cornerRadius(8)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "arrow.uturn.backward")
+                            .frame(width: 24)
+                            .foregroundStyle(.blue)
+                        Toggle("Smart Corrections", isOn: $appState.smartCorrectionsEnabled)
+                    }
+
+                    Text("Removes verbal self-corrections like \"wait no\" and \"I mean\" — keeps only your final intent.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 36)
+                }
+                .padding(12)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
             }
 
             stepIndicator

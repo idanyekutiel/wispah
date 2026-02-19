@@ -121,6 +121,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published var smartCorrectionsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(smartCorrectionsEnabled, forKey: "smart_corrections_enabled")
+        }
+    }
+
     @Published var developerModeEnabled: Bool {
         didSet {
             UserDefaults.standard.set(developerModeEnabled, forKey: "developer_mode_enabled")
@@ -290,6 +296,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
             smartFormattingEnabled = true
         }
 
+        let smartCorrectionsEnabled: Bool
+        if UserDefaults.standard.object(forKey: "smart_corrections_enabled") != nil {
+            smartCorrectionsEnabled = UserDefaults.standard.bool(forKey: "smart_corrections_enabled")
+        } else {
+            smartCorrectionsEnabled = true
+        }
+
         let developerModeEnabled = UserDefaults.standard.bool(forKey: "developer_mode_enabled")
 
         let audioWhileRecording = AudioWhileRecording(rawValue: UserDefaults.standard.string(forKey: "audio_while_recording") ?? "") ?? .doNothing
@@ -315,6 +328,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.whisperModel = whisperModel
         self.transcriptionLanguage = transcriptionLanguage
         self.smartFormattingEnabled = smartFormattingEnabled
+        self.smartCorrectionsEnabled = smartCorrectionsEnabled
         self.developerModeEnabled = developerModeEnabled
         self.audioWhileRecording = audioWhileRecording
         self.selectedSettingsTab = collectStats ? .stats : .runLog

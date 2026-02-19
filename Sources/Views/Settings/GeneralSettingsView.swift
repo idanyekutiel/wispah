@@ -513,6 +513,11 @@ struct GeneralSettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Toggle("Smart corrections", isOn: $appState.smartCorrectionsEnabled)
+            Text("Removes verbal self-corrections (e.g. \"I want apples, wait no, oranges\" becomes \"I want oranges\"). Only triggers on explicit correction words like \"wait no\", \"actually\", \"I mean\".")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Toggle("Developer mode", isOn: $appState.developerModeEnabled)
             Text("Optimized for coding context — recognizes variable names, code keywords, and technical terms.")
                 .font(.caption)
