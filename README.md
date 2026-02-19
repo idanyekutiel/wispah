@@ -5,7 +5,8 @@
 <h1 align="center">Wispah Flow</h1>
 
 <p align="center">
-  Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.
+  Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.<br>
+  Press a hotkey, speak, and your words appear at the cursor - adapted to what's on screen.
 </p>
 
 <p align="center">
