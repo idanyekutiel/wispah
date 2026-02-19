@@ -397,22 +397,11 @@ extension AppState {
 
                         let textToPaste = self.needsLeadingSpace() ? " " + trimmedFinalTranscript : trimmedFinalTranscript
 
-                        // Save current clipboard contents so we can restore after pasting
-                        let previousClipboard = NSPasteboard.general.string(forType: .string)
-
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(textToPaste, forType: .string)
 
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                             self.pasteAtCursor()
-
-                            // Restore previous clipboard after paste completes
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                NSPasteboard.general.clearContents()
-                                if let previousClipboard {
-                                    NSPasteboard.general.setString(previousClipboard, forType: .string)
-                                }
-                            }
                         }
 
                         self.statusText = "Pasted!"
