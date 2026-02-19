@@ -2,15 +2,14 @@
   <img src="Resources/AppIcon-README.png" width="128" height="128" alt="Wispah Flow icon">
 </p>
 
-<h1 align="center">Wispah Flow - Open Source Wispr Flow Alternative</h1>
+<h1 align="center">Wispah Flow</h1>
 
 <p align="center">
-  Free, open source, fully local voice-to-text for macOS. No accounts, no subscriptions - just a free API key.<br>
-  Press a hotkey, speak, and your words appear at the cursor - adapted to what's on screen.
+  Free and open source alternative to <a href="https://wisprflow.ai">Wispr Flow</a>, <a href="https://superwhisper.com">Superwhisper</a>, and <a href="https://monologue.to">Monologue</a>.
 </p>
 
 <p align="center">
-  <a href="https://github.com/idanyekutiel/wispah/releases/latest/download/Wispah.dmg"><b>Download Wispah.dmg</b></a><br>
+  <a href="https://github.com/idanyekutiel/wispah/releases/latest/download/Wispah.dmg"><b>⬇ Download Wispah.dmg</b></a><br>
   <sub>macOS 13+ &middot; Apple Silicon + Intel</sub>
 </p>
 
