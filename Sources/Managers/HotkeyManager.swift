@@ -173,7 +173,7 @@ class HotkeyManager {
     }
 
     private func handleFlagsChanged(event: NSEvent) {
-        for binding in monitoredBindings where binding.isModifier && binding.keyCode == event.keyCode {
+        for binding in monitoredBindings where binding.isModifier {
             guard let flag = binding.modifierFlag else { continue }
             let flagIsSet = event.modifierFlags.contains(flag)
 

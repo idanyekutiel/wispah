@@ -23,6 +23,7 @@
 ## Features
 
 - **Context-aware transcription** - takes a screenshot when you start recording, then uses it to get names, terminology, and formatting right. Replying to an email? It'll spell the person's name correctly. Writing code? It'll match the syntax.
+- **Customizable post-processing** - everything is a toggle. Want raw transcription with no processing? Turn it all off. Want the full pipeline? Enable smart formatting (auto-detects lists, paragraphs), smart corrections (cleans up "wait no, I meant..." mid-speech), developer mode (recognizes code terms), and screen context - mix and match to fit how you work.
 - **Two recording modes** - hold-to-record (push-to-talk style) and toggle (press to start, press to stop), each with its own hotkey
 - **Live recording overlay** - floating pill with waveform visualization, state transitions, and a smooth slide-to-notch animation
 - **Paste at cursor** - transcription goes straight to wherever your cursor is, with smart leading-space detection so it doesn't smash into existing text
@@ -70,7 +71,8 @@ No servers, no accounts, no tracking. The only network calls are to Groq's API f
 - [ ] CLI integrations - work alongside Claude Code, Codex, and other AI coding tools
 - [ ] Standalone app mode - open settings/history as a proper app window that shows in the dock and app switcher
 - [ ] Voice snippets - say a keyword and it expands into a predefined block of text (signatures, addresses, boilerplate)
-- [ ] Writing styles - customize how your speech gets formatted depending on context (casual, professional, technical, etc.)
+- [ ] Custom post-processing prompt - add your own instructions to the post-processing pipeline (e.g. "I say 'so like' a lot, remove it" or "keep my sentences short and direct") so the output matches your personal writing style
+- [ ] Writing styles - presets for how your speech gets formatted depending on context (casual, professional, technical, etc.)
 - [ ] Better vocabulary UI - proper tag-based editor for custom vocabulary instead of a plain text box
 - [ ] Custom recording sounds - replace the default start/stop sounds with better ones
 - [ ] Automatic Fn key emoji picker suppression - currently requires a manual System Settings change; working on intercepting it programmatically

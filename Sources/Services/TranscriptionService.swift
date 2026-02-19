@@ -132,6 +132,10 @@ class TranscriptionService {
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(model)\r\n")
 
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
+        append("verbose_json\r\n")
+
         if let language, !language.isEmpty {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
@@ -168,9 +172,22 @@ class TranscriptionService {
     }
 
     private func parseTranscript(from data: Data) throws -> String {
-        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let text = json["text"] as? String {
-            return text
+        if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let text = json["text"] as? String ?? ""
+
+            // verbose_json returns segments with no_speech_prob — filter hallucinations
+            if let segments = json["segments"] as? [[String: Any]], !segments.isEmpty {
+                let avgNoSpeech = segments
+                    .compactMap { $0["no_speech_prob"] as? Double }
+                    .reduce(0, +) / Double(segments.count)
+                os_log(.info, "Whisper segments=%d, avg no_speech_prob=%.3f", segments.count, avgNoSpeech)
+                if avgNoSpeech > 0.7 {
+                    os_log(.info, "High no_speech_prob (%.3f) — treating as empty transcript", avgNoSpeech)
+                    return ""
+                }
+            }
+
+            if !text.isEmpty { return text }
         }
 
         let plainText = String(data: data, encoding: .utf8) ?? ""

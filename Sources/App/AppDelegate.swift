@@ -4,6 +4,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var setupWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var debugLogWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.addObserver(
@@ -16,6 +17,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(handleShowSettings),
             name: .showSettings,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleShowDebugLogs),
+            name: .showDebugLogs,
             object: nil
         )
 
@@ -64,6 +71,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showSettingsWindow()
     }
 
+    @objc private func handleShowDebugLogs() {
+        showDebugLogWindow()
+    }
+
     private func showSettingsWindow() {
         if let settingsWindow, settingsWindow.isVisible {
             settingsWindow.makeKeyAndOrderFront(nil)
@@ -106,6 +117,39 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.settingsWindow = nil
+        }
+    }
+
+    private func showDebugLogWindow() {
+        if let debugLogWindow, debugLogWindow.isVisible {
+            debugLogWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let view = DebugLogView()
+        let hostingView = NSHostingView(rootView: view)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 500),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Wispah Flow — Debug Logs"
+        window.contentView = hostingView
+        window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 600, height: 300)
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        debugLogWindow = window
+
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.debugLogWindow = nil
         }
     }
 

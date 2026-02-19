@@ -156,8 +156,24 @@ struct MenuBarView: View {
                 NotificationCenter.default.post(name: .showSetup, object: nil)
             }
 
-            Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
-                appState.toggleDebugOverlay()
+            if appState.developerModeEnabled {
+                Button("Debug Logs") {
+                    NotificationCenter.default.post(name: .showDebugLogs, object: nil)
+                }
+
+                Button(appState.audioRecorder.isCapturing ? "Release Audio (Stop Mic)" : "Capture Audio (Claim Mic)") {
+                    if appState.audioRecorder.isCapturing {
+                        appState.audioRecorder.releaseAudio()
+                    } else {
+                        let deviceUID = appState.selectedMicrophoneID
+                        appState.audioRecorder.captureAudio(deviceUID: deviceUID)
+                    }
+                }
+                .disabled(appState.isRecording)
+
+                Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
+                    appState.toggleDebugOverlay()
+                }
             }
 
             if updateManager.updateAvailable {
@@ -221,4 +237,5 @@ struct MenuBarView: View {
 extension Notification.Name {
     static let showSetup = Notification.Name("showSetup")
     static let showSettings = Notification.Name("showSettings")
+    static let showDebugLogs = Notification.Name("showDebugLogs")
 }
