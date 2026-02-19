@@ -67,6 +67,9 @@ No servers, no accounts, no tracking. The only network calls are to Groq's API f
 - [ ] IDE integrations - feed workspace file names and active context from Cursor, Windsurf, VS Code for even smarter developer transcription
 - [ ] CLI integrations - work alongside Claude Code, Codex, and other AI coding tools
 - [ ] Standalone app mode - open settings/history as a proper app window that shows in the dock and app switcher
+- [ ] Voice snippets - say a keyword and it expands into a predefined block of text (signatures, addresses, boilerplate)
+- [ ] Writing styles - customize how your speech gets formatted depending on context (casual, professional, technical, etc.)
+- [ ] Better vocabulary UI - proper tag-based editor for custom vocabulary instead of a plain text box
 - [ ] Custom recording sounds - replace the default start/stop sounds with better ones
 
 ## For Developers
