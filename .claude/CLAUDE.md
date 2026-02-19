@@ -211,6 +211,7 @@ GitHub Secrets required for CI signing + notarization:
 ### Git
 - **NEVER git add, commit, or push without explicit user approval.** Only run git operations (add, commit, push) when the user explicitly says to. Each approval is one-time — after executing, wait for permission again before the next git operation. Just edit files and wait.
 - **NEVER push without explicit user approval.** Always wait for the user to confirm before running `git push`.
+- **NEVER add Co-Authored-By, attribution lines, or any self-credit to commit messages or PRs.** All commits should appear as authored solely by the user.
 
 ### Code Standards
 - Keep files focused — split large files into logical units (AppState extensions pattern)

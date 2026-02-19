@@ -343,21 +343,28 @@ extension AppState {
                 let finalTranscript: String
                 let processingStatus: String
                 let postProcessingPrompt: String
-                do {
-                    let postProcessingResult = try await postProcessingService.postProcess(
-                        transcript: rawTranscript,
-                        context: appContext,
-                        customVocabulary: customVocabulary,
-                        smartFormatting: smartFormattingEnabled,
-                        smartCorrections: smartCorrectionsEnabled,
-                        developerMode: developerModeEnabled
-                    )
-                    finalTranscript = postProcessingResult.transcript
-                    processingStatus = "Post-processing succeeded"
-                    postProcessingPrompt = postProcessingResult.prompt
-                } catch {
+                if self.postProcessingEnabled {
+                    do {
+                        let postProcessingResult = try await postProcessingService.postProcess(
+                            transcript: rawTranscript,
+                            context: appContext,
+                            customVocabulary: customVocabulary,
+                            smartFormatting: smartFormattingEnabled,
+                            smartCorrections: smartCorrectionsEnabled,
+                            developerMode: developerModeEnabled,
+                            customPrompt: customPostProcessingPrompt
+                        )
+                        finalTranscript = postProcessingResult.transcript
+                        processingStatus = "Post-processing succeeded"
+                        postProcessingPrompt = postProcessingResult.prompt
+                    } catch {
+                        finalTranscript = rawTranscript
+                        processingStatus = "Post-processing failed, using raw transcript"
+                        postProcessingPrompt = ""
+                    }
+                } else {
                     finalTranscript = rawTranscript
-                    processingStatus = "Post-processing failed, using raw transcript"
+                    processingStatus = "Post-processing disabled"
                     postProcessingPrompt = ""
                 }
                 await MainActor.run {

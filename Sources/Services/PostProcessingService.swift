@@ -79,7 +79,8 @@ final class PostProcessingService {
         customVocabulary: String,
         smartFormatting: Bool = true,
         smartCorrections: Bool = false,
-        developerMode: Bool = false
+        developerMode: Bool = false,
+        customPrompt: String = ""
     ) async throws -> PostProcessingResult {
         let vocabularyTerms = mergedVocabularyTerms(rawVocabulary: customVocabulary)
         let appHint = Self.appContextHints[context.bundleIdentifier ?? ""] ?? ""
@@ -98,6 +99,7 @@ final class PostProcessingService {
                     smartFormatting: smartFormatting,
                     smartCorrections: smartCorrections,
                     developerMode: developerMode,
+                    customPrompt: customPrompt,
                     appHint: appHint
                 )
             }
@@ -128,6 +130,7 @@ final class PostProcessingService {
         smartFormatting: Bool,
         smartCorrections: Bool,
         developerMode: Bool,
+        customPrompt: String,
         appHint: String
     ) async throws -> PostProcessingResult {
         var request = URLRequest(url: URL(string: "\(baseURL)/chat/completions")!)
@@ -207,6 +210,11 @@ Output rules:
 - Prefer technical/programming interpretations of ambiguous words when the screen context suggests a coding environment.
 - Common developer abbreviations: "repo" → repository context, "PR" → pull request, "env" → environment, "config" → configuration, "deps" → dependencies, "impl" → implementation.
 """
+        }
+
+        let trimmedCustomPrompt = customPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCustomPrompt.isEmpty {
+            systemPrompt += "\n\nAdditional user instructions:\n" + trimmedCustomPrompt
         }
 
         let appHintContext = appHint.isEmpty ? "" : "\nApp context: \(appHint)"

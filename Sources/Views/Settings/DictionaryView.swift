@@ -17,6 +17,7 @@ struct DictionaryView: View {
 
                 TextEditor(text: $vocabularyInput)
                     .font(.system(.body, design: .monospaced))
+                    .padding(6)
                     .frame(minHeight: 200, maxHeight: .infinity)
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)

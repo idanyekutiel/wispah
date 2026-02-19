@@ -115,6 +115,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
+    @Published var postProcessingEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(postProcessingEnabled, forKey: "post_processing_enabled")
+        }
+    }
+
     @Published var smartFormattingEnabled: Bool {
         didSet {
             UserDefaults.standard.set(smartFormattingEnabled, forKey: "smart_formatting_enabled")
@@ -130,6 +136,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var developerModeEnabled: Bool {
         didSet {
             UserDefaults.standard.set(developerModeEnabled, forKey: "developer_mode_enabled")
+        }
+    }
+
+    @Published var customPostProcessingPrompt: String {
+        didSet {
+            UserDefaults.standard.set(customPostProcessingPrompt, forKey: "custom_post_processing_prompt")
         }
     }
 
@@ -289,6 +301,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         let storedLanguage = UserDefaults.standard.string(forKey: "transcription_language") ?? ""
         let transcriptionLanguage: String? = storedLanguage.isEmpty ? nil : storedLanguage
 
+        let postProcessingEnabled: Bool
+        if UserDefaults.standard.object(forKey: "post_processing_enabled") != nil {
+            postProcessingEnabled = UserDefaults.standard.bool(forKey: "post_processing_enabled")
+        } else {
+            postProcessingEnabled = true
+        }
+
         let smartFormattingEnabled: Bool
         if UserDefaults.standard.object(forKey: "smart_formatting_enabled") != nil {
             smartFormattingEnabled = UserDefaults.standard.bool(forKey: "smart_formatting_enabled")
@@ -304,6 +323,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
 
         let developerModeEnabled = UserDefaults.standard.bool(forKey: "developer_mode_enabled")
+        let customPostProcessingPrompt = UserDefaults.standard.string(forKey: "custom_post_processing_prompt") ?? ""
 
         let audioWhileRecording = AudioWhileRecording(rawValue: UserDefaults.standard.string(forKey: "audio_while_recording") ?? "") ?? .doNothing
 
@@ -327,9 +347,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.collectStats = collectStats
         self.whisperModel = whisperModel
         self.transcriptionLanguage = transcriptionLanguage
+        self.postProcessingEnabled = postProcessingEnabled
         self.smartFormattingEnabled = smartFormattingEnabled
         self.smartCorrectionsEnabled = smartCorrectionsEnabled
         self.developerModeEnabled = developerModeEnabled
+        self.customPostProcessingPrompt = customPostProcessingPrompt
         self.audioWhileRecording = audioWhileRecording
         self.selectedSettingsTab = collectStats ? .stats : .runLog
 

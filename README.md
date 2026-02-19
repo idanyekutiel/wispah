@@ -71,7 +71,7 @@ No servers, no accounts, no tracking. The only network calls are to Groq's API f
 - [ ] CLI integrations - work alongside Claude Code, Codex, and other AI coding tools
 - [ ] Standalone app mode - open settings/history as a proper app window that shows in the dock and app switcher
 - [ ] Voice snippets - say a keyword and it expands into a predefined block of text (signatures, addresses, boilerplate)
-- [ ] Custom post-processing prompt - add your own instructions to the post-processing pipeline (e.g. "I say 'so like' a lot, remove it" or "keep my sentences short and direct") so the output matches your personal writing style
+- [x] Custom post-processing prompt - add your own instructions to the post-processing pipeline (e.g. "I say 'so like' a lot, remove it" or "keep my sentences short and direct") so the output matches your personal writing style
 - [ ] Writing styles - presets for how your speech gets formatted depending on context (casual, professional, technical, etc.)
 - [ ] Improved dictionary page - tag-based editor, categories, import/export, and per-app vocabulary profiles
 - [ ] Automatic Fn key emoji picker suppression - currently requires a manual System Settings change; working on intercepting it programmatically

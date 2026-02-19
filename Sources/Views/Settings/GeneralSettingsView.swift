@@ -524,20 +524,47 @@ struct GeneralSettingsView: View {
 
     private var postProcessingSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("Smart formatting", isOn: $appState.smartFormattingEnabled)
-            Text("Automatically detects structure in your speech and formats it (numbered lists, bullet points, paragraphs).")
+            Toggle("Enable post-processing", isOn: $appState.postProcessingEnabled)
+            Text("Cleans up transcription using an LLM — fixes spelling, punctuation, and applies the settings below.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Toggle("Smart corrections", isOn: $appState.smartCorrectionsEnabled)
-            Text("Removes verbal self-corrections (e.g. \"I want apples, wait no, oranges\" becomes \"I want oranges\"). Only triggers on explicit correction words like \"wait no\", \"actually\", \"I mean\".")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Group {
+                Toggle("Smart formatting", isOn: $appState.smartFormattingEnabled)
+                Text("Automatically detects structure in your speech and formats it (numbered lists, bullet points, paragraphs).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-            Toggle("Developer mode", isOn: $appState.developerModeEnabled)
-            Text("Optimized for coding context — recognizes variable names, code keywords, and technical terms.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                Toggle("Smart corrections", isOn: $appState.smartCorrectionsEnabled)
+                Text("Removes verbal self-corrections (e.g. \"I want apples, wait no, oranges\" becomes \"I want oranges\"). Only triggers on explicit correction words like \"wait no\", \"actually\", \"I mean\".")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Developer mode", isOn: $appState.developerModeEnabled)
+                Text("Optimized for coding context — recognizes variable names, code keywords, and technical terms.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Custom instructions")
+                        .font(.caption.weight(.semibold))
+                    TextEditor(text: $appState.customPostProcessingPrompt)
+                        .font(.system(.caption, design: .monospaced))
+                        .padding(6)
+                        .frame(minHeight: 60, maxHeight: 100)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                        )
+                    Text("e.g. \"I say 'so like' a lot, remove it\" or \"keep sentences short\"")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .disabled(!appState.postProcessingEnabled)
+            .opacity(appState.postProcessingEnabled ? 1 : 0.5)
         }
     }
 
