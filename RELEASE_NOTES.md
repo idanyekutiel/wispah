@@ -6,12 +6,9 @@
 
 ## Changelog
 
-- Security hardening and crash prevention across the codebase
-- Improved onboarding UX with updated app icon
-- Skipping screen recording permission now shows a confirmation so you know what you're opting out of
-- Start recording sound changed to Purr for a smoother feel
-- Version label now shows "Version" instead of "v" prefix in settings
-- CI now skips builds for non-code changes (docs, images, config)
+- Fixed notarization failures caused by missing secure timestamps on code signatures
+- Added pre-notarization signature verification to catch signing issues before submission
+- Notarization now has a 30-minute timeout with automatic log retrieval on failure
 
 ## Requirements
 

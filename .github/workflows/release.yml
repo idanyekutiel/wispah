@@ -92,20 +92,61 @@ jobs:
       - name: Build universal
         run: make ARCH=universal APP_NAME=Wispah DISPLAY_NAME="Wispah Flow" BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
+      - name: Verify app signing
+        if: steps.codesign.outputs.signed == 'true'
+        run: |
+          echo "--- Verifying framework signature ---"
+          codesign --verify --deep --strict build/Wispah.app/Contents/Resources/MediaRemoteAdapter.framework
+          codesign -dvv build/Wispah.app/Contents/Resources/MediaRemoteAdapter.framework 2>&1 | grep -E 'Authority|Timestamp|Runtime'
+
+          echo "--- Verifying app signature ---"
+          codesign --verify --deep --strict build/Wispah.app
+          codesign -dvv build/Wispah.app 2>&1 | grep -E 'Authority|Timestamp|Runtime'
+
+          echo "--- Checking all signatures have timestamps ---"
+          if ! codesign -dvv build/Wispah.app/Contents/Resources/MediaRemoteAdapter.framework 2>&1 | grep -q 'Timestamp='; then
+            echo "ERROR: Framework is missing secure timestamp"
+            exit 1
+          fi
+          if ! codesign -dvv build/Wispah.app 2>&1 | grep -q 'Timestamp='; then
+            echo "ERROR: App is missing secure timestamp"
+            exit 1
+          fi
+          echo "All signatures verified with timestamps"
+
       - name: Create DMG
         run: make dmg ARCH=universal APP_NAME=Wispah BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Sign DMG
         if: steps.codesign.outputs.signed == 'true'
-        run: codesign --force --sign "$CODESIGN_IDENTITY" build/Wispah.dmg
+        run: |
+          codesign --force --timestamp --sign "$CODESIGN_IDENTITY" build/Wispah.dmg
+          codesign --verify --strict build/Wispah.dmg
+          echo "DMG signed and verified"
 
       - name: Notarize DMG
         if: steps.codesign.outputs.signed == 'true'
         run: |
-          xcrun notarytool submit build/Wispah.dmg \
+          SUBMIT_OUT=$(xcrun notarytool submit build/Wispah.dmg \
             --keychain-profile "notarytool-profile" \
             --keychain "$KEYCHAIN_PATH" \
-            --wait
+            --wait --timeout 30m 2>&1) || true
+          echo "$SUBMIT_OUT"
+
+          SUBMISSION_ID=$(echo "$SUBMIT_OUT" | grep 'id:' | head -1 | awk '{print $2}')
+          STATUS=$(echo "$SUBMIT_OUT" | grep 'status:' | tail -1 | awk '{print $2}')
+          echo "Submission ID: $SUBMISSION_ID"
+          echo "Status: $STATUS"
+
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "--- Fetching notarization log ---"
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --keychain-profile "notarytool-profile" \
+              --keychain "$KEYCHAIN_PATH" 2>&1 || true
+            echo "Notarization failed with status: $STATUS"
+            exit 1
+          fi
+
           xcrun stapler staple build/Wispah.dmg
 
       - name: Prepare DMG
