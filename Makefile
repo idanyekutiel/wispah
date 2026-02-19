@@ -55,6 +55,7 @@ endif
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
 	@cp -R "$(ADAPTER_DIR)/MediaRemoteAdapter.framework" "$(RESOURCES)/"
 	@cp "$(ADAPTER_DIR)/mediaremote-adapter.pl" "$(RESOURCES)/"
+	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" "$(RESOURCES)/MediaRemoteAdapter.framework"
 	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements Wispah.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
