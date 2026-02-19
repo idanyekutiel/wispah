@@ -78,6 +78,7 @@ final class PostProcessingService {
         context: AppContext,
         customVocabulary: String,
         smartFormatting: Bool = true,
+        smartCorrections: Bool = false,
         developerMode: Bool = false
     ) async throws -> PostProcessingResult {
         let vocabularyTerms = mergedVocabularyTerms(rawVocabulary: customVocabulary)
@@ -95,6 +96,7 @@ final class PostProcessingService {
                     model: defaultModel,
                     customVocabulary: vocabularyTerms,
                     smartFormatting: smartFormatting,
+                    smartCorrections: smartCorrections,
                     developerMode: developerMode,
                     appHint: appHint
                 )
@@ -124,6 +126,7 @@ final class PostProcessingService {
         model: String,
         customVocabulary: [String],
         smartFormatting: Bool,
+        smartCorrections: Bool,
         developerMode: Bool,
         appHint: String
     ) async throws -> PostProcessingResult {
@@ -178,6 +181,18 @@ Output rules:
 - Preserve inline formatting cues: if the speaker says "in quotes" or "quote... unquote", wrap that text in quotation marks.
 - If the speaker says "new line" or "new paragraph", insert the appropriate line break.
 - Do not over-format — only apply formatting when the speaker's intent is clearly structural.
+"""
+        }
+
+        if smartCorrections {
+            systemPrompt += """
+
+\nSelf-correction handling:
+- When the speaker EXPLICITLY corrects themselves using clear verbal signals — such as "wait no", "actually no", "I mean", "sorry I meant", "no no", "scratch that", "let me rephrase", "or rather" — drop the part they are correcting and keep ONLY the corrected version.
+- Example: "I want apples, wait no, I want oranges" → "I want oranges"
+- Example: "Send it to John, actually no, send it to Sarah" → "Send it to Sarah"
+- ONLY do this when there is an explicit correction signal. If the speaker just adds more information ("I want apples and also oranges"), keep everything.
+- This rule does NOT give you permission to rephrase, reword, or change any other part of the transcript. All other words must stay exactly as spoken.
 """
         }
 

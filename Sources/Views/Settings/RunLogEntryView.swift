@@ -27,7 +27,8 @@ struct RunLogEntryView: View {
     }
 
     private var canRetry: Bool {
-        isError && item.audioFileName != nil && retryState != .retrying
+        guard item.audioFileName != nil && retryState != .retrying else { return false }
+        return isError || item.postProcessedTranscript.isEmpty
     }
 
     var body: some View {
@@ -90,13 +91,14 @@ struct RunLogEntryView: View {
                     }
                 } label: {
                     HStack {
-                        if retryState == .retrying {
-                            ProgressView()
-                                .controlSize(.mini)
-                        } else if isError {
+                        if isError && retryState != .retrying {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.caption)
                                 .foregroundStyle(.red)
+                        } else if item.postProcessedTranscript.isEmpty && retryState != .retrying {
+                            Image(systemName: "minus.circle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.yellow)
                         }
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.timestamp.formatted(date: .numeric, time: .standard))

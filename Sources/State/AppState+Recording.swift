@@ -229,12 +229,34 @@ extension AppState {
         lastContextScreenshotStatus = "No screenshot"
 
         let trimDuration = audioRecorder.lastNonSilentDuration
+        let speechRange = audioRecorder.speechTimeRange
         guard let fileURL = audioRecorder.stopRecording() else {
             errorMessage = "No audio recorded"
             isRecording = false
             statusText = "Error"
+            overlayManager.dismiss()
             return
         }
+
+        // Skip transcription if no actual audio or no speech detected
+        // (Whisper hallucinates on silent/near-silent audio — "thank you", etc.)
+        if trimDuration <= 0 || !audioRecorder.detectedSpeech {
+            if !audioRecorder.detectedSpeech {
+                os_log(.info, log: recordingLog, "no speech detected — skipping transcription")
+            }
+            isRecording = false
+            statusText = "Nothing to transcribe"
+            overlayManager.dismiss()
+            audioRecorder.cleanup()
+            try? FileManager.default.removeItem(at: fileURL)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if self.statusText == "Nothing to transcribe" {
+                    self.statusText = "Ready"
+                }
+            }
+            return
+        }
+
         let savedAudioFileName = Self.saveAudioFile(from: fileURL)
         isRecording = false
         isTranscribing = true
@@ -275,13 +297,20 @@ extension AppState {
         transcriptionTask?.cancel()
         transcriptionTask = Task {
             do {
-                // Preprocess: downsample to 16KHz mono AAC + trim trailing silence
+                // Preprocess: downsample to 16KHz mono AAC + trim to speech boundaries
                 let uploadURL: URL
                 do {
                     uploadURL = try await audioRecorder.preprocessAudio(
                         inputURL: fileURL,
-                        trimToSeconds: trimDuration > 0 ? trimDuration : nil
+                        trimToSeconds: speechRange?.end,
+                        skipLeadingSeconds: speechRange?.start ?? 0
                     )
+                    // Overwrite saved audio with the trimmed version (what Whisper hears)
+                    if let audioFileName = savedAudioFileName {
+                        let savedURL = Self.audioStorageDirectory().appendingPathComponent(audioFileName)
+                        try? FileManager.default.removeItem(at: savedURL)
+                        try? FileManager.default.copyItem(at: uploadURL, to: savedURL)
+                    }
                 } catch {
                     os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
                     await MainActor.run { [weak self] in
@@ -320,6 +349,7 @@ extension AppState {
                         context: appContext,
                         customVocabulary: customVocabulary,
                         smartFormatting: smartFormattingEnabled,
+                        smartCorrections: smartCorrectionsEnabled,
                         developerMode: developerModeEnabled
                     )
                     finalTranscript = postProcessingResult.transcript
@@ -360,25 +390,27 @@ extension AppState {
                         self.statusText = "Nothing to transcribe"
                         self.overlayManager.dismiss()
                     } else {
-                        self.statusText = "Copied to clipboard!"
                         self.overlayManager.showDone()
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                             self.overlayManager.dismiss()
                         }
 
                         let textToPaste = self.needsLeadingSpace() ? " " + trimmedFinalTranscript : trimmedFinalTranscript
+
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(textToPaste, forType: .string)
 
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                             self.pasteAtCursor()
                         }
+
+                        self.statusText = "Pasted!"
                     }
 
                     self.audioRecorder.cleanup()
 
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        if self.statusText == "Copied to clipboard!" || self.statusText == "Nothing to transcribe" {
+                        if self.statusText == "Pasted!" || self.statusText == "Nothing to transcribe" {
                             self.statusText = "Ready"
                         }
                     }

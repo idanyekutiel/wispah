@@ -64,27 +64,8 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 6)
-            } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    if !appState.holdHotkey.isDisabled {
-                        Text("Hold \(appState.holdHotkey.displayName) to dictate")
-                    }
-                    if !appState.toggleHotkey.isDisabled {
-                        Text("Press \(appState.toggleHotkey.displayName) to toggle")
-                    }
-                    if appState.holdHotkey.isDisabled && appState.toggleHotkey.isDisabled {
-                        Text("No hotkeys configured")
-                    }
-                }
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 6)
             }
 
-            Divider()
-
-            // Manual toggle
             Button(appState.isRecording ? "Stop Recording" : "Start Dictating") {
                 appState.toggleRecording()
             }
@@ -99,17 +80,8 @@ struct MenuBarView: View {
                     .lineLimit(3)
             }
 
-            if !appState.lastTranscript.isEmpty && !appState.isRecording && !appState.isTranscribing {
-                Divider()
-                Text(appState.lastTranscript.count > 40
-                     ? String(appState.lastTranscript.prefix(40)) + "..."
-                     : appState.lastTranscript)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .lineLimit(1)
-
-                Button("Copy Again") {
+            if !appState.lastTranscript.isEmpty {
+                Button("Copy Last Transcription") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(appState.lastTranscript, forType: .string)
                 }
@@ -146,9 +118,38 @@ struct MenuBarView: View {
                 Text(appState.screenRecordingEnabled ? "✓ Screen Context" : "  Screen Context")
             }
 
-            Button("Settings") {
-                NotificationCenter.default.post(name: .showSettings, object: nil)
+            Divider()
+
+            if appState.collectStats {
+                Button {
+                    appState.selectedSettingsTab = .stats
+                    NotificationCenter.default.post(name: .showSettings, object: nil)
+                } label: {
+                    Label("Stats", systemImage: "chart.bar")
+                }
             }
+
+            Button {
+                appState.selectedSettingsTab = .dictionary
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+            } label: {
+                Label("Dictionary", systemImage: "text.book.closed.fill")
+            }
+
+            Button {
+                appState.selectedSettingsTab = .runLog
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+            } label: {
+                Label("Transcriptions", systemImage: "list.bullet.rectangle")
+            }
+
+            Button {
+                appState.selectedSettingsTab = .general
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+            } label: {
+                Label("Settings", systemImage: "gearshape")
+            }
+            .keyboardShortcut(",", modifiers: .command)
 
             Divider()
 
@@ -156,8 +157,24 @@ struct MenuBarView: View {
                 NotificationCenter.default.post(name: .showSetup, object: nil)
             }
 
-            Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
-                appState.toggleDebugOverlay()
+            if appState.developerModeEnabled {
+                Button("Debug Logs") {
+                    NotificationCenter.default.post(name: .showDebugLogs, object: nil)
+                }
+
+                Button(appState.audioRecorder.isCapturing ? "Release Audio (Stop Mic)" : "Capture Audio (Claim Mic)") {
+                    if appState.audioRecorder.isCapturing {
+                        appState.audioRecorder.releaseAudio()
+                    } else {
+                        let deviceUID = appState.selectedMicrophoneID
+                        appState.audioRecorder.captureAudio(deviceUID: deviceUID)
+                    }
+                }
+                .disabled(appState.isRecording)
+
+                Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
+                    appState.toggleDebugOverlay()
+                }
             }
 
             if updateManager.updateAvailable {
@@ -221,4 +238,5 @@ struct MenuBarView: View {
 extension Notification.Name {
     static let showSetup = Notification.Name("showSetup")
     static let showSettings = Notification.Name("showSettings")
+    static let showDebugLogs = Notification.Name("showDebugLogs")
 }

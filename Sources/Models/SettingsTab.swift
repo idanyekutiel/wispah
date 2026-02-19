@@ -2,6 +2,7 @@ import Foundation
 
 enum SettingsTab: String, CaseIterable, Identifiable {
     case stats
+    case dictionary
     case runLog
     case general
 
@@ -11,6 +12,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .stats: return "Stats"
         case .runLog: return "Transcriptions"
+        case .dictionary: return "Dictionary"
         case .general: return "Settings"
         }
     }
@@ -19,6 +21,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         switch self {
         case .stats: return "chart.bar"
         case .runLog: return "list.bullet.rectangle"
+        case .dictionary: return "text.book.closed.fill"
         case .general: return "gearshape"
         }
     }
