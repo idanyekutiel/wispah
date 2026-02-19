@@ -2,8 +2,6 @@
 
 macOS menu bar app for voice-to-text. Press a hotkey, speak, and the transcription is pasted at your cursor. Uses Groq's Whisper API for transcription and Groq LLM for context-aware post-processing.
 
-Fork of [FreeFlow](https://github.com/zachlatta/freeflow) by Zach Latta (MIT).
-
 **Naming convention:** User-facing display name is "Wispah Flow". Internal identifiers (bundle ID, code, file names, repo) use "wispah"/"Wispah". `DISPLAY_NAME` Makefile variable controls `CFBundleDisplayName`.
 
 ## Build & Run
