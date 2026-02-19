@@ -32,6 +32,7 @@ struct SetupView: View {
     @State private var accessibilityTimer: Timer?
     @State private var screenRecordingTimer: Timer?
     @State private var customVocabularyInput: String = ""
+    @State private var showSkipScreenRecordingAlert = false
     @StateObject private var githubCache = GitHubMetadataCache.shared
 
     // Test transcription state
@@ -127,13 +128,21 @@ struct SetupView: View {
                     } else {
                         if currentStep == .screenRecording && !appState.hasScreenRecordingPermission && appState.screenRecordingEnabled {
                             Button("Skip") {
-                                appState.screenRecordingEnabled = false
-                                withAnimation {
-                                    currentStep = nextStep(currentStep)
-                                }
+                                showSkipScreenRecordingAlert = true
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
+                            .alert("Skip Screen Recording?", isPresented: $showSkipScreenRecordingAlert) {
+                                Button("Go Back", role: .cancel) {}
+                                Button("Skip Anyway") {
+                                    appState.screenRecordingEnabled = false
+                                    withAnimation {
+                                        currentStep = nextStep(currentStep)
+                                    }
+                                }
+                            } message: {
+                                Text("Screen context helps Wispah Flow spell names correctly, match formatting to what you're working on, and adapt to the app you're in. Without it, transcriptions will still work but won't be as accurate.")
+                            }
                         }
 
                         Button("Continue") {

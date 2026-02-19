@@ -148,7 +148,7 @@ extension AppState {
                     self.overlayManager.showRecording()
                 }
                 overlayShown = true
-                if self.playSoundsEnabled { NSSound(named: "Tink")?.play() }
+                if self.playSoundsEnabled { NSSound(named: "Purr")?.play() }
             }
         }
 
