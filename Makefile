@@ -55,8 +55,8 @@ endif
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
 	@cp -R "$(ADAPTER_DIR)/MediaRemoteAdapter.framework" "$(RESOURCES)/"
 	@cp "$(ADAPTER_DIR)/mediaremote-adapter.pl" "$(RESOURCES)/"
-	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" "$(RESOURCES)/MediaRemoteAdapter.framework"
-	@codesign --force --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements Wispah.entitlements "$(APP_BUNDLE)"
+	@codesign --force --timestamp --options runtime --sign "$(CODESIGN_IDENTITY)" "$(RESOURCES)/MediaRemoteAdapter.framework"
+	@codesign --force --timestamp --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements Wispah.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
 
 icon: $(ICON_ICNS)
@@ -95,7 +95,7 @@ dmg: all
 	@echo "Created $(BUILD_DIR)/$(APP_NAME).dmg"
 
 codesign-dmg: dmg
-	codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUILD_DIR)/$(APP_NAME).dmg
+	codesign --force --timestamp --sign "$(CODESIGN_IDENTITY)" $(BUILD_DIR)/$(APP_NAME).dmg
 
 notarize:
 	xcrun notarytool submit $(BUILD_DIR)/$(APP_NAME).dmg \
