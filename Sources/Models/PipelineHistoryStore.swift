@@ -1,8 +1,12 @@
 import Foundation
 import CoreData
+import os.log
+
+private let historyLog = OSLog(subsystem: "com.idanyekutiel.wispah", category: "PipelineHistory")
 
 final class PipelineHistoryStore {
     private let container: NSPersistentContainer
+    private(set) var loadError: String?
 
     init() {
         let model = Self.makeModel()
@@ -27,7 +31,9 @@ final class PipelineHistoryStore {
                     try? FileManager.default.removeItem(at: storeURL)
                     self.container.loadPersistentStores { _, retryError in
                         if let retryError = retryError {
-                            print("[PipelineHistoryStore] Failed to recreate store: \(retryError)")
+                            let message = "Failed to recreate store: \(retryError.localizedDescription)"
+                            os_log(.error, log: historyLog, "%{public}@", message)
+                            self.loadError = message
                         }
                     }
                 }

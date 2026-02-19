@@ -103,6 +103,7 @@ struct TranscriptionStats: Codable {
 final class StatsStore {
     private let fileURL: URL
     private(set) var stats: TranscriptionStats
+    private let saveQueue = DispatchQueue(label: "com.wispah.stats.save")
 
     init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -203,7 +204,10 @@ final class StatsStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
         guard let data = try? encoder.encode(stats) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        let url = fileURL
+        saveQueue.async {
+            try? data.write(to: url, options: .atomic)
+        }
     }
 
     private static func load(from url: URL) -> TranscriptionStats {

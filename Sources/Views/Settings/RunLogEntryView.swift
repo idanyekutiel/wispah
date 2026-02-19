@@ -13,6 +13,7 @@ struct RunLogEntryView: View {
     @State private var retryStep: String = ""
     @State private var retryElapsed: TimeInterval = 0
     @State private var retryTimer: Timer?
+    @State private var retryTask: Task<Void, Never>?
 
     private enum RetryState: Equatable {
         case idle
@@ -131,6 +132,8 @@ struct RunLogEntryView: View {
                 }
 
                 Button {
+                    retryTask?.cancel()
+                    stopRetryTimer()
                     withAnimation(.easeInOut(duration: 0.2)) {
                         appState.deleteHistoryEntry(id: item.id)
                     }
@@ -355,6 +358,10 @@ struct RunLogEntryView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(isError ? Color.red.opacity(0.4) : Color.secondary.opacity(0.2), lineWidth: 1)
         )
+        .onDisappear {
+            retryTask?.cancel()
+            stopRetryTimer()
+        }
     }
 
     private func startRetryTimer() {
@@ -387,7 +394,7 @@ struct RunLogEntryView: View {
         startRetryTimer()
         withAnimation { retryState = .retrying }
 
-        Task {
+        retryTask = Task {
             do {
                 await MainActor.run { retryStep = "Transcribing audio..." }
                 let service = TranscriptionService(apiKey: appState.apiKey)
@@ -438,7 +445,10 @@ struct RunLogEntryView: View {
     }
 
     private func saveAudioToDesktop(audioURL: URL) {
-        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!
+        guard let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first else {
+            appState.errorMessage = "Could not locate Desktop folder"
+            return
+        }
         let timestamp = item.timestamp.formatted(date: .numeric, time: .standard)
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: ".")

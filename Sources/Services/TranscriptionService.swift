@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import os
 
 class TranscriptionService {
     private let apiKey: String
@@ -22,9 +23,12 @@ class TranscriptionService {
             let durationSeconds = CMTimeGetSeconds(duration)
             if durationSeconds.isFinite && durationSeconds > 0 {
                 let extraSeconds = max(0, durationSeconds - 10)
-                return max(minimumTimeoutSeconds, 30 + extraSeconds * 2)
+                let calculatedTimeout = max(minimumTimeoutSeconds, 30 + extraSeconds * 2)
+                return min(calculatedTimeout, 600)
             }
-        } catch {}
+        } catch {
+            os_log(.error, "Failed to load audio duration for timeout calculation: %{public}@", error.localizedDescription)
+        }
         return 120
     }
 
@@ -34,6 +38,7 @@ class TranscriptionService {
         guard !trimmed.isEmpty else { return false }
 
         var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/models")!)
+        request.timeoutInterval = 10
         request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
 
         do {
@@ -99,7 +104,18 @@ class TranscriptionService {
 
         guard httpResponse.statusCode == 200 else {
             let responseBody = String(data: data, encoding: .utf8) ?? ""
-            throw TranscriptionError.submissionFailed("Status \(httpResponse.statusCode): \(responseBody)")
+            let truncatedBody = String(responseBody.prefix(500))
+            let statusCode = httpResponse.statusCode
+            switch statusCode {
+            case 401, 403:
+                throw TranscriptionError.submissionFailed("Invalid or expired API key")
+            case 429:
+                throw TranscriptionError.submissionFailed("Rate limit exceeded. Please wait and try again.")
+            case 500...:
+                throw TranscriptionError.submissionFailed("Groq server error. Please try again later.")
+            default:
+                throw TranscriptionError.submissionFailed("Unexpected error (HTTP \(statusCode)): \(truncatedBody)")
+            }
         }
 
         return try parseTranscript(from: data)

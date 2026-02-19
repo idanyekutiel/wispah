@@ -448,6 +448,19 @@ final class UpdateManager: ObservableObject {
             let stagedApp = stagingDir.appendingPathComponent(appBundle.lastPathComponent)
             try fm.copyItem(at: appBundle, to: stagedApp)
 
+            // Verify code signature of extracted app
+            let verifyProcess = Process()
+            verifyProcess.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+            verifyProcess.arguments = ["--verify", "--deep", "--strict", stagedApp.path]
+            try verifyProcess.run()
+            verifyProcess.waitUntilExit()
+            guard verifyProcess.terminationStatus == 0 else {
+                updateStatus = .error("Code signature verification failed.")
+                try? fm.removeItem(at: stagingDir)
+                try? fm.removeItem(at: tempDir)
+                return
+            }
+
             // Clean up DMG (detach happens in defer above, delete temp dir)
             try? fm.removeItem(at: tempDir)
 
@@ -464,7 +477,7 @@ final class UpdateManager: ObservableObject {
     nonisolated private func mountDMG(at path: URL) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
-        process.arguments = ["attach", path.path, "-nobrowse", "-noverify", "-noautoopen", "-plist"]
+        process.arguments = ["attach", path.path, "-nobrowse", "-noautoopen", "-plist"]
 
         let pipe = Pipe()
         process.standardOutput = pipe
