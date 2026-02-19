@@ -10,7 +10,7 @@ struct MenuBarView: View {
 
     var body: some View {
         VStack(spacing: 4) {
-            Text("Wispah Flow v\(appVersion)")
+            Text("Wispah Flow Version \(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)

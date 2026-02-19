@@ -55,6 +55,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func handleShowSetup() {
         appState.hasCompletedSetup = false
+        UserDefaults.standard.removeObject(forKey: "setupResumeStep")
         appState.stopAccessibilityPolling()
         showSetupWindow()
     }
@@ -137,6 +138,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func completeSetup() {
         appState.hasCompletedSetup = true
+        UserDefaults.standard.removeObject(forKey: "setupResumeStep")
         setupWindow?.close()
         setupWindow = nil
         NSApp.setActivationPolicy(.accessory)
