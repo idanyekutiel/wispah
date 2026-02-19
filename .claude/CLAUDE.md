@@ -178,6 +178,17 @@ Triggered by pushing a version tag (e.g., `v2026.02.19`). Creates a GitHub Relea
 
 ### Signing & Notarization
 
+All `codesign` calls **must** include `--timestamp` and `--options runtime` for notarization. This applies to:
+1. MediaRemoteAdapter.framework (signed before the app)
+2. The app bundle (signed with entitlements)
+3. The DMG (signed after creation)
+
+Missing `--timestamp` causes Apple to reject the submission with "signature does not include a secure timestamp".
+
+The release workflow verifies all signatures (including timestamp presence) before submitting for notarization. Notarization has a 30-minute timeout; on failure, Apple's diagnostic log is fetched automatically.
+
+Local notarization credentials stored via `xcrun notarytool store-credentials "notarytool-profile"`. Local release: `make codesign-dmg` then `make notarize`.
+
 GitHub Secrets required for CI signing + notarization:
 - `DEVELOPER_ID_CERTIFICATE_BASE64` — base64-encoded .p12 export of the Developer ID cert
 - `DEVELOPER_ID_CERTIFICATE_PASSWORD` — password set during .p12 export
