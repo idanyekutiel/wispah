@@ -60,6 +60,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     }
 
+    // MARK: - Activation Policy
+
+    /// Show in dock/app switcher when any window is open, hide when all closed
+    private func updateActivationPolicy() {
+        let hasVisibleWindow = [settingsWindow, debugLogWindow, setupWindow]
+            .contains { $0?.isVisible == true }
+
+        NSApp.setActivationPolicy(hasVisibleWindow ? .regular : .accessory)
+    }
+
+    // MARK: - Notification Handlers
+
     @objc func handleShowSetup() {
         appState.hasCompletedSetup = false
         UserDefaults.standard.removeObject(forKey: "setupResumeStep")
@@ -75,6 +87,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showDebugLogWindow()
     }
 
+    // MARK: - Window Management
+
     private func showSettingsWindow() {
         if let settingsWindow, settingsWindow.isVisible {
             settingsWindow.makeKeyAndOrderFront(nil)
@@ -88,6 +102,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindow?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
+        updateActivationPolicy()
     }
 
     private func presentSettingsWindow() {
@@ -117,6 +132,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.settingsWindow = nil
+            self?.updateActivationPolicy()
         }
     }
 
@@ -143,6 +159,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         debugLogWindow = window
+        updateActivationPolicy()
 
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
@@ -150,12 +167,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.debugLogWindow = nil
+            self?.updateActivationPolicy()
         }
     }
 
     func showSetupWindow() {
-        NSApp.setActivationPolicy(.regular)
-
         let setupView = SetupView(onComplete: { [weak self] in
             self?.completeSetup()
         })
@@ -178,6 +194,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.setupWindow = window
         NSApp.activate(ignoringOtherApps: true)
+        updateActivationPolicy()
     }
 
     func completeSetup() {
@@ -185,7 +202,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.removeObject(forKey: "setupResumeStep")
         setupWindow?.close()
         setupWindow = nil
-        NSApp.setActivationPolicy(.accessory)
+        updateActivationPolicy()
         appState.startHotkeyMonitoring()
         appState.startAccessibilityPolling()
         Task { @MainActor in
