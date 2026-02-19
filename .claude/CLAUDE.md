@@ -17,9 +17,9 @@ make clean        # Delete build/
 
 - **No Xcode project** — compiles with `swiftc` directly via Makefile
 - Minimum macOS 13.0
-- Dev builds: ad-hoc signed (`CODESIGN_IDENTITY=-`), arm64 only
+- Dev builds: ad-hoc signed (`DEV_CODESIGN_IDENTITY=-`) by default, arm64 only
 - Release builds: Developer ID signed, universal binary (arm64 + x86_64)
-- `.env` file (gitignored) can override `DEV_CODESIGN_IDENTITY` for persistent permissions across rebuilds
+- `.env` file (gitignored) overrides `DEV_CODESIGN_IDENTITY` for persistent permissions across rebuilds. Value must be unquoted (Make handles spaces). If the cert chain isn't installed locally, fall back to `DEV_CODESIGN_IDENTITY=-` (ad-hoc)
 - Entitlements: `Wispah.entitlements` — only `com.apple.security.device.audio-input`
 
 ### Makefile Variables
@@ -105,7 +105,7 @@ Sources/
     │   └── StatsView.swift          — Usage stats dashboard (overview, speed, activity cards)
     └── Setup/
         ├── SetupHelpers.swift       — GitHub metadata cache (stars, stargazers)
-        └── SetupView.swift          — Onboarding wizard (API key, permissions, test recording)
+        └── SetupView.swift          — Onboarding wizard (API key, permissions, preferences, test recording)
 ```
 
 ## Key Patterns
@@ -123,7 +123,10 @@ Dual hotkey support: separate "toggle" key (press to start/stop) and "hold" key 
 Uses [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) — runs `/usr/bin/perl` (which has `com.apple.perl` bundle ID) to load a compiled Obj-C framework that calls MediaRemote APIs. Needed because Apple blocks third-party bundle IDs from accessing `mediaremoted`. Framework + Perl script bundled in `Resources/MediaRemoteAdapter/`.
 
 ### Auto-Update
-`UpdateManager` checks GitHub Releases API (`idanyekutiel/wispah`). Compares `WispahBuildTag` from Info.plist against latest release tag using numeric version comparison. Downloads DMG → mounts → copies .app → relaunches. 3-day stability buffer for auto-checks (skips very recent releases).
+`UpdateManager` checks GitHub Releases API (`idanyekutiel/wispah`). Compares `WispahBuildTag` from Info.plist against latest release tag using numeric version comparison. Downloads DMG → mounts (with signature verification) → verifies extracted .app with `codesign --verify --deep --strict` → copies .app → relaunches. 3-day stability buffer for auto-checks (skips very recent releases).
+
+### Onboarding
+`SetupView` wizard: welcome → API key → mic → accessibility → screen recording → hotkeys → vocabulary → preferences (language + developer mode) → launch at login → test transcription → ready. Current step persisted to `UserDefaults("setupResumeStep")` so it resumes after app restart. Cleared on completion and on "Re-run Setup". Dev-only notes (e.g., rebuild permission warning) gated on `WispahBuildTag == nil`.
 
 ### CoreData
 `PipelineHistoryStore` uses a programmatic `NSManagedObjectModel` (no .xcdatamodeld file). SQLite at `~/Library/Application Support/Wispah/PipelineHistory.sqlite`. Stores transcription entries with raw/processed text, context, audio file reference, recording duration.
@@ -154,8 +157,9 @@ Date-based versioning: `YYYY.MM.DD` (e.g., `2026.02.19`). Multiple same-day rele
 1. Ensure clean working tree
 2. Determine version from today's date (check existing tags for same-day conflicts)
 3. Update `CFBundleShortVersionString` + `CFBundleVersion` in Info.plist
-4. Commit, tag `v{version}`, push commit + tag
-5. Tag push triggers release workflow automatically
+4. Write human-friendly release notes in `RELEASE_NOTES.md` (not auto-generated commit dumps)
+5. Commit, tag `v{version}`, push commit + tag (with explicit user approval)
+6. Tag push triggers release workflow automatically
 
 **Version in builds:**
 - Release builds: `WispahBuildTag` injected into Info.plist by release workflow (date version string)
@@ -166,12 +170,19 @@ Date-based versioning: `YYYY.MM.DD` (e.g., `2026.02.19`). Multiple same-day rele
 ## CI/CD
 
 ### build.yml (on push + PR)
-Builds universal binary. Uses Developer ID signing when secrets exist, falls back to ad-hoc for fork PRs. Uploads DMG as artifact.
+Builds universal binary. Uses Developer ID signing when secrets exist, falls back to ad-hoc for fork PRs. Uploads DMG as artifact. Skips non-code changes via `paths-ignore` (markdown, `.claude/`, LICENSE, images).
 
 ### release.yml (on tag push `v*`)
-Triggered by pushing a version tag (e.g., `v2026.02.19`). Creates a GitHub Release titled "Wispah Flow Version {version}" with DMG. Release notes are auto-generated from commit messages since the previous tag. When signing secrets exist: Developer ID signed + Apple notarized. Without secrets: ad-hoc signed (users get Gatekeeper "unidentified developer" prompt, bypassed with right-click > Open).
+Triggered by pushing a version tag (e.g., `v2026.02.19`). Creates a GitHub Release titled "Wispah Flow Version {version}" with DMG attached. Release notes read from `RELEASE_NOTES.md` (human-written per release, not auto-generated). When signing secrets exist: Developer ID signed + Apple notarized. Without secrets: ad-hoc signed (users get Gatekeeper "unidentified developer" prompt, bypassed with right-click > Open).
 
-Optional secrets for signing: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`.
+### Signing & Notarization
+
+GitHub Secrets required for CI signing + notarization:
+- `DEVELOPER_ID_CERTIFICATE_BASE64` — base64-encoded .p12 export of the Developer ID cert
+- `DEVELOPER_ID_CERTIFICATE_PASSWORD` — password set during .p12 export
+- `APPLE_ID` — Apple ID email for notarization
+- `APPLE_TEAM_ID` — Team ID from Apple Developer account
+- `APPLE_APP_PASSWORD` — app-specific password from appleid.apple.com (for `xcrun notarytool`)
 
 ## Development Guidelines
 
@@ -193,6 +204,12 @@ Optional secrets for signing: `DEVELOPER_ID_CERTIFICATE_BASE64`, `DEVELOPER_ID_C
 - Use MARK comments for sections within files
 - Prefer @Published + UserDefaults for settings persistence
 - Use async/await for all network calls
-- Handle errors gracefully — never silently fail on user-visible operations
+- Handle errors gracefully — never silently fail on user-visible operations. Log with os_log, surface to user when appropriate
 - Use os_log for debug logging, not print()
 - CoreData model is programmatic — update the model code directly, not an .xcdatamodeld
+- Store async Tasks that should be cancellable (e.g., `transcriptionTask`) — cancel before launching a new one
+- Use safe array operations (`removeAll(where:)` over index-based `remove(at:)`) to prevent crashes
+- Replace force unwraps (`first!`, `as!`) with guard-let or CFTypeID checks for CoreFoundation types
+- Set file permissions (0o600) on sensitive files (API key, audio recordings)
+- Differentiate HTTP status codes in API error messages (401 vs 429 vs 500)
+- Wrap user-supplied content in XML delimiters when sending to LLM (prompt injection protection)
