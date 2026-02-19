@@ -42,9 +42,9 @@ struct StatsView: View {
                     noPeriodDataView
                     resetSection
                 } else {
+                    activityCard
                     overviewCard
                     speedCard
-                    activityCard
                     resetSection
                 }
             }
