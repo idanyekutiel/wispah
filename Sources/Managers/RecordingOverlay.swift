@@ -48,24 +48,14 @@ private func makeGlassContent<V: View>(
     let container = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
     container.wantsLayer = true
     container.layer?.contentsScale = scaleFactor
-
-    let blur = NSVisualEffectView(frame: container.bounds)
-    blur.appearance = NSAppearance(named: .darkAqua)
-    blur.material = .hudWindow
-    blur.blendingMode = .behindWindow
-    blur.state = .active
-    blur.wantsLayer = true
-    blur.layer?.contentsScale = scaleFactor
-    blur.layer?.cornerRadius = cornerRadius
-    blur.layer?.maskedCorners = maskedCorners
-    blur.layer?.masksToBounds = true
-    blur.autoresizingMask = [.width, .height]
-    container.addSubview(blur)
+    container.layer?.backgroundColor = .clear
 
     let hosting = NSHostingView(rootView: rootView)
     hosting.frame = container.bounds
     hosting.autoresizingMask = [.width, .height]
+    hosting.wantsLayer = true
     hosting.layer?.contentsScale = scaleFactor
+    hosting.layer?.backgroundColor = .clear
     container.addSubview(hosting)
 
     return container
@@ -422,7 +412,10 @@ struct RecordingOverlayView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: state.phase == .initializing)
         .frame(width: 120, height: 32)
-        .background(LiquidGlassOverlay(shape: UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)))
+        .background(
+            UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)
+                .fill(Color(white: 0.08))
+        )
     }
 }
 
@@ -443,7 +436,8 @@ struct TranscribingIndicatorView: View {
         }
         .frame(width: 44, height: 22)
         .background(
-            LiquidGlassOverlay(shape: UnevenRoundedRectangle(bottomLeadingRadius: 11, bottomTrailingRadius: 11))
+            UnevenRoundedRectangle(bottomLeadingRadius: 11, bottomTrailingRadius: 11)
+                .fill(Color(white: 0.08))
         )
         .onAppear { startDotAnimation() }
         .onDisappear { stopDotAnimation() }
