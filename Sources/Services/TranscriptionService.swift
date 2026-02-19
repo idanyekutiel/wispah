@@ -176,13 +176,15 @@ class TranscriptionService {
             let text = json["text"] as? String ?? ""
 
             // verbose_json returns segments with no_speech_prob — filter hallucinations
+            // Client-side speech detection already filters truly silent recordings,
+            // so this is a last-resort check with a high threshold (0.95)
             if let segments = json["segments"] as? [[String: Any]], !segments.isEmpty {
                 let avgNoSpeech = segments
                     .compactMap { $0["no_speech_prob"] as? Double }
                     .reduce(0, +) / Double(segments.count)
                 os_log(.info, "Whisper segments=%d, avg no_speech_prob=%.3f", segments.count, avgNoSpeech)
-                if avgNoSpeech > 0.7 {
-                    os_log(.info, "High no_speech_prob (%.3f) — treating as empty transcript", avgNoSpeech)
+                if avgNoSpeech > 0.95 {
+                    os_log(.info, "Very high no_speech_prob (%.3f) — treating as empty transcript", avgNoSpeech)
                     return ""
                 }
             }

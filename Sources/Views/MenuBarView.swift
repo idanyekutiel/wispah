@@ -130,6 +130,13 @@ struct MenuBarView: View {
             }
 
             Button {
+                appState.selectedSettingsTab = .dictionary
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+            } label: {
+                Label("Dictionary", systemImage: "text.book.closed.fill")
+            }
+
+            Button {
                 appState.selectedSettingsTab = .runLog
                 NotificationCenter.default.post(name: .showSettings, object: nil)
             } label: {

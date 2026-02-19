@@ -209,6 +209,7 @@ GitHub Secrets required for CI signing + notarization:
 - Empty states should use consistent pattern: large icon (.system(size: 40)) + headline + caption
 
 ### Git
+- **NEVER git add, commit, or push without explicit user approval.** Only run git operations (add, commit, push) when the user explicitly says to. Each approval is one-time — after executing, wait for permission again before the next git operation. Just edit files and wait.
 - **NEVER push without explicit user approval.** Always wait for the user to confirm before running `git push`.
 
 ### Code Standards

@@ -645,19 +645,16 @@ struct SetupView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("Custom Vocabulary")
+            Text("Dictionary")
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Add words and phrases that should be preserved in post-processing.")
+            Text("Add words and phrases you say often that the transcription might miss or misspell.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Vocabulary")
-                    .font(.headline)
-
                 TextEditor(text: $customVocabularyInput)
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 130)
@@ -666,7 +663,7 @@ struct SetupView: View {
                             .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
                     )
 
-                Text("Separate entries with commas, new lines, or semicolons.")
+                Text("Separate entries with commas, new lines, or semicolons. You can always update this in Settings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

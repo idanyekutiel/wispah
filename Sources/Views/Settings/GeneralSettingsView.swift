@@ -144,35 +144,41 @@ struct GeneralSettingsView: View {
                 settingsCard("Updates", icon: "arrow.triangle.2.circlepath") {
                     updatesSection
                 }
-                settingsCard("API Key", icon: "key.fill") {
-                    apiKeySection
-                }
-                settingsCard("Transcription", icon: "waveform") {
-                    transcriptionSection
-                }
-                settingsCard("Language", icon: "globe") {
-                    languageSection
-                }
+
+                sectionHeader("Recording")
+
                 settingsCard("Recording Keys", icon: "keyboard.fill") {
                     hotkeySection
                 }
                 settingsCard("Microphone", icon: "mic.fill") {
                     microphoneSection
                 }
-                settingsCard("Post-Processing", icon: "sparkles") {
-                    postProcessingSection
-                }
-                settingsCard("Custom Vocabulary", icon: "text.book.closed.fill") {
-                    vocabularySection
+                settingsCard("Sound", icon: "speaker.wave.2.fill") {
+                    soundSection
                 }
                 settingsCard("Audio Behavior", icon: "speaker.wave.2.circle") {
                     audioBehaviorSection
                 }
+
+                sectionHeader("Transcription")
+
+                settingsCard("API Key", icon: "key.fill") {
+                    apiKeySection
+                }
+                settingsCard("Language", icon: "globe") {
+                    languageSection
+                }
+                settingsCard("Transcription", icon: "waveform") {
+                    transcriptionSection
+                }
+                settingsCard("Post-Processing", icon: "sparkles") {
+                    postProcessingSection
+                }
+
+                sectionHeader("Data & Privacy")
+
                 settingsCard("Log Settings", icon: "clock.arrow.circlepath") {
                     logSettingsSection
-                }
-                settingsCard("Sound", icon: "speaker.wave.2.fill") {
-                    soundSection
                 }
                 settingsCard("Permissions", icon: "lock.shield.fill") {
                     permissionsSection
@@ -188,6 +194,16 @@ struct GeneralSettingsView: View {
             appState.refreshLaunchAtLoginStatus()
             Task { await githubCache.fetchIfNeeded() }
         }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .tracking(0.5)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
     }
 
     private func settingsCard<Content: View>(_ title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
