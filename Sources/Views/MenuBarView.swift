@@ -146,8 +146,29 @@ struct MenuBarView: View {
                 Text(appState.screenRecordingEnabled ? "✓ Screen Context" : "  Screen Context")
             }
 
-            Button("Settings") {
+            Divider()
+
+            if appState.collectStats {
+                Button {
+                    appState.selectedSettingsTab = .stats
+                    NotificationCenter.default.post(name: .showSettings, object: nil)
+                } label: {
+                    Label("Stats", systemImage: "chart.bar")
+                }
+            }
+
+            Button {
+                appState.selectedSettingsTab = .runLog
                 NotificationCenter.default.post(name: .showSettings, object: nil)
+            } label: {
+                Label("Transcriptions", systemImage: "list.bullet.rectangle")
+            }
+
+            Button {
+                appState.selectedSettingsTab = .general
+                NotificationCenter.default.post(name: .showSettings, object: nil)
+            } label: {
+                Label("Settings", systemImage: "gearshape")
             }
 
             Divider()
