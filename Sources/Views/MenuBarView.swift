@@ -80,17 +80,8 @@ struct MenuBarView: View {
                     .lineLimit(3)
             }
 
-            if !appState.lastTranscript.isEmpty && !appState.isRecording && !appState.isTranscribing {
-                Divider()
-                Text(appState.lastTranscript.count > 40
-                     ? String(appState.lastTranscript.prefix(40)) + "..."
-                     : appState.lastTranscript)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .lineLimit(1)
-
-                Button("Copy Again") {
+            if !appState.lastTranscript.isEmpty {
+                Button("Copy Last Transcription") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(appState.lastTranscript, forType: .string)
                 }
