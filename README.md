@@ -2,7 +2,11 @@
   <img src="Resources/AppIcon-README.png" width="128" height="128" alt="Wispah Flow icon">
 </p>
 
-<h1 align="center">Wispah Flow - Open Source Wispr Alternative</h1>
+<h1 align="center">
+  Wispah Flow
+  <br>
+  <sub>Open Source Wispr Flow Alternative</sub>
+</h1>
 
 <p align="center">
   Free, open source, fully local voice-to-text for macOS. No accounts, no subscriptions - just a free API key.<br>
