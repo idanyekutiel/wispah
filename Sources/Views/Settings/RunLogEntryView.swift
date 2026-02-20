@@ -147,7 +147,7 @@ struct RunLogEntryView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Delete this run")
+                .help("Delete transcript")
                 .disabled(retryState == .retrying)
             }
             .padding(12)
@@ -158,7 +158,8 @@ struct RunLogEntryView: View {
 
                 VStack(alignment: .leading, spacing: 16) {
                     // Audio player
-                    if let audioFileName = item.audioFileName {
+                    if let audioFileName = item.audioFileName,
+                       FileManager.default.fileExists(atPath: AppState.audioStorageDirectory().appendingPathComponent(audioFileName).path) {
                         let audioURL = AppState.audioStorageDirectory().appendingPathComponent(audioFileName)
                         HStack {
                             AudioPlayerView(audioURL: audioURL)
@@ -166,23 +167,45 @@ struct RunLogEntryView: View {
                                 .font(.system(.caption2, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .fixedSize()
-                            Button {
-                                saveAudioToDesktop(audioURL: audioURL)
-                            } label: {
-                                Image(systemName: "square.and.arrow.down")
-                                    .font(.caption)
-                                    .frame(width: 28, height: 28)
-                                    .contentShape(Rectangle())
+                            HStack(spacing: 0) {
+                                Button {
+                                    saveAudioToDesktop(audioURL: audioURL)
+                                } label: {
+                                    Image(systemName: "square.and.arrow.down")
+                                        .font(.caption)
+                                        .frame(width: 28, height: 28)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Save audio to Desktop")
+                                Button {
+                                    deleteAudioFile(audioURL: audioURL)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 28, height: 28)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Delete audio recording")
                             }
-                            .buttonStyle(.plain)
-                            .help("Save audio to Desktop")
+                        }
+                    } else if item.audioFileName != nil {
+                        HStack(spacing: 6) {
+                            Image(systemName: "trash")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text("Audio file deleted")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     } else {
                         HStack(spacing: 6) {
                             Image(systemName: "waveform.slash")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text("No audio recorded")
+                            Text("Audio file not retained")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -399,7 +422,7 @@ struct RunLogEntryView: View {
         retryTask = Task {
             do {
                 await MainActor.run { retryStep = "Transcribing audio..." }
-                let service = TranscriptionService(apiKey: appState.apiKey)
+                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL)
                 let transcript = try await service.transcribe(fileURL: audioURL)
                 let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -444,6 +467,10 @@ struct RunLogEntryView: View {
                 }
             }
         }
+    }
+
+    private func deleteAudioFile(audioURL: URL) {
+        try? FileManager.default.removeItem(at: audioURL)
     }
 
     private func saveAudioToDesktop(audioURL: URL) {

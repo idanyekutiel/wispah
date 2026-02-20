@@ -32,8 +32,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     @Published var apiKey: String {
         didSet {
-            persistAPIKey(apiKey)
-            contextService = AppContextService(apiKey: apiKey)
+            persistAPIKey(apiKey, account: apiKeyStorageKey)
+            if apiProvider == .groq {
+                contextService = AppContextService(apiKey: activeAPIKey, baseURL: apiProvider.baseURL, llmModel: llmModelId, visionModel: apiProvider.defaultVisionModel)
+            }
         }
     }
 
@@ -103,10 +105,45 @@ final class AppState: ObservableObject, @unchecked Sendable {
         }
     }
 
-    @Published var whisperModel: WhisperModel {
+    @Published var apiProvider: APIProvider {
         didSet {
-            UserDefaults.standard.set(whisperModel.rawValue, forKey: "whisper_model")
+            UserDefaults.standard.set(apiProvider.rawValue, forKey: "api_provider")
+            whisperModelId = apiProvider.defaultWhisperModel
+            llmModelId = apiProvider.defaultLLMModel
+            contextService = AppContextService(apiKey: activeAPIKey, baseURL: apiProvider.baseURL, llmModel: llmModelId, visionModel: apiProvider.defaultVisionModel)
         }
+    }
+
+    @Published var openaiAPIKey: String {
+        didSet {
+            persistAPIKey(openaiAPIKey, account: "openai_api_key")
+            if apiProvider == .openai {
+                contextService = AppContextService(apiKey: activeAPIKey, baseURL: apiProvider.baseURL, llmModel: llmModelId, visionModel: apiProvider.defaultVisionModel)
+            }
+        }
+    }
+
+    @Published var whisperModelId: String {
+        didSet {
+            UserDefaults.standard.set(whisperModelId, forKey: "whisper_model_id")
+        }
+    }
+
+    @Published var llmModelId: String {
+        didSet {
+            UserDefaults.standard.set(llmModelId, forKey: "llm_model_id")
+        }
+    }
+
+    var activeAPIKey: String {
+        switch apiProvider {
+        case .groq: return apiKey
+        case .openai: return openaiAPIKey
+        }
+    }
+
+    var activeBaseURL: String {
+        apiProvider.baseURL
     }
 
     @Published var transcriptionLanguage: String? {
@@ -182,7 +219,16 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var statusText: String = "Ready"
     @Published var hasAccessibility = false
     @Published var isDebugOverlayActive = false
-    @Published var selectedSettingsTab: SettingsTab? = nil
+    @Published var selectedSettingsTab: SettingsTab? = nil {
+        didSet {
+            if let tab = selectedSettingsTab {
+                UserDefaults.standard.set(tab.rawValue, forKey: "selected_settings_tab")
+            }
+        }
+    }
+    @Published var settingsWindowWasOpen: Bool = false {
+        didSet { UserDefaults.standard.set(settingsWindowWasOpen, forKey: "settings_window_was_open") }
+    }
     @Published var pipelineHistory: [PipelineHistoryItem] = []
     @Published var debugStatusMessage = "Idle"
     @Published var lastRawTranscript = ""
@@ -296,7 +342,23 @@ final class AppState: ObservableObject, @unchecked Sendable {
             collectStats = true
         }
 
-        let whisperModel = WhisperModel(rawValue: UserDefaults.standard.string(forKey: "whisper_model") ?? "") ?? .largeV3
+        let apiProvider = APIProvider(rawValue: UserDefaults.standard.string(forKey: "api_provider") ?? "") ?? .groq
+        let openaiAPIKey = Self.loadStoredAPIKey(account: "openai_api_key")
+        let whisperModelId: String
+        if let storedModelId = UserDefaults.standard.string(forKey: "whisper_model_id"), !storedModelId.isEmpty {
+            whisperModelId = storedModelId
+        } else if let legacyModel = UserDefaults.standard.string(forKey: "whisper_model"), !legacyModel.isEmpty {
+            whisperModelId = legacyModel
+        } else {
+            whisperModelId = apiProvider.defaultWhisperModel
+        }
+
+        let llmModelId: String
+        if let storedLLMModelId = UserDefaults.standard.string(forKey: "llm_model_id"), !storedLLMModelId.isEmpty {
+            llmModelId = storedLLMModelId
+        } else {
+            llmModelId = apiProvider.defaultLLMModel
+        }
 
         let storedLanguage = UserDefaults.standard.string(forKey: "transcription_language") ?? ""
         let transcriptionLanguage: String? = storedLanguage.isEmpty ? nil : storedLanguage
@@ -327,7 +389,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let audioWhileRecording = AudioWhileRecording(rawValue: UserDefaults.standard.string(forKey: "audio_while_recording") ?? "") ?? .doNothing
 
-        self.contextService = AppContextService(apiKey: apiKey)
+        let activeKey = apiProvider == .groq ? apiKey : openaiAPIKey
+        self.contextService = AppContextService(apiKey: activeKey, baseURL: apiProvider.baseURL, llmModel: llmModelId, visionModel: apiProvider.defaultVisionModel)
         self.hasCompletedSetup = hasCompletedSetup
         self.apiKey = apiKey
         self.toggleHotkey = toggleHotkey
@@ -345,7 +408,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.saveAudioFiles = saveAudioFiles
         self.keepAudioOnErrors = keepAudioOnErrors
         self.collectStats = collectStats
-        self.whisperModel = whisperModel
+        self.apiProvider = apiProvider
+        self.openaiAPIKey = openaiAPIKey
+        self.whisperModelId = whisperModelId
+        self.llmModelId = llmModelId
         self.transcriptionLanguage = transcriptionLanguage
         self.postProcessingEnabled = postProcessingEnabled
         self.smartFormattingEnabled = smartFormattingEnabled
@@ -353,7 +419,13 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.developerModeEnabled = developerModeEnabled
         self.customPostProcessingPrompt = customPostProcessingPrompt
         self.audioWhileRecording = audioWhileRecording
-        self.selectedSettingsTab = collectStats ? .stats : .runLog
+        if let savedTab = UserDefaults.standard.string(forKey: "selected_settings_tab"),
+           let tab = SettingsTab(rawValue: savedTab) {
+            self.selectedSettingsTab = tab
+        } else {
+            self.selectedSettingsTab = collectStats ? .stats : .runLog
+        }
+        self.settingsWindowWasOpen = UserDefaults.standard.bool(forKey: "settings_window_was_open")
 
         refreshAvailableMicrophones()
         installAudioDeviceListener()

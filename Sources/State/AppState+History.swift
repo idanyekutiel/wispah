@@ -27,7 +27,7 @@ extension AppState {
 
         Task {
             do {
-                let service = TranscriptionService(apiKey: apiKey)
+                let service = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL)
                 let transcript = try await service.transcribe(fileURL: audioURL)
                 let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
 

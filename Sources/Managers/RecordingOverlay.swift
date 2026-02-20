@@ -15,6 +15,10 @@ enum OverlayPhase {
     case done
 }
 
+class ErrorOverlayState: ObservableObject {
+    @Published var message: String = ""
+}
+
 // MARK: - Panel Helpers
 
 private func makeOverlayPanel(width: CGFloat, height: CGFloat) -> NSPanel {
@@ -66,7 +70,9 @@ private func makeGlassContent<V: View>(
 class RecordingOverlayManager {
     private var overlayWindow: NSPanel?
     private var transcribingPanel: NSPanel?
+    private var errorPanel: NSPanel?
     private var overlayState = RecordingOverlayState()
+    private var errorState = ErrorOverlayState()
 
     /// Whether the main screen has a camera housing (notch).
     private var screenHasNotch: Bool {
@@ -108,6 +114,10 @@ class RecordingOverlayManager {
 
     func showDone() {
         DispatchQueue.main.async { self._showDone() }
+    }
+
+    func showError(_ message: String) {
+        DispatchQueue.main.async { self._showError(message) }
     }
 
     func dismiss() {
@@ -258,6 +268,172 @@ class RecordingOverlayManager {
         }
     }
 
+    private func _showError(_ message: String) {
+        // Dismiss any existing overlays
+        _dismiss()
+
+        errorState.message = message
+
+        guard let screen = NSScreen.main else { return }
+        let hasNotch = screenHasNotch
+
+        // Step 1: Show the pill dropping from the notch (same as recording start)
+        let pillWidth: CGFloat = 120
+        let pillHeight: CGFloat = 32
+        let notchInset: CGFloat = 4
+
+        let pillPanel = makeOverlayPanel(width: pillWidth, height: pillHeight)
+
+        let pillView = ErrorPillView()
+        pillPanel.contentView = makeGlassContent(
+            width: pillWidth,
+            height: pillHeight,
+            cornerRadius: 12,
+            maskedCorners: [.layerMinXMinYCorner, .layerMaxXMinYCorner],
+            rootView: pillView
+        )
+
+        let pillX = panelX(screen, width: pillWidth)
+        let hiddenY: CGFloat
+        let visibleY: CGFloat
+        if hasNotch {
+            hiddenY = screen.visibleFrame.maxY
+            visibleY = screen.visibleFrame.maxY - pillHeight + notchInset
+        } else {
+            hiddenY = screen.frame.maxY
+            visibleY = screen.frame.maxY - pillHeight
+        }
+
+        pillPanel.setFrame(NSRect(x: pillX, y: hiddenY, width: pillWidth, height: pillHeight), display: true)
+        pillPanel.alphaValue = 1
+        pillPanel.orderFrontRegardless()
+        self.overlayWindow = pillPanel
+
+        // Animate pill drop
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.18
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.56, 0.64, 1.0)
+            pillPanel.animator().setFrame(NSRect(x: pillX, y: visibleY, width: pillWidth, height: pillHeight), display: true)
+        }, completionHandler: {
+            // Step 2: Shake the pill + play error sound
+            NSSound(named: "Funk")?.play()
+            self._shakePanel(pillPanel)
+
+            // Step 3: Error drops out mid-shake — like it was shaken loose
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                self._dropErrorLabel(message, screen: screen, pillY: visibleY)
+            }
+        })
+
+        // Step 4: Auto-dismiss everything after 3s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+            guard let self else { return }
+            self._dismissError()
+        }
+    }
+
+    private func _dropErrorLabel(_ message: String, screen: NSScreen, pillY: CGFloat) {
+        errorState.message = message
+
+        let panelWidth: CGFloat = 260
+        let panelHeight: CGFloat = 30
+        let gap: CGFloat = 6
+
+        let panel = makeOverlayPanel(width: panelWidth, height: panelHeight)
+
+        let view = ErrorOverlayView(state: errorState)
+        panel.contentView = makeGlassContent(
+            width: panelWidth,
+            height: panelHeight,
+            cornerRadius: 8,
+            rootView: view
+        )
+
+        let x = panelX(screen, width: panelWidth)
+        let finalY = pillY - panelHeight - gap
+        let startY = finalY + 12 // starts tucked up behind the pill
+
+        panel.setFrame(NSRect(x: x, y: startY, width: panelWidth, height: panelHeight), display: true)
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        self.errorPanel = panel
+
+        // Drop down + fade in — shaken loose from the pill
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.3, 0.64, 1.0)
+            panel.animator().setFrame(NSRect(x: x, y: finalY, width: panelWidth, height: panelHeight), display: true)
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    private func _dismissError() {
+        let errorPanelRef = errorPanel
+        let pillPanelRef = overlayWindow
+
+        // Step 1: Error label fades out + slides up (back toward the pill)
+        if let errorPanelRef {
+            let frame = errorPanelRef.frame
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.2
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                errorPanelRef.animator().alphaValue = 0
+                errorPanelRef.animator().setFrame(
+                    NSRect(x: frame.origin.x, y: frame.origin.y + 10, width: frame.width, height: frame.height),
+                    display: true
+                )
+            }, completionHandler: {
+                errorPanelRef.orderOut(nil)
+            })
+        }
+        self.errorPanel = nil
+
+        // Step 2: Pill slides back up into the notch (after a short delay)
+        if let pillPanelRef, let screen = NSScreen.main {
+            let hiddenY = screenHasNotch ? screen.visibleFrame.maxY : screen.frame.maxY
+            let frame = pillPanelRef.frame
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = 0.15
+                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0.0, 1.0, 1.0)
+                    pillPanelRef.animator().setFrame(
+                        NSRect(x: frame.origin.x, y: hiddenY, width: frame.width, height: frame.height),
+                        display: true
+                    )
+                }, completionHandler: {
+                    pillPanelRef.orderOut(nil)
+                    self?.overlayWindow = nil
+                })
+            }
+        } else {
+            self.overlayWindow = nil
+        }
+    }
+
+    private func _shakePanel(_ panel: NSPanel) {
+        let frame = panel.frame
+        let shakeOffset: CGFloat = 8
+        let shakeDuration: TimeInterval = 0.06
+
+        // 4 rapid shakes: right, left, right, left, center
+        let offsets: [CGFloat] = [shakeOffset, -shakeOffset, shakeOffset * 0.6, -shakeOffset * 0.6, 0]
+        var delay: TimeInterval = 0
+
+        for offset in offsets {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = shakeDuration
+                    ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    panel.animator().setFrame(
+                        NSRect(x: frame.origin.x + offset, y: frame.origin.y, width: frame.width, height: frame.height),
+                        display: true
+                    )
+                }
+            }
+            delay += shakeDuration
+        }
+    }
+
     private func _dismiss() {
         if let panel = overlayWindow {
             panel.orderOut(nil)
@@ -266,6 +442,10 @@ class RecordingOverlayManager {
         if let panel = transcribingPanel {
             panel.orderOut(nil)
             transcribingPanel = nil
+        }
+        if let panel = errorPanel {
+            panel.orderOut(nil)
+            errorPanel = nil
         }
     }
 
@@ -455,5 +635,41 @@ struct TranscribingIndicatorView: View {
     private func stopDotAnimation() {
         dotAnimationTimer?.invalidate()
         dotAnimationTimer = nil
+    }
+}
+
+// MARK: - Error Overlay Views
+
+struct ErrorPillView: View {
+    var body: some View {
+        Image(systemName: "xmark")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.red.opacity(0.7))
+            .frame(width: 120, height: 32)
+            .background(
+                UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)
+                    .fill(Color(white: 0.08))
+            )
+    }
+}
+
+struct ErrorOverlayView: View {
+    @ObservedObject var state: ErrorOverlayState
+
+    var body: some View {
+        Text(state.message)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .padding(.horizontal, 14)
+            .frame(width: 260, height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(white: 0.08))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.red.opacity(0.3), lineWidth: 0.75)
+            )
     }
 }

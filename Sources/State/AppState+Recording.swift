@@ -74,6 +74,11 @@ extension AppState {
     func startRecording() {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
+        guard !activeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            overlayManager.showError("\(apiProvider.displayName) API key not configured")
+            statusText = "No API Key"
+            return
+        }
         guard hasAccessibility else {
             errorMessage = "Accessibility permission required. Grant access in System Settings > Privacy & Security > Accessibility."
             statusText = "No Accessibility"
@@ -279,8 +284,8 @@ extension AppState {
             } catch {}
         }
 
-        let transcriptionService = TranscriptionService(apiKey: apiKey, model: whisperModel.rawValue, language: transcriptionLanguage)
-        let postProcessingService = PostProcessingService(apiKey: apiKey)
+        let transcriptionService = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
+        let postProcessingService = PostProcessingService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: llmModelId)
 
         // Build Whisper prompt from custom vocabulary — hints for specific words/spellings
         let whisperPrompt: String? = {
@@ -322,8 +327,14 @@ extension AppState {
                     self?.debugStatusMessage = "Transcribing audio"
                 }
 
-                async let transcript = transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
-                let rawTranscript = try await transcript
+                var rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+
+                // Smart retry: if transcript is empty but recording was long enough, retry once
+                if rawResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimDuration > 1.5 {
+                    os_log(.info, log: recordingLog, "empty transcript on %.1fs recording — retrying once", trimDuration)
+                    rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                }
+                let rawTranscript = rawResult
 
                 // Clean up preprocessed file if different from original
                 if uploadURL != fileURL {
@@ -438,7 +449,7 @@ extension AppState {
                     self.isTranscribing = false
                     self.statusText = "Error"
                     self.audioRecorder.cleanup()
-                    self.overlayManager.dismiss()
+                    self.overlayManager.showError(error.localizedDescription)
                     self.lastPostProcessedTranscript = ""
                     self.lastRawTranscript = ""
                     self.lastContextSummary = ""

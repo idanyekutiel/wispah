@@ -314,24 +314,46 @@ struct SetupView: View {
                 .font(.system(size: 60))
                 .foregroundStyle(.blue)
 
-            Text("Groq API Key")
+            Text("API Key")
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Wispah Flow uses Groq for fast, high-accuracy transcription.")
+            Text("Wispah Flow needs an API key for transcription and post-processing.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 10) {
+                Picker("Provider", selection: $appState.apiProvider) {
+                    Text("Groq (Recommended)").tag(APIProvider.groq)
+                    Text("OpenAI").tag(APIProvider.openai)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: appState.apiProvider) { _ in
+                    apiKeyInput = appState.activeAPIKey
+                    keyValidationError = nil
+                }
+
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("How to get a free API key:")
+                    Text("How to get an API key:")
                         .font(.subheadline.weight(.semibold))
                     VStack(alignment: .leading, spacing: 2) {
-                        instructionRow(number: "1", text: "Go to [console.groq.com/keys](https://console.groq.com/keys)")
+                        instructionRow(number: "1", text: "Go to [\(appState.apiProvider.keyHelpLabel)](\(appState.apiProvider.keyHelpURL))")
                         instructionRow(number: "2", text: "Create a free account (if you don't have one)")
                         instructionRow(number: "3", text: "Click **Create API Key** and copy it")
                     }
+                    if appState.apiProvider == .groq {
+                        Text("Groq provides unlimited free inference for individuals.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("OpenAI offers pay-as-you-go pricing with no monthly minimum.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("You can customize transcription and processing models in Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -343,7 +365,7 @@ struct SetupView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("API Key")
                         .font(.headline)
-                    SecureField("Paste your Groq API key", text: $apiKeyInput)
+                    SecureField(appState.apiProvider.keyPlaceholder, text: $apiKeyInput)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                         .disabled(isValidatingKey)
@@ -716,35 +738,41 @@ struct SetupView: View {
                 .background(Color(nsColor: .controlBackgroundColor))
                 .cornerRadius(8)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "curlybraces")
-                            .frame(width: 24)
-                            .foregroundStyle(.blue)
-                        Toggle("Developer Mode", isOn: $appState.developerModeEnabled)
-                    }
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle("Post-processing", isOn: $appState.postProcessingEnabled)
 
-                    Text("Recognizes camelCase, snake_case, technical terms, and code keywords.")
+                    Text("Cleans up transcription using an LLM — fixes spelling, punctuation, and formatting.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .padding(.leading, 36)
-                }
-                .padding(12)
-                .background(Color(nsColor: .controlBackgroundColor))
-                .cornerRadius(8)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "arrow.uturn.backward")
-                            .frame(width: 24)
-                            .foregroundStyle(.blue)
-                        Toggle("Smart Corrections", isOn: $appState.smartCorrectionsEnabled)
+                    VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Toggle("Smart Formatting", isOn: $appState.smartFormattingEnabled)
+                            Text("Auto-detects lists, paragraphs, and structure.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Toggle("Smart Corrections", isOn: $appState.smartCorrectionsEnabled)
+                            Text("Removes verbal self-corrections like \"wait no\" and \"I mean\".")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Toggle("Developer Mode", isOn: $appState.developerModeEnabled)
+                            Text("Recognizes camelCase, snake_case, and code keywords.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .disabled(!appState.postProcessingEnabled)
+                    .opacity(appState.postProcessingEnabled ? 1 : 0.5)
 
-                    Text("Removes verbal self-corrections like \"wait no\" and \"I mean\" — keeps only your final intent.")
+                    Divider()
+
+                    Text("You can also add custom instructions for post-processing in Settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .padding(.leading, 36)
                 }
                 .padding(12)
                 .background(Color(nsColor: .controlBackgroundColor))
@@ -781,6 +809,30 @@ struct SetupView: View {
             .cornerRadius(8)
 
             stepIndicator
+        }
+    }
+
+    private var hotkeyInstructionText: String {
+        let hasHold = !appState.holdHotkey.isDisabled
+        let hasToggle = !appState.toggleHotkey.isDisabled
+        if hasHold && hasToggle {
+            return "Hold **\(appState.holdHotkey.displayName)** to dictate or press **\(appState.toggleHotkey.displayName)** to toggle"
+        } else if hasHold {
+            return "Hold **\(appState.holdHotkey.displayName)** to dictate"
+        } else {
+            return "Press **\(appState.toggleHotkey.displayName)** to toggle"
+        }
+    }
+
+    private var retryInstructionText: String {
+        let hasHold = !appState.holdHotkey.isDisabled
+        let hasToggle = !appState.toggleHotkey.isDisabled
+        if hasHold && hasToggle {
+            return "Hold **\(appState.holdHotkey.displayName)** or press **\(appState.toggleHotkey.displayName)** to try again"
+        } else if hasHold {
+            return "Hold **\(appState.holdHotkey.displayName)** to try again"
+        } else {
+            return "Press **\(appState.toggleHotkey.displayName)** to try again"
         }
     }
 
@@ -827,11 +879,9 @@ struct SetupView: View {
                             .font(.title)
                             .fontWeight(.bold)
 
-                        VStack(spacing: 4) {
-                            Text("Hold **\(appState.holdHotkey.displayName)** to dictate")
-                            Text("Press **\(appState.toggleHotkey.displayName)** to toggle")
-                        }
+                        Text(.init(hotkeyInstructionText))
                             .font(.headline)
+                            .multilineTextAlignment(.center)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
                             .background(Color.blue.opacity(0.1))
@@ -895,7 +945,7 @@ struct SetupView: View {
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
 
-                            Text("Hold **\(appState.holdHotkey.displayName)** or press **\(appState.toggleHotkey.displayName)** to try again")
+                            Text(.init(retryInstructionText))
                                 .multilineTextAlignment(.center)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
@@ -905,7 +955,7 @@ struct SetupView: View {
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.secondary)
 
-                            Text("Hold **\(appState.holdHotkey.displayName)** or press **\(appState.toggleHotkey.displayName)** to try again")
+                            Text(.init(retryInstructionText))
                                 .multilineTextAlignment(.center)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
@@ -922,7 +972,7 @@ struct SetupView: View {
                                 .cornerRadius(10)
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
 
-                            Text("Hold **\(appState.holdHotkey.displayName)** or press **\(appState.toggleHotkey.displayName)** to try again")
+                            Text(.init(retryInstructionText))
                                 .multilineTextAlignment(.center)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
@@ -1019,11 +1069,16 @@ struct SetupView: View {
         keyValidationError = nil
 
         Task {
-            let valid = await TranscriptionService.validateAPIKey(key)
+            let valid = await TranscriptionService.validateAPIKey(key, baseURL: appState.apiProvider.baseURL)
             await MainActor.run {
                 isValidatingKey = false
                 if valid {
-                    appState.apiKey = key
+                    switch appState.apiProvider {
+                    case .groq:
+                        appState.apiKey = key
+                    case .openai:
+                        appState.openaiAPIKey = key
+                    }
                     withAnimation {
                         currentStep = nextStep(currentStep)
                     }
@@ -1161,7 +1216,7 @@ struct SetupView: View {
 
         Task {
             do {
-                let service = TranscriptionService(apiKey: appState.apiKey)
+                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL)
                 let transcript = try await service.transcribe(fileURL: url)
                 await MainActor.run {
                     testTranscript = transcript

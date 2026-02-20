@@ -24,8 +24,8 @@ struct PostProcessingResult {
 
 final class PostProcessingService {
     private let apiKey: String
-    private let baseURL = "https://api.groq.com/openai/v1"
-    private let defaultModel = "meta-llama/llama-4-scout-17b-16e-instruct"
+    private let baseURL: String
+    private let defaultModel: String
     private let postProcessingTimeoutSeconds: TimeInterval = 20
 
     static let appContextHints: [String: String] = [
@@ -69,8 +69,10 @@ final class PostProcessingService {
         "com.apple.systempreferences": "User is in System Settings. They may be describing settings or configurations.",
     ]
 
-    init(apiKey: String) {
+    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", model: String = "meta-llama/llama-4-scout-17b-16e-instruct") {
         self.apiKey = apiKey
+        self.baseURL = baseURL
+        self.defaultModel = model
     }
 
     func postProcess(
@@ -143,7 +145,8 @@ final class PostProcessingService {
         let vocabularyPrompt = if !normalizedVocabulary.isEmpty {
             """
 The following vocabulary must be treated as high-priority terms while rewriting.
-Use these spellings exactly in the output when relevant:
+Use these spellings exactly in the output when relevant.
+These terms also indicate the speaker's domain and interests — expect related vocabulary in their speech.
 \(normalizedVocabulary)
 """
         } else {

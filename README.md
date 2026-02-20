@@ -31,7 +31,7 @@
 - **Usage stats** - words transcribed, recording time, streaks, words per minute
 - **Auto-updates** - checks GitHub Releases in the background with a 3-day stability buffer. Downloads the DMG, replaces the app, and relaunches - all with one click.
 - **Pause media while recording** - optionally pauses music/video during recording, resumes when done
-- **Privacy-first** - no servers, no accounts, no telemetry. The only network calls are to Groq's API. Audio is processed and discarded, nothing stored externally.
+- **Privacy-first** - no servers, no accounts, no telemetry. The only network calls are to your chosen provider's API. Audio is processed and discarded, nothing stored externally.
 
 ## Why I Built This
 
@@ -41,39 +41,43 @@ I forked [FreeFlow](https://github.com/zachlatta/freeflow) by [Zach Latta](https
 
 I use it every day, so I'll keep improving it - but it'll always be free, open source, and yours to own. Check the [roadmap](#roadmap), it's a fun one.
 
-## Why Groq
+## API Providers
 
-Wispah Flow uses [Groq](https://groq.com) for both transcription (Whisper) and post-processing (LLM). Two reasons:
+Wispah Flow supports **Groq** and **OpenAI** as API providers. Pick one during setup, switch anytime in Settings. Both keys are saved — switching is instant.
 
-1. **It's free.** Groq offers a free API tier - no credit card, no subscription. The free plan gives you 2,000 transcriptions/day and 8 hours of audio/day, which is far more than normal use. Just grab an API key and go.
-2. **It's fast.** Groq runs on custom LPU hardware designed for inference speed. Transcriptions come back near-instantly, making the whole flow feel like native dictation.
-3. **It's what we inherited.** Wispah Flow is a fork of FreeFlow, which was built on Groq from the start. It works well, so we kept it - and plan to add local model support down the road.
+| Provider | Transcription | Post-Processing | Free Tier |
+|----------|--------------|-----------------|-----------|
+| [Groq](https://groq.com) | Whisper Large V3 / Turbo | Llama 4 Scout / 3.3 70B | Yes — no credit card needed |
+| [OpenAI](https://openai.com) | GPT-4o Mini Transcribe / Transcribe / Whisper 1 | GPT-4.1 Nano / Mini / 4.1 | No — pay-as-you-go |
+
+**Why Groq is the default:** It's free, fast (custom LPU hardware), and what we inherited from FreeFlow. For most users it's all you need.
 
 ## Setup
 
 1. Download from [Releases](https://github.com/idanyekutiel/wispah/releases)
-2. Get a free API key at [console.groq.com](https://console.groq.com)
+2. Get an API key — [Groq](https://console.groq.com) (free) or [OpenAI](https://platform.openai.com/api-keys)
 3. Open the app and follow the setup wizard
 
-The wizard walks you through granting permissions (microphone, accessibility, screen recording) and configuring your hotkeys.
+The wizard walks you through picking a provider, granting permissions (microphone, accessibility, screen recording), and configuring your hotkeys.
 
 ## Privacy
 
-No servers, no accounts, no tracking. The only network calls are to Groq's API for transcription and context processing. Audio is processed and discarded - nothing is stored or retained externally.
+No servers, no accounts, no tracking. The only network calls are to your chosen provider's API for transcription and context processing. Audio is processed and discarded - nothing is stored or retained externally.
 
 ## Roadmap
 
-- [ ] Local model support - run transcription and post-processing on-device instead of requiring Groq
-- [ ] Bring your own API key - use OpenAI, Claude, or any other provider instead of just Groq
+- [ ] Local model support - run transcription and post-processing on-device with no API key required
+- [x] Bring your own API key - use OpenAI or Groq with provider-specific model selection
 - [ ] Supercharged formatting - a mode that rewrites and compresses your speech into polished, pre-written-sounding text instead of just transcribing it
 - [ ] Audio file transcription - drag and drop audio files to transcribe them the same way live recordings work
 - [ ] IDE integrations - feed workspace file names and active context from Cursor, Windsurf, VS Code for even smarter developer transcription
 - [ ] CLI integrations - work alongside Claude Code, Codex, and other AI coding tools
-- [ ] Standalone app mode - open settings/history as a proper app window that shows in the dock and app switcher
+- [x] Standalone app mode - settings/history opens as a proper app window that shows in the dock and app switcher
 - [ ] Voice snippets - say a keyword and it expands into a predefined block of text (signatures, addresses, boilerplate)
 - [x] Custom post-processing prompt - add your own instructions to the post-processing pipeline (e.g. "I say 'so like' a lot, remove it" or "keep my sentences short and direct") so the output matches your personal writing style
 - [ ] Writing styles - presets for how your speech gets formatted depending on context (casual, professional, technical, etc.)
 - [ ] Improved dictionary page - tag-based editor, categories, import/export, and per-app vocabulary profiles
+- [ ] Mute system audio while recording - option to mute all system audio during recording instead of just pausing media
 - [ ] Automatic Fn key emoji picker suppression - currently requires a manual System Settings change; working on intercepting it programmatically
 
 ## For Developers

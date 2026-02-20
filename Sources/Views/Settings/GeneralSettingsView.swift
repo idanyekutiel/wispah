@@ -165,11 +165,11 @@ struct GeneralSettingsView: View {
                 settingsCard("API Key", icon: "key.fill") {
                     apiKeySection
                 }
-                settingsCard("Language", icon: "globe") {
-                    languageSection
-                }
                 settingsCard("Transcription", icon: "waveform") {
                     transcriptionSection
+                }
+                settingsCard("Language", icon: "globe") {
+                    languageSection
                 }
                 settingsCard("Post-Processing", icon: "sparkles") {
                     postProcessingSection
@@ -188,7 +188,7 @@ struct GeneralSettingsView: View {
             .padding(24)
         }
         .onAppear {
-            apiKeyInput = appState.apiKey
+            apiKeyInput = appState.activeAPIKey
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             appState.refreshLaunchAtLoginStatus()
@@ -364,12 +364,25 @@ struct GeneralSettingsView: View {
 
     private var apiKeySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Wispah Flow uses Groq's whisper-large-v3 model for transcription.")
+            Picker("Provider", selection: $appState.apiProvider) {
+                ForEach(APIProvider.allCases) { provider in
+                    Text(provider.displayName).tag(provider)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: appState.apiProvider) { _ in
+                apiKeyInput = appState.activeAPIKey
+                keyValidationError = nil
+                keyValidationSuccess = false
+            }
+
+            Text("Get an API key at [\(appState.apiProvider.keyHelpLabel)](\(appState.apiProvider.keyHelpURL))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .tint(.blue)
 
             HStack(spacing: 8) {
-                SecureField("Enter your Groq API key", text: $apiKeyInput)
+                SecureField(appState.apiProvider.keyPlaceholder, text: $apiKeyInput)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
                     .disabled(isValidatingKey)
@@ -403,11 +416,16 @@ struct GeneralSettingsView: View {
         keyValidationSuccess = false
 
         Task {
-            let valid = await TranscriptionService.validateAPIKey(key)
+            let valid = await TranscriptionService.validateAPIKey(key, baseURL: appState.apiProvider.baseURL)
             await MainActor.run {
                 isValidatingKey = false
                 if valid {
-                    appState.apiKey = key
+                    switch appState.apiProvider {
+                    case .groq:
+                        appState.apiKey = key
+                    case .openai:
+                        appState.openaiAPIKey = key
+                    }
                     keyValidationSuccess = true
                 } else {
                     keyValidationError = "Invalid API key. Please check and try again."
@@ -420,16 +438,31 @@ struct GeneralSettingsView: View {
 
     private var transcriptionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Picker("Whisper model:", selection: $appState.whisperModel) {
-                ForEach(WhisperModel.allCases) { model in
-                    Text(model.displayName).tag(model)
+            Picker("Transcription model:", selection: $appState.whisperModelId) {
+                ForEach(appState.apiProvider.whisperModels, id: \.id) { model in
+                    Text(model.name).tag(model.id)
                 }
             }
 
-            Text(appState.whisperModel.description)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let currentModel = appState.apiProvider.whisperModels.first(where: { $0.id == appState.whisperModelId }) {
+                Text(currentModel.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
+            Divider()
+
+            Picker("Post-processing model:", selection: $appState.llmModelId) {
+                ForEach(appState.apiProvider.llmModels, id: \.id) { model in
+                    Text(model.name).tag(model.id)
+                }
+            }
+
+            if let currentModel = appState.apiProvider.llmModels.first(where: { $0.id == appState.llmModelId }) {
+                Text(currentModel.description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

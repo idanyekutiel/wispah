@@ -10,12 +10,12 @@ extension AppState {
         return ""
     }
 
-    func persistAPIKey(_ value: String) {
+    func persistAPIKey(_ value: String, account: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            AppSettingsStorage.delete(account: apiKeyStorageKey)
+            AppSettingsStorage.delete(account: account)
         } else {
-            AppSettingsStorage.save(trimmed, account: apiKeyStorageKey)
+            AppSettingsStorage.save(trimmed, account: account)
         }
     }
 

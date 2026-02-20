@@ -153,7 +153,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Re-run Setup...") {
+            Button("Re-run Onboarding...") {
                 NotificationCenter.default.post(name: .showSetup, object: nil)
             }
 
@@ -161,16 +161,6 @@ struct MenuBarView: View {
                 Button("Debug Logs") {
                     NotificationCenter.default.post(name: .showDebugLogs, object: nil)
                 }
-
-                Button(appState.audioRecorder.isCapturing ? "Release Audio (Stop Mic)" : "Capture Audio (Claim Mic)") {
-                    if appState.audioRecorder.isCapturing {
-                        appState.audioRecorder.releaseAudio()
-                    } else {
-                        let deviceUID = appState.selectedMicrophoneID
-                        appState.audioRecorder.captureAudio(deviceUID: deviceUID)
-                    }
-                }
-                .disabled(appState.isRecording)
 
                 Button(appState.isDebugOverlayActive ? "Stop Debug Overlay" : "Debug Overlay") {
                     appState.toggleDebugOverlay()

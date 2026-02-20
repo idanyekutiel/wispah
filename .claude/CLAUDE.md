@@ -1,6 +1,6 @@
 # Wispah Flow
 
-macOS menu bar app for voice-to-text. Press a hotkey, speak, and the transcription is pasted at your cursor. Uses Groq's Whisper API for transcription and Groq LLM for context-aware post-processing.
+macOS menu bar app for voice-to-text. Press a hotkey, speak, and the transcription is pasted at your cursor. Supports Groq (free) and OpenAI as API providers — both use OpenAI-compatible endpoints with provider-specific models.
 
 **Naming convention:** User-facing display name is "Wispah Flow". Internal identifiers (bundle ID, code, file names, repo) use "wispah"/"Wispah". `DISPLAY_NAME` Makefile variable controls `CFBundleDisplayName`.
 
@@ -44,8 +44,8 @@ Menu bar app (`LSUIElement` in Info.plist). Central `AppState` (ObservableObject
 2. `AudioRecorder` captures audio via `AVAudioEngine` → AAC/m4a file
 3. `AppContextService` captures screenshot + frontmost app context in parallel (via ScreenCaptureKit)
 4. On stop: audio preprocessed (downsample to 16kHz mono, trim trailing silence)
-5. `TranscriptionService` sends audio to Groq Whisper API
-6. `PostProcessingService` refines transcript using Groq LLM with screen context
+5. `TranscriptionService` sends audio to Whisper API (Groq or OpenAI, based on active provider)
+6. `PostProcessingService` refines transcript using LLM with screen context
 7. Result copied to clipboard and pasted at cursor via accessibility (`Cmd+V` simulation)
 8. Entry saved to `PipelineHistoryStore` (CoreData), stats accumulated in `StatsStore`
 
@@ -75,12 +75,12 @@ Sources/
 │   ├── RecordingMode.swift          — Enum: holdToRecord, toggleToRecord
 │   ├── SettingsTab.swift            — Enum: stats, runLog, general (tab order)
 │   ├── StatsStore.swift             — Persistent JSON stats with daily breakdowns
-│   └── WhisperModel.swift           — Enum: largeV3, largeV3Turbo
+│   └── APIProvider.swift            — Enum: groq, openai — base URLs, model lists, display info
 ├── Services/
-│   ├── AppContextService.swift      — Screenshot capture via ScreenCaptureKit, context inference via Groq
+│   ├── AppContextService.swift      — Screenshot capture via ScreenCaptureKit, context inference via LLM
 │   ├── KeychainStorage.swift        — File-based storage in ~/Library/Application Support/Wispah/
-│   ├── PostProcessingService.swift  — Groq LLM post-processing (formatting, context integration)
-│   └── TranscriptionService.swift   — Groq Whisper API client, audio upload
+│   ├── PostProcessingService.swift  — LLM post-processing (formatting, context integration)
+│   └── TranscriptionService.swift   — Whisper API client (OpenAI-compatible), audio upload
 ├── State/
 │   ├── AppState.swift               — Central ObservableObject: all @Published settings, init
 │   ├── AppState+Accessibility.swift — Permission checks/alerts, paste-at-cursor, leading space detection
@@ -112,7 +112,7 @@ Sources/
 ## Key Patterns
 
 ### Settings Persistence
-All settings use `@Published` properties on `AppState` with `didSet` saving to `UserDefaults`. API key uses file-based storage via `KeychainStorage` (not actual Keychain — file in App Support dir).
+All settings use `@Published` properties on `AppState` with `didSet` saving to `UserDefaults`. API keys use file-based storage via `KeychainStorage` (not actual Keychain — file in App Support dir). Separate keys stored per provider (`groq_api_key`, `openai_api_key`), one active at a time via `APIProvider` enum. `activeAPIKey` / `activeBaseURL` computed properties provide provider-agnostic access.
 
 ### Hotkey System
 Dual hotkey support: separate "toggle" key (press to start/stop) and "hold" key (hold to record, release to stop). Both stored as `HotkeyBinding` (Codable struct with keyCode + modifiers). If both are set to the same key, `recordingMode` determines behavior.
@@ -136,7 +136,7 @@ Uses [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) — ru
 
 | Data | Location |
 |------|----------|
-| API key | `~/Library/Application Support/Wispah/groq_api_key` |
+| API keys | `~/Library/Application Support/Wispah/groq_api_key`, `openai_api_key` |
 | Audio files | `~/Library/Application Support/Wispah/audio/` |
 | History DB | `~/Library/Application Support/Wispah/PipelineHistory.sqlite` |
 | Stats | `~/Library/Application Support/Wispah/stats.json` |

@@ -4,13 +4,14 @@ import os
 
 class TranscriptionService {
     private let apiKey: String
-    private let baseURL = "https://api.groq.com/openai/v1"
+    private let baseURL: String
     private let transcriptionModel: String
     private let transcriptionLanguage: String?
     private let minimumTimeoutSeconds: TimeInterval = 30
 
-    init(apiKey: String, model: String = "whisper-large-v3", language: String? = nil) {
+    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", model: String = "whisper-large-v3", language: String? = nil) {
         self.apiKey = apiKey
+        self.baseURL = baseURL
         self.transcriptionModel = model
         self.transcriptionLanguage = language
     }
@@ -33,11 +34,11 @@ class TranscriptionService {
     }
 
     // Validate API key by hitting a lightweight endpoint
-    static func validateAPIKey(_ key: String) async -> Bool {
+    static func validateAPIKey(_ key: String, baseURL: String = "https://api.groq.com/openai/v1") async -> Bool {
         let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
-        var request = URLRequest(url: URL(string: "https://api.groq.com/openai/v1/models")!)
+        var request = URLRequest(url: URL(string: "\(baseURL)/models")!)
         request.timeoutInterval = 10
         request.setValue("Bearer \(trimmed)", forHTTPHeaderField: "Authorization")
 
@@ -112,7 +113,7 @@ class TranscriptionService {
             case 429:
                 throw TranscriptionError.submissionFailed("Rate limit exceeded. Please wait and try again.")
             case 500...:
-                throw TranscriptionError.submissionFailed("Groq server error. Please try again later.")
+                throw TranscriptionError.submissionFailed("Server error (\(statusCode)). Please try again later.")
             default:
                 throw TranscriptionError.submissionFailed("Unexpected error (HTTP \(statusCode)): \(truncatedBody)")
             }
@@ -132,9 +133,11 @@ class TranscriptionService {
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(model)\r\n")
 
+        // gpt-4o-transcribe models only support "json", not "verbose_json"
+        let responseFormat = model.contains("transcribe") ? "json" : "verbose_json"
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
-        append("verbose_json\r\n")
+        append("\(responseFormat)\r\n")
 
         if let language, !language.isEmpty {
             append("--\(boundary)\r\n")

@@ -58,6 +58,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if !AXIsProcessTrusted() {
                 appState.showAccessibilityAlert()
             }
+
+            if appState.settingsWindowWasOpen {
+                showSettingsWindow()
+            }
         }
 
     }
@@ -132,6 +136,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         settingsWindow = window
+        appState.settingsWindowWasOpen = true
 
         NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification,
@@ -139,6 +144,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.settingsWindow = nil
+            self?.appState.settingsWindowWasOpen = false
             self?.updateActivationPolicy()
         }
     }
