@@ -66,6 +66,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            showSettingsWindow()
+        }
+        return true
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Resume media if we had paused it during recording
         appState.handleAudioOnRecordingStop()
