@@ -77,7 +77,7 @@ No servers, no accounts, no tracking. The only network calls are to your chosen 
 - [x] Custom post-processing prompt - add your own instructions to the post-processing pipeline (e.g. "I say 'so like' a lot, remove it" or "keep my sentences short and direct") so the output matches your personal writing style
 - [ ] Writing styles - presets for how your speech gets formatted depending on context (casual, professional, technical, etc.)
 - [ ] Improved dictionary page - tag-based editor, categories, import/export, and per-app vocabulary profiles
-- [ ] Mute system audio while recording - option to mute all system audio during recording instead of just pausing media
+- [x] Mute system audio while recording - option to mute all system audio during recording instead of just pausing media
 - [ ] Automatic Fn key emoji picker suppression - currently requires a manual System Settings change; working on intercepting it programmatically
 
 ## For Developers
