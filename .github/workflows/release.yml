@@ -75,18 +75,19 @@ jobs:
         if: steps.codesign.outputs.signed != 'true'
         run: echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
 
-      - name: Store notarization credentials
-        if: steps.codesign.outputs.signed == 'true'
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: |
-          xcrun notarytool store-credentials "notarytool-profile" \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --keychain "$KEYCHAIN_PATH"
+      # Notarization disabled — re-enable when Apple's notary service is reliable for this account
+      # - name: Store notarization credentials
+      #   if: steps.codesign.outputs.signed == 'true'
+      #   env:
+      #     APPLE_ID: ${{ secrets.APPLE_ID }}
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #     APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+      #   run: |
+      #     xcrun notarytool store-credentials "notarytool-profile" \
+      #       --apple-id "$APPLE_ID" \
+      #       --team-id "$APPLE_TEAM_ID" \
+      #       --password "$APPLE_APP_PASSWORD" \
+      #       --keychain "$KEYCHAIN_PATH"
 
       # --- Build ---
       - name: Build universal
@@ -124,29 +125,30 @@ jobs:
           codesign --verify --strict build/Wispah.dmg
           echo "DMG signed and verified"
 
-      - name: Notarize DMG
-        if: steps.codesign.outputs.signed == 'true'
-        run: |
-          xcrun notarytool submit build/Wispah.dmg \
-            --keychain-profile "notarytool-profile" \
-            --keychain "$KEYCHAIN_PATH" \
-            --wait --timeout 30m 2>&1 | tee /tmp/notarize.log || true
-
-          SUBMISSION_ID=$(grep 'id:' /tmp/notarize.log | head -1 | awk '{print $2}')
-          STATUS=$(grep 'status:' /tmp/notarize.log | tail -1 | awk '{print $2}')
-          echo "Submission ID: $SUBMISSION_ID"
-          echo "Status: $STATUS"
-
-          if [ "$STATUS" != "Accepted" ]; then
-            echo "--- Fetching notarization log ---"
-            xcrun notarytool log "$SUBMISSION_ID" \
-              --keychain-profile "notarytool-profile" \
-              --keychain "$KEYCHAIN_PATH" 2>&1 || true
-            echo "Notarization failed with status: $STATUS"
-            exit 1
-          fi
-
-          xcrun stapler staple build/Wispah.dmg
+      # Notarization disabled — re-enable when Apple's notary service is reliable for this account
+      # - name: Notarize DMG
+      #   if: steps.codesign.outputs.signed == 'true'
+      #   run: |
+      #     xcrun notarytool submit build/Wispah.dmg \
+      #       --keychain-profile "notarytool-profile" \
+      #       --keychain "$KEYCHAIN_PATH" \
+      #       --wait --timeout 30m 2>&1 | tee /tmp/notarize.log || true
+      #
+      #     SUBMISSION_ID=$(grep 'id:' /tmp/notarize.log | head -1 | awk '{print $2}')
+      #     STATUS=$(grep 'status:' /tmp/notarize.log | tail -1 | awk '{print $2}')
+      #     echo "Submission ID: $SUBMISSION_ID"
+      #     echo "Status: $STATUS"
+      #
+      #     if [ "$STATUS" != "Accepted" ]; then
+      #       echo "--- Fetching notarization log ---"
+      #       xcrun notarytool log "$SUBMISSION_ID" \
+      #         --keychain-profile "notarytool-profile" \
+      #         --keychain "$KEYCHAIN_PATH" 2>&1 || true
+      #       echo "Notarization failed with status: $STATUS"
+      #       exit 1
+      #     fi
+      #
+      #     xcrun stapler staple build/Wispah.dmg
 
       - name: Prepare DMG
         run: mv build/Wispah.dmg Wispah.dmg

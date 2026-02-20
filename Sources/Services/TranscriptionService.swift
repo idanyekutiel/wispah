@@ -192,9 +192,12 @@ class TranscriptionService {
                 }
             }
 
-            if !text.isEmpty { return text }
+            // Always return within the JSON block — don't fall through to plain text,
+            // which would return the raw JSON string as the transcript
+            return text
         }
 
+        // Non-JSON fallback (plain text response)
         let plainText = String(data: data, encoding: .utf8) ?? ""
         let text = plainText
                 .components(separatedBy: .newlines)

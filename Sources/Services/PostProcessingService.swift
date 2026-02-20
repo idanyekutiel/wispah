@@ -272,7 +272,7 @@ Model: \(model)
             case 429:
                 throw PostProcessingError.requestFailed(statusCode, "Rate limit exceeded. Please wait and try again.")
             case 500...:
-                throw PostProcessingError.requestFailed(statusCode, "Groq server error. Please try again later.")
+                throw PostProcessingError.requestFailed(statusCode, "Server error. Please try again later.")
             default:
                 throw PostProcessingError.requestFailed(statusCode, truncatedMessage)
             }

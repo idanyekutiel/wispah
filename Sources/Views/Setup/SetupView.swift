@@ -165,7 +165,7 @@ struct SetupView: View {
         }
         .frame(width: 520)
         .onAppear {
-            apiKeyInput = appState.apiKey
+            apiKeyInput = appState.activeAPIKey
             customVocabularyInput = appState.customVocabulary
             checkMicPermission()
             checkAccessibility()
@@ -338,7 +338,18 @@ struct SetupView: View {
                     Text("How to get an API key:")
                         .font(.subheadline.weight(.semibold))
                     VStack(alignment: .leading, spacing: 2) {
-                        instructionRow(number: "1", text: "Go to [\(appState.apiProvider.keyHelpLabel)](\(appState.apiProvider.keyHelpURL))")
+                        HStack(alignment: .top, spacing: 6) {
+                            Text("1.")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16, alignment: .trailing)
+                            HStack(spacing: 4) {
+                                Text("Go to")
+                                    .font(.subheadline)
+                                Link(appState.apiProvider.keyHelpLabel, destination: URL(string: appState.apiProvider.keyHelpURL)!)
+                                    .font(.subheadline)
+                            }
+                        }
                         instructionRow(number: "2", text: "Create a free account (if you don't have one)")
                         instructionRow(number: "3", text: "Click **Create API Key** and copy it")
                     }
@@ -588,7 +599,7 @@ struct SetupView: View {
                 .cornerRadius(8)
             }
 
-            if appState.toggleHotkey.keyCode == 63 || appState.holdHotkey.keyCode == 63 {
+            if appState.toggleHotkey.keyCode == 63 {
                 if fnEmojiPickerEnabled {
                     VStack(spacing: 8) {
                         Label("Fn key opens the Emoji picker by default", systemImage: "exclamationmark.triangle.fill")
@@ -1216,7 +1227,7 @@ struct SetupView: View {
 
         Task {
             do {
-                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL)
+                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL, model: appState.whisperModelId)
                 let transcript = try await service.transcribe(fileURL: url)
                 await MainActor.run {
                     testTranscript = transcript

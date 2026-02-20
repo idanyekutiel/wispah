@@ -44,6 +44,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
             if let data = try? JSONEncoder().encode(toggleHotkey) {
                 UserDefaults.standard.set(data, forKey: "toggle_hotkey")
             }
+            // Clear hold key if it's now the same — one key can't serve both modes
+            if !toggleHotkey.isDisabled && toggleHotkey == holdHotkey {
+                holdHotkey = .disabled
+            }
             restartHotkeyMonitoring()
         }
     }
@@ -52,6 +56,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
         didSet {
             if let data = try? JSONEncoder().encode(holdHotkey) {
                 UserDefaults.standard.set(data, forKey: "hold_hotkey")
+            }
+            // Clear toggle key if it's now the same — one key can't serve both modes
+            if !holdHotkey.isDisabled && holdHotkey == toggleHotkey {
+                toggleHotkey = .disabled
             }
             restartHotkeyMonitoring()
         }

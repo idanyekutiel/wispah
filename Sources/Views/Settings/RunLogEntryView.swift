@@ -303,7 +303,7 @@ struct RunLogEntryView: View {
                             title: "Transcribe Audio",
                             content: {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text("Sent audio to Groq whisper-large-v3")
+                                    Text("Sent audio to \(appState.apiProvider.displayName) (\(appState.whisperModelId))")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .textSelection(.enabled)
@@ -422,7 +422,7 @@ struct RunLogEntryView: View {
         retryTask = Task {
             do {
                 await MainActor.run { retryStep = "Transcribing audio..." }
-                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL)
+                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL, model: appState.whisperModelId, language: appState.transcriptionLanguage)
                 let transcript = try await service.transcribe(fileURL: audioURL)
                 let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
 

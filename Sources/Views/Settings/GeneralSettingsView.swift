@@ -376,10 +376,13 @@ struct GeneralSettingsView: View {
                 keyValidationSuccess = false
             }
 
-            Text("Get an API key at [\(appState.apiProvider.keyHelpLabel)](\(appState.apiProvider.keyHelpURL))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .tint(.blue)
+            HStack(spacing: 4) {
+                Text("Get an API key at")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Link(appState.apiProvider.keyHelpLabel, destination: URL(string: appState.apiProvider.keyHelpURL)!)
+                    .font(.caption)
+            }
 
             HStack(spacing: 8) {
                 SecureField(appState.apiProvider.keyPlaceholder, text: $apiKeyInput)
@@ -517,7 +520,7 @@ struct GeneralSettingsView: View {
                 )
             }
 
-            if appState.toggleHotkey.keyCode == 63 || appState.holdHotkey.keyCode == 63 {
+            if appState.toggleHotkey.keyCode == 63 {
                 Text("Tip: If Fn opens Emoji picker, go to System Settings > Keyboard and change \"Press fn key to\" to \"Do Nothing\".")
                     .font(.caption)
                     .foregroundStyle(.orange)

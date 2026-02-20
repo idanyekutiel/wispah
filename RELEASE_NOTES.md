@@ -6,14 +6,13 @@
 
 ## Changelog
 
-- **Bring your own API key** — choose between Groq (free, default) and OpenAI as your API provider. Both keys saved independently, switch anytime in Settings
-- **Model selection** — pick your transcription model (Whisper, GPT-4o Transcribe) and post-processing model (Llama, GPT-4.1) in Settings
-- **Error overlay** — missing API key or failed transcription shows an animated error from the notch with a shake and auto-dismiss
-- **Smart retry** — if transcription comes back empty on a recording over 1.5 seconds, it retries automatically
-- **Delete audio files** — remove stored audio from individual transcription entries while keeping the transcript
-- **Settings persistence** — settings window remembers its open state and selected tab across app restarts
-- **Onboarding improvements** — provider picker, toggle descriptions, smarter hotkey instructions
-- **Dictionary context hints** — vocabulary terms now signal your domain to the LLM for better related-term recognition
+- **Onboarding bug fixes** — API key links now open correctly, test transcription uses the right model for your provider
+- **Hotkey duplicate protection** — setting both hotkeys to the same key automatically clears the other one
+- **Fn key warning** — emoji picker warning only shows when Fn is set as toggle key (holding Fn doesn't trigger it)
+- **Retry improvements** — retry now uses your selected transcription model and language instead of defaults
+- **Provider-aware UI** — run log shows actual provider and model, error messages no longer hardcode "Groq"
+- **Settings API key link** — clickable link to get an API key now works correctly on the settings page
+- **Disabled notarization** — releases build and sign via CI without the notarization step (right-click > Open on first launch)
 
 ## Requirements
 
