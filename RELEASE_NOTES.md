@@ -6,13 +6,8 @@
 
 ## Changelog
 
-- **Onboarding bug fixes** — API key links now open correctly, test transcription uses the right model for your provider
-- **Hotkey duplicate protection** — setting both hotkeys to the same key automatically clears the other one
-- **Fn key warning** — emoji picker warning only shows when Fn is set as toggle key (holding Fn doesn't trigger it)
-- **Retry improvements** — retry now uses your selected transcription model and language instead of defaults
-- **Provider-aware UI** — run log shows actual provider and model, error messages no longer hardcode "Groq"
-- **Settings API key link** — clickable link to get an API key now works correctly on the settings page
-- **Disabled notarization** — releases build and sign via CI without the notarization step (right-click > Open on first launch)
+- **Settings window persists after update** — if settings was open when you updated, it reopens automatically after relaunch
+- **Onboarding step sizing** — setup wizard steps now resize the window to fit each step's content, fixing overflow on the API key and preferences steps
 
 ## Requirements
 
