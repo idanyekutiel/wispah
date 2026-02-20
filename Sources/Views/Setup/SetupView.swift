@@ -174,6 +174,8 @@ struct SetupView: View {
             if savedStep > 0, let step = SetupStep(rawValue: savedStep) {
                 currentStep = step
             }
+            // Resize for initial step (onChange doesn't fire for initial value)
+            resizeSetupWindow(height: stepHeight(for: currentStep))
             Task {
                 await githubCache.fetchIfNeeded()
             }
@@ -184,6 +186,7 @@ struct SetupView: View {
         }
         .onChange(of: currentStep) { newStep in
             UserDefaults.standard.set(newStep.rawValue, forKey: "setupResumeStep")
+            resizeSetupWindow(height: stepHeight(for: newStep))
         }
     }
 
@@ -309,9 +312,9 @@ struct SetupView: View {
     }
 
     var apiKeyStep: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             Image(systemName: "key.fill")
-                .font(.system(size: 60))
+                .font(.system(size: 48))
                 .foregroundStyle(.blue)
 
             Text("API Key")
@@ -633,13 +636,25 @@ struct SetupView: View {
         }
         .onAppear {
             checkFnSetting()
-            resizeSetupWindow(height: 620)
-        }
-        .onDisappear {
-            resizeSetupWindow(height: 480)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             if currentStep == .hotkey { checkFnSetting() }
+        }
+    }
+
+    private func stepHeight(for step: SetupStep) -> CGFloat {
+        switch step {
+        case .welcome:           return 480
+        case .apiKey:            return 600
+        case .micPermission:     return 440
+        case .accessibility:     return 460
+        case .screenRecording:   return 520
+        case .hotkey:            return 620
+        case .vocabulary:        return 560
+        case .language:          return 680
+        case .launchAtLogin:     return 400
+        case .testTranscription: return 520
+        case .ready:             return 440
         }
     }
 

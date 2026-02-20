@@ -5,6 +5,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var setupWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var debugLogWindow: NSWindow?
+    private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.addObserver(
@@ -71,6 +72,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             showSettingsWindow()
         }
         return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        isTerminating = true
+        return .terminateNow
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -151,7 +157,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.settingsWindow = nil
-            self?.appState.settingsWindowWasOpen = false
+            if self?.isTerminating != true {
+                self?.appState.settingsWindowWasOpen = false
+            }
             self?.updateActivationPolicy()
         }
     }
