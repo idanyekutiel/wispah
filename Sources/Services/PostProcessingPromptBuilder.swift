@@ -151,6 +151,12 @@ Model: \(model)
         "sure! here",
     ]
 
+    /// XML tags used in the prompt that small models may echo back
+    private static let promptXMLTags = [
+        "raw_transcription", "context", "app_context",
+        "custom_instructions", "output_rules"
+    ]
+
     static func sanitize(_ value: String) -> String {
         var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { return "" }
@@ -161,6 +167,13 @@ Model: \(model)
             result.removeLast()
             result = result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+
+        // Strip prompt XML tags that small models may echo back
+        for tag in promptXMLTags {
+            result = result.replacingOccurrences(of: "<\(tag)>", with: "")
+            result = result.replacingOccurrences(of: "</\(tag)>", with: "")
+        }
+        result = result.trimmingCharacters(in: .whitespacesAndNewlines)
 
         // Strip LLM preambles like "Here's the cleaned-up transcription:"
         let lowered = result.lowercased()
