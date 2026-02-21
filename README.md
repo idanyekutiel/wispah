@@ -22,17 +22,17 @@
 
 ## Features
 
+- **Privacy-first** - no servers, no accounts, no telemetry. The only network calls are to your chosen provider's API. Audio is processed and discarded, nothing stored externally.
 - **Bring your own API key** - choose between Groq (free) and OpenAI, pick your transcription and post-processing models, switch providers anytime
 - **Context-aware transcription** - takes a screenshot when you start recording, then uses it to get names, terminology, and formatting right. Replying to an email? It'll spell the person's name correctly. Writing code? It'll match the syntax.
 - **Customizable post-processing** - everything is a toggle. Want raw transcription with no processing? Turn it all off. Want the full pipeline? Enable smart formatting (auto-detects lists, paragraphs), smart corrections (cleans up "wait no, I meant..." mid-speech), developer mode (recognizes code terms), and screen context - mix and match to fit how you work.
 - **Two recording modes** - hold-to-record (push-to-talk style) and toggle (press to start, press to stop), each with its own hotkey
-- **Live recording overlay** - floating pill with waveform visualization, state transitions, and a smooth slide-to-notch animation
 - **Paste at cursor** - transcription goes straight to wherever your cursor is, with smart leading-space detection so it doesn't smash into existing text
-- **Transcription history** - searchable log of every transcription with audio playback
-- **Usage stats** - words transcribed, recording time, streaks, words per minute
+- **Live recording overlay** - floating pill with waveform visualization, state transitions, and a smooth slide-to-notch animation
 - **Auto-updates** - checks GitHub Releases in the background with a 3-day stability buffer. Downloads the DMG, replaces the app, and relaunches - all with one click.
 - **Pause media while recording** - optionally pauses music/video during recording, resumes when done
-- **Privacy-first** - no servers, no accounts, no telemetry. The only network calls are to your chosen provider's API. Audio is processed and discarded, nothing stored externally.
+- **Transcription history** - searchable log of every transcription with audio playback
+- **Usage stats** - words transcribed, recording time, streaks, words per minute
 
 ## Why I Built This
 
@@ -49,7 +49,7 @@ Wispah Flow supports **Groq** and **OpenAI** as API providers. Pick one during s
 | Provider | Transcription | Post-Processing | Free Tier |
 |----------|--------------|-----------------|-----------|
 | [Groq](https://groq.com) | Whisper Large V3 / Turbo | Llama 4 Scout / 3.3 70B | Yes — no credit card needed |
-| [OpenAI](https://openai.com) | GPT-4o Mini Transcribe / Transcribe / Whisper 1 | GPT-4.1 Nano / Mini / 4.1 | No — pay-as-you-go |
+| [OpenAI](https://openai.com) | GPT-4o Mini Transcribe / Transcribe / Whisper 1 | GPT-5 Nano / Mini / 5, GPT-4.1 Nano / Mini / 4.1 | No — pay-as-you-go |
 
 **Why Groq is the default:** It's free, fast (custom LPU hardware), and what we inherited from FreeFlow. For most users it's all you need.
 
