@@ -6,8 +6,9 @@
 
 ## Changelog
 
+- **Notarized releases** — DMG is now Apple notarized, no more right-click > Open needed on first launch
 - **Settings window persists after update** — if settings was open when you updated, it reopens automatically after relaunch
-- **Onboarding step sizing** — setup wizard steps now resize the window to fit each step's content, fixing overflow on the API key and preferences steps
+- **Onboarding step sizing** — setup wizard steps now resize the window to fit each step's content
 
 ## Requirements
 
