@@ -12,6 +12,7 @@ struct SetupView: View {
     private enum SetupStep: Int, CaseIterable {
         case welcome = 0
         case apiKey
+        case modelDownload
         case micPermission
         case accessibility
         case screenRecording
@@ -59,6 +60,8 @@ struct SetupView: View {
                     welcomeStep
                 case .apiKey:
                     apiKeyStep
+                case .modelDownload:
+                    modelDownloadStep
                 case .micPermission:
                     micPermissionStep
                 case .accessibility:
@@ -97,12 +100,22 @@ struct SetupView: View {
                 Spacer()
                 if currentStep != .ready {
                     if currentStep == .apiKey {
-                        // API key step: validate before continuing
-                        Button(isValidatingKey ? "Validating..." : "Continue") {
-                            validateAndContinue()
+                        if appState.apiProvider == .local {
+                            // Local provider: no API key needed, just continue
+                            Button("Continue") {
+                                withAnimation {
+                                    currentStep = nextStep(currentStep)
+                                }
+                            }
+                            .keyboardShortcut(.defaultAction)
+                        } else {
+                            // Cloud provider: validate API key before continuing
+                            Button(isValidatingKey ? "Validating..." : "Continue") {
+                                validateAndContinue()
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
                         }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
                     } else if currentStep == .vocabulary {
                         Button("Continue") {
                             saveCustomVocabularyAndContinue()
@@ -313,15 +326,17 @@ struct SetupView: View {
 
     var apiKeyStep: some View {
         VStack(spacing: 16) {
-            Image(systemName: "key.fill")
+            Image(systemName: appState.apiProvider == .local ? "cpu" : "key.fill")
                 .font(.system(size: 48))
                 .foregroundStyle(.blue)
 
-            Text("API Key")
+            Text(appState.apiProvider == .local ? "Local Models" : "API Key")
                 .font(.title)
                 .fontWeight(.bold)
 
-            Text("Wispah Flow needs an API key for transcription and post-processing.")
+            Text(appState.apiProvider == .local
+                 ? "Run transcription entirely on this Mac — no API key or internet required."
+                 : "Wispah Flow needs an API key for transcription and post-processing.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -330,6 +345,7 @@ struct SetupView: View {
                 Picker("Provider", selection: $appState.apiProvider) {
                     Text("Groq (Recommended)").tag(APIProvider.groq)
                     Text("OpenAI").tag(APIProvider.openai)
+                    Text("Local (Offline)").tag(APIProvider.local)
                 }
                 .pickerStyle(.segmented)
                 .onChange(of: appState.apiProvider) { _ in
@@ -337,61 +353,174 @@ struct SetupView: View {
                     keyValidationError = nil
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("How to get an API key:")
-                        .font(.subheadline.weight(.semibold))
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(alignment: .top, spacing: 6) {
-                            Text("1.")
-                                .font(.subheadline.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 16, alignment: .trailing)
-                            HStack(spacing: 4) {
-                                Text("Go to")
-                                    .font(.subheadline)
-                                Link(appState.apiProvider.keyHelpLabel, destination: URL(string: appState.apiProvider.keyHelpURL)!)
-                                    .font(.subheadline)
+                if appState.apiProvider == .local {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Runs entirely on this Mac", systemImage: "desktopcomputer")
+                            .font(.subheadline)
+                        Label("No API key needed", systemImage: "key.slash")
+                            .font(.subheadline)
+                        Label("Requires Apple Silicon", systemImage: "cpu")
+                            .font(.subheadline)
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.green.opacity(0.06))
+                    )
+
+                    Text("You'll download models in the next step.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("How to get an API key:")
+                            .font(.subheadline.weight(.semibold))
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(alignment: .top, spacing: 6) {
+                                Text("1.")
+                                    .font(.subheadline.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 16, alignment: .trailing)
+                                HStack(spacing: 4) {
+                                    Text("Go to")
+                                        .font(.subheadline)
+                                    Link(appState.apiProvider.keyHelpLabel, destination: URL(string: appState.apiProvider.keyHelpURL)!)
+                                        .font(.subheadline)
+                                }
                             }
+                            instructionRow(number: "2", text: "Create a free account (if you don't have one)")
+                            instructionRow(number: "3", text: "Click **Create API Key** and copy it")
                         }
-                        instructionRow(number: "2", text: "Create a free account (if you don't have one)")
-                        instructionRow(number: "3", text: "Click **Create API Key** and copy it")
-                    }
-                    if appState.apiProvider == .groq {
-                        Text("Groq provides unlimited free inference for individuals.")
+                        if appState.apiProvider == .groq {
+                            Text("Groq provides unlimited free inference for individuals.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("OpenAI offers pay-as-you-go pricing with no monthly minimum.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("You can customize transcription and processing models in Settings.")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("OpenAI offers pay-as-you-go pricing with no monthly minimum.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tertiary)
                     }
-                    Text("You can customize transcription and processing models in Settings.")
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.blue.opacity(0.06))
+                    )
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("API Key")
+                            .font(.headline)
+                        SecureField(appState.apiProvider.keyPlaceholder, text: $apiKeyInput)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .disabled(isValidatingKey)
+                            .onChange(of: apiKeyInput) { _ in
+                                keyValidationError = nil
+                            }
+
+                        if let error = keyValidationError {
+                            Label(error, systemImage: "xmark.circle.fill")
+                                .foregroundStyle(.red)
+                                .font(.caption)
+                        }
+                    }
+                }
+            }
+
+            stepIndicator
+        }
+    }
+
+    @ObservedObject private var setupModelManager = LocalModelManager.shared
+
+    /// Curated subset of Whisper models for onboarding
+    private let onboardingWhisperModels = ["tiny", "base", "small", "large-v3-turbo"]
+
+    /// Curated subset of LLM models for onboarding
+    private let onboardingLLMModels = ["mlx-community/Qwen3-0.6B-4bit", "mlx-community/Qwen3-1.7B-4bit", "mlx-community/Qwen3-4B-4bit"]
+
+    var modelDownloadStep: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "arrow.down.circle.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.blue)
+
+            Text("Download Models")
+                .font(.title)
+                .fontWeight(.bold)
+
+            Text("Download at least a Whisper model for transcription.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Whisper Models (Required)")
+                        .font(.subheadline.weight(.semibold))
+
+                    VStack(spacing: 4) {
+                        ForEach(APIProvider.local.whisperModels.filter { onboardingWhisperModels.contains($0.id) }, id: \.id) { model in
+                            LocalModelRow(
+                                name: model.name,
+                                description: model.description,
+                                status: setupModelManager.whisperModelStatuses[model.id] ?? .notDownloaded,
+                                isSelected: appState.whisperModelId == model.id && (setupModelManager.whisperModelStatuses[model.id]?.isDownloaded ?? false),
+                                onDownload: {
+                                    Task {
+                                        await setupModelManager.downloadWhisperModel(model.id)
+                                        if setupModelManager.whisperModelStatuses[model.id]?.isDownloaded == true {
+                                            appState.whisperModelId = model.id
+                                        }
+                                    }
+                                },
+                                onSelect: {
+                                    appState.whisperModelId = model.id
+                                },
+                                onDelete: nil
+                            )
+                        }
+                    }
+
+                    Divider()
+
+                    Text("Language Model (Optional)")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Enables post-processing — formatting, spelling, and context.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    VStack(spacing: 4) {
+                        ForEach(APIProvider.local.llmModels.filter { onboardingLLMModels.contains($0.id) }, id: \.id) { model in
+                            LocalModelRow(
+                                name: model.name,
+                                description: model.description,
+                                status: setupModelManager.llmModelStatuses[model.id] ?? .notDownloaded,
+                                isSelected: appState.llmModelId == model.id && (setupModelManager.llmModelStatuses[model.id]?.isDownloaded ?? false),
+                                onDownload: {
+                                    Task {
+                                        await setupModelManager.downloadLLMModel(model.id)
+                                        if setupModelManager.llmModelStatuses[model.id]?.isDownloaded == true {
+                                            appState.llmModelId = model.id
+                                        }
+                                    }
+                                },
+                                onSelect: {
+                                    appState.llmModelId = model.id
+                                },
+                                onDelete: nil
+                            )
+                        }
+                    }
+
+                    Text("You can download more models in Settings.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.blue.opacity(0.06))
-                )
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("API Key")
-                        .font(.headline)
-                    SecureField(appState.apiProvider.keyPlaceholder, text: $apiKeyInput)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .disabled(isValidatingKey)
-                        .onChange(of: apiKeyInput) { _ in
-                            keyValidationError = nil
-                        }
-
-                    if let error = keyValidationError {
-                        Label(error, systemImage: "xmark.circle.fill")
-                            .foregroundStyle(.red)
-                            .font(.caption)
-                    }
                 }
             }
 
@@ -646,6 +775,7 @@ struct SetupView: View {
         switch step {
         case .welcome:           return 480
         case .apiKey:            return 600
+        case .modelDownload:     return 960
         case .micPermission:     return 440
         case .accessibility:     return 460
         case .screenRecording:   return 520
@@ -1060,6 +1190,12 @@ struct SetupView: View {
 
     private var canContinueFromCurrentStep: Bool {
         switch currentStep {
+        case .apiKey:
+            // Local provider doesn't need an API key to continue
+            return appState.apiProvider == .local || !apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .modelDownload:
+            // Must have at least one Whisper model downloaded
+            return LocalModelManager.shared.whisperModelStatuses.values.contains(where: { $0.isDownloaded })
         case .micPermission:
             return micPermissionGranted
         case .accessibility:
@@ -1090,6 +1226,13 @@ struct SetupView: View {
     // MARK: - Actions
 
     func validateAndContinue() {
+        if appState.apiProvider == .local {
+            withAnimation {
+                currentStep = nextStep(currentStep)
+            }
+            return
+        }
+
         let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         isValidatingKey = true
         keyValidationError = nil
@@ -1104,6 +1247,8 @@ struct SetupView: View {
                         appState.apiKey = key
                     case .openai:
                         appState.openaiAPIKey = key
+                    case .local:
+                        break
                     }
                     withAnimation {
                         currentStep = nextStep(currentStep)
@@ -1123,13 +1268,21 @@ struct SetupView: View {
     }
 
     private func previousStep(_ step: SetupStep) -> SetupStep {
-        let previous = SetupStep(rawValue: step.rawValue - 1)
-        return previous ?? .welcome
+        var prev = SetupStep(rawValue: step.rawValue - 1) ?? .welcome
+        // Skip modelDownload when not using local provider
+        if prev == .modelDownload && appState.apiProvider != .local {
+            prev = SetupStep(rawValue: prev.rawValue - 1) ?? .welcome
+        }
+        return prev
     }
 
     private func nextStep(_ step: SetupStep) -> SetupStep {
-        let next = SetupStep(rawValue: step.rawValue + 1)
-        return next ?? .ready
+        var next = SetupStep(rawValue: step.rawValue + 1) ?? .ready
+        // Skip modelDownload when not using local provider
+        if next == .modelDownload && appState.apiProvider != .local {
+            next = SetupStep(rawValue: next.rawValue + 1) ?? .ready
+        }
+        return next
     }
 
     func checkMicPermission() {
@@ -1242,8 +1395,10 @@ struct SetupView: View {
 
         Task {
             do {
-                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL, model: appState.whisperModelId)
-                let transcript = try await service.transcribe(fileURL: url)
+                let service: TranscriptionProvider = appState.apiProvider == .local
+                    ? LocalTranscriptionService(model: appState.whisperModelId, language: appState.transcriptionLanguage)
+                    : TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL, model: appState.whisperModelId)
+                let transcript = try await service.transcribe(fileURL: url, prompt: nil)
                 await MainActor.run {
                     testTranscript = transcript
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {

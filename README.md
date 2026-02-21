@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/idanyekutiel/wispah/releases/latest/download/Wispah.dmg"><b>⬇ Download Wispah.dmg</b></a><br>
-  <sub>macOS 13+ &middot; Apple Silicon + Intel</sub>
+  <sub>macOS 14+ &middot; Apple Silicon</sub>
 </p>
 
 ---
@@ -22,8 +22,9 @@
 
 ## Features
 
-- **Privacy-first** - no servers, no accounts, no telemetry. The only network calls are to your chosen provider's API. Audio is processed and discarded, nothing stored externally.
-- **Bring your own API key** - choose between Groq (free) and OpenAI, pick your transcription and post-processing models, switch providers anytime
+- **Privacy-first** - no servers, no accounts, no telemetry. The only network calls are to your chosen provider's API (or none at all with Local mode). Audio is processed and discarded, nothing stored externally.
+- **Local mode** - run transcription and post-processing entirely on-device using WhisperKit and MLX. No API key, no internet, fully offline. Download models on-demand from the settings page.
+- **Bring your own API key** - choose between Groq (free), OpenAI, or Local, pick your transcription and post-processing models, switch providers anytime
 - **Context-aware transcription** - takes a screenshot when you start recording, then uses it to get names, terminology, and formatting right. Replying to an email? It'll spell the person's name correctly. Writing code? It'll match the syntax.
 - **Customizable post-processing** - everything is a toggle. Want raw transcription with no processing? Turn it all off. Want the full pipeline? Enable smart formatting (auto-detects lists, paragraphs), smart corrections (cleans up "wait no, I meant..." mid-speech), developer mode (recognizes code terms), and screen context - mix and match to fit how you work.
 - **Two recording modes** - hold-to-record (push-to-talk style) and toggle (press to start, press to stop), each with its own hotkey
@@ -44,30 +45,43 @@ I use it every day, so I'll keep improving it - but it'll always be free, open s
 
 ## API Providers
 
-Wispah Flow supports **Groq** and **OpenAI** as API providers. Pick one during setup, switch anytime in Settings. Both keys are saved — switching is instant.
+Wispah Flow supports **Groq**, **OpenAI**, and **Local** as providers. Pick one during setup, switch anytime in Settings. All keys are saved — switching is instant.
 
 | Provider | Transcription | Post-Processing | Free Tier |
 |----------|--------------|-----------------|-----------|
 | [Groq](https://groq.com) | Whisper Large V3 / Turbo | Llama 4 Scout / 3.3 70B | Yes — no credit card needed |
 | [OpenAI](https://openai.com) | GPT-4o Mini Transcribe / Transcribe / Whisper 1 | GPT-5 Nano / Mini / 5, GPT-4.1 Nano / Mini / 4.1 | No — pay-as-you-go |
+| Local | WhisperKit (tiny → large-v3) | Qwen3 / Gemma 3 / Phi-4 Mini (MLX) | Fully offline — no API key needed |
 
 **Why Groq is the default:** It's free, fast (custom LPU hardware), and what we inherited from FreeFlow. For most users it's all you need.
+
+**Local mode:** Runs entirely on your Mac using Apple Silicon. Models are downloaded on-demand and stored in `~/Library/Caches/Wispah/`. Whisper transcription works well even with smaller models (base/small). Post-processing quality depends on model size — the 0.6B model is fast but limited; 1.7B+ is recommended for good results.
 
 ## Setup
 
 1. Download from [Releases](https://github.com/idanyekutiel/wispah/releases)
-2. Get an API key — [Groq](https://console.groq.com) (free) or [OpenAI](https://platform.openai.com/api-keys)
+2. Pick a provider:
+   - **Groq** (recommended) — get a free key at [console.groq.com](https://console.groq.com)
+   - **OpenAI** — get a key at [platform.openai.com](https://platform.openai.com/api-keys)
+   - **Local** — no key needed, download models during setup
 3. Open the app and follow the setup wizard
 
-The wizard walks you through picking a provider, granting permissions (microphone, accessibility, screen recording), and configuring your hotkeys.
+The wizard walks you through picking a provider, granting permissions (microphone, accessibility, screen recording), and configuring your hotkeys. If you choose Local, the wizard includes a model download step.
+
+## Uninstalling
+
+If you use Local mode, models are stored in `~/Library/Caches/Wispah/` and are not removed when you delete the app. To fully uninstall:
+
+1. Open Settings → Local Models → **Delete All Models** (or delete `~/Library/Caches/Wispah/` manually)
+2. Delete the app
 
 ## Privacy
 
-No servers, no accounts, no tracking. The only network calls are to your chosen provider's API for transcription and context processing. Audio is processed and discarded - nothing is stored or retained externally.
+No servers, no accounts, no tracking. The only network calls are to your chosen provider's API for transcription and context processing (Local mode makes no network calls at all). Audio is processed and discarded - nothing is stored or retained externally.
 
 ## Roadmap
 
-- [ ] Local model support - run transcription and post-processing on-device with no API key required
+- [x] Local model support - run transcription and post-processing on-device with no API key required
 - [x] Bring your own API key - use OpenAI or Groq with provider-specific model selection
 - [ ] Supercharged formatting - a mode that rewrites and compresses your speech into polished, pre-written-sounding text instead of just transcribing it
 - [ ] Audio file transcription - drag and drop audio files to transcribe them the same way live recordings work

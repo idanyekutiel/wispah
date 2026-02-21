@@ -115,10 +115,24 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
     @Published var apiProvider: APIProvider {
         didSet {
+            // Save current model selections for the old provider before switching
+            UserDefaults.standard.set(whisperModelId, forKey: "whisper_model_id_\(oldValue.rawValue)")
+            UserDefaults.standard.set(llmModelId, forKey: "llm_model_id_\(oldValue.rawValue)")
+
             UserDefaults.standard.set(apiProvider.rawValue, forKey: "api_provider")
-            whisperModelId = apiProvider.defaultWhisperModel
-            llmModelId = apiProvider.defaultLLMModel
-            contextService = AppContextService(apiKey: activeAPIKey, baseURL: apiProvider.baseURL, llmModel: llmModelId, visionModel: apiProvider.defaultVisionModel)
+
+            // Restore saved model selections for the new provider, or use defaults
+            whisperModelId = UserDefaults.standard.string(forKey: "whisper_model_id_\(apiProvider.rawValue)") ?? apiProvider.defaultWhisperModel
+            llmModelId = UserDefaults.standard.string(forKey: "llm_model_id_\(apiProvider.rawValue)") ?? apiProvider.defaultLLMModel
+
+            if apiProvider != .local {
+                contextService = AppContextService(apiKey: activeAPIKey, baseURL: apiProvider.baseURL, llmModel: llmModelId, visionModel: apiProvider.defaultVisionModel)
+            }
+            if oldValue == .local && apiProvider != .local {
+                Task { @MainActor in
+                    LocalModelManager.shared.unloadAll()
+                }
+            }
         }
     }
 
@@ -147,6 +161,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         switch apiProvider {
         case .groq: return apiKey
         case .openai: return openaiAPIKey
+        case .local: return ""
         }
     }
 

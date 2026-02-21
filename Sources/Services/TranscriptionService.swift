@@ -2,7 +2,7 @@ import Foundation
 import AVFoundation
 import os
 
-class TranscriptionService {
+class TranscriptionService: TranscriptionProvider {
     private let apiKey: String
     private let baseURL: String
     private let transcriptionModel: String

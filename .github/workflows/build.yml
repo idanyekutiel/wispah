@@ -74,10 +74,10 @@ jobs:
         run: echo "CODESIGN_IDENTITY=-" >> "$GITHUB_ENV"
 
       - name: Build
-        run: make ARCH=universal APP_NAME=Wispah DISPLAY_NAME="Wispah Flow" BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        run: make APP_NAME=Wispah DISPLAY_NAME="Wispah Flow" BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Create DMG
-        run: make dmg ARCH=universal APP_NAME=Wispah BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
+        run: make dmg APP_NAME=Wispah BUNDLE_ID=com.idanyekutiel.wispah CODESIGN_IDENTITY="$CODESIGN_IDENTITY"
 
       - name: Sign DMG
         if: steps.codesign.outputs.signed == 'true'

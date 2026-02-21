@@ -422,8 +422,10 @@ struct RunLogEntryView: View {
         retryTask = Task {
             do {
                 await MainActor.run { retryStep = "Transcribing audio..." }
-                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL, model: appState.whisperModelId, language: appState.transcriptionLanguage)
-                let transcript = try await service.transcribe(fileURL: audioURL)
+                let service: TranscriptionProvider = appState.apiProvider == .local
+                    ? LocalTranscriptionService(model: appState.whisperModelId, language: appState.transcriptionLanguage)
+                    : TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL, model: appState.whisperModelId, language: appState.transcriptionLanguage)
+                let transcript = try await service.transcribe(fileURL: audioURL, prompt: nil)
                 let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
 
                 await MainActor.run {

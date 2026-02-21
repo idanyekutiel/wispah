@@ -41,6 +41,39 @@ extension AppState {
             return
         }
 
+        // Local provider: metadata-only context (no LLM vision inference)
+        if apiProvider == .local {
+            lastContextSummary = "Collecting app context (metadata only)..."
+            lastContextScreenshotStatus = "Local provider — no screenshot inference"
+
+            contextCaptureTask = Task { [weak self] in
+                guard let self else { return nil }
+                let frontmostApp = NSWorkspace.shared.frontmostApplication
+                let windowTitle = self.focusedWindowTitle(for: frontmostApp)
+                let appName = frontmostApp?.localizedName ?? "Unknown"
+                let windowStr = windowTitle ?? "Unknown window"
+                let context = AppContext(
+                    appName: frontmostApp?.localizedName,
+                    bundleIdentifier: frontmostApp?.bundleIdentifier,
+                    windowTitle: windowTitle,
+                    selectedText: nil,
+                    currentActivity: "User is working in \(appName) — \(windowStr).",
+                    contextPrompt: nil,
+                    screenshotDataURL: nil,
+                    screenshotMimeType: nil,
+                    screenshotError: nil
+                )
+                await MainActor.run {
+                    self.capturedContext = context
+                    self.lastContextSummary = context.contextSummary
+                    self.lastContextScreenshotStatus = "Local provider — metadata only"
+                    self.lastPostProcessingStatus = "App context captured (metadata only)"
+                }
+                return context
+            }
+            return
+        }
+
         lastContextSummary = "Collecting app context..."
         lastContextScreenshotStatus = "Collecting screenshot..."
 

@@ -11,42 +11,37 @@ MACOS_DIR = $(CONTENTS)/MacOS
 
 SOURCES = $(shell find Sources -name '*.swift')
 RESOURCES = $(CONTENTS)/Resources
-ARCH ?= $(shell uname -m)
 ICON_SOURCE = Resources/AppIcon-Source.png
 ICON_ICNS = Resources/AppIcon.icns
 ADAPTER_DIR = Resources/MediaRemoteAdapter
 
-.PHONY: all clean run dev dev-run watch icon dmg codesign-dmg notarize
+# MLX Metal shader compilation (SwiftPM cannot compile Metal shaders)
+MLX_CHECKOUT = .build/checkouts/mlx-swift/Source/Cmlx
+MLX_KERNELS = $(MLX_CHECKOUT)/mlx/mlx/backend/metal/kernels
+MLX_INCLUDE = $(MLX_CHECKOUT)/mlx
+METAL_BUILD_DIR = $(BUILD_DIR)/metal
+METAL_FLAGS = -x metal -Wall -Wextra -fno-fast-math -Wno-c++17-extensions -Wno-c++20-extensions -mmacosx-version-min=14.0
+# Always-compiled kernels required even in JIT mode
+MLX_KERNEL_NAMES = arg_reduce conv gemv layer_norm random rms_norm rope scaled_dot_product_attention
+
+.PHONY: all clean run dev dev-run watch icon dmg codesign-dmg notarize metallib
 
 all: $(MACOS_DIR)/$(APP_NAME)
 
-$(MACOS_DIR)/$(APP_NAME): $(SOURCES) Info.plist $(ICON_ICNS)
+metallib:
+	@mkdir -p "$(METAL_BUILD_DIR)"
+	@echo "Compiling MLX Metal shaders..."
+	@for kernel in $(MLX_KERNEL_NAMES); do \
+		xcrun -sdk macosx metal $(METAL_FLAGS) -c "$(MLX_KERNELS)/$$kernel.metal" -I"$(MLX_INCLUDE)" -o "$(METAL_BUILD_DIR)/$$kernel.air"; \
+	done
+	@xcrun -sdk macosx metallib $(METAL_BUILD_DIR)/*.air -o "$(METAL_BUILD_DIR)/mlx.metallib"
+
+$(MACOS_DIR)/$(APP_NAME): $(SOURCES) Info.plist $(ICON_ICNS) Package.swift
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
-ifeq ($(ARCH),universal)
-	swiftc \
-		-parse-as-library \
-		-o "$(MACOS_DIR)/$(APP_NAME)-arm64" \
-		-sdk $(shell xcrun --show-sdk-path) \
-		-target arm64-apple-macosx13.0 \
-		$(SOURCES)
-	swiftc \
-		-parse-as-library \
-		-o "$(MACOS_DIR)/$(APP_NAME)-x86_64" \
-		-sdk $(shell xcrun --show-sdk-path) \
-		-target x86_64-apple-macosx13.0 \
-		$(SOURCES)
-	lipo -create -output "$(MACOS_DIR)/$(APP_NAME)" \
-		"$(MACOS_DIR)/$(APP_NAME)-arm64" \
-		"$(MACOS_DIR)/$(APP_NAME)-x86_64"
-	@rm "$(MACOS_DIR)/$(APP_NAME)-arm64" "$(MACOS_DIR)/$(APP_NAME)-x86_64"
-else
-	swiftc \
-		-parse-as-library \
-		-o "$(MACOS_DIR)/$(APP_NAME)" \
-		-sdk $(shell xcrun --show-sdk-path) \
-		-target $(ARCH)-apple-macosx13.0 \
-		$(SOURCES)
-endif
+	swift build --configuration release
+	@$(MAKE) metallib
+	@cp .build/release/Wispah "$(MACOS_DIR)/$(APP_NAME)"
+	@cp "$(METAL_BUILD_DIR)/mlx.metallib" "$(MACOS_DIR)/"
 	@cp Info.plist "$(CONTENTS)/"
 	@plutil -replace CFBundleName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleDisplayName -string "$(DISPLAY_NAME)" "$(CONTENTS)/Info.plist"
@@ -55,6 +50,7 @@ endif
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
 	@cp -R "$(ADAPTER_DIR)/MediaRemoteAdapter.framework" "$(RESOURCES)/"
 	@cp "$(ADAPTER_DIR)/mediaremote-adapter.pl" "$(RESOURCES)/"
+	@codesign --force --timestamp --options runtime --sign "$(CODESIGN_IDENTITY)" "$(MACOS_DIR)/mlx.metallib"
 	@codesign --force --timestamp --options runtime --sign "$(CODESIGN_IDENTITY)" "$(RESOURCES)/MediaRemoteAdapter.framework"
 	@codesign --force --timestamp --options runtime --sign "$(CODESIGN_IDENTITY)" --entitlements Wispah.entitlements "$(APP_BUNDLE)"
 	@echo "Built $(APP_BUNDLE)"
@@ -102,14 +98,12 @@ notarize:
 		--keychain-profile "$(NOTARIZE_PROFILE)" --wait
 	xcrun stapler staple $(BUILD_DIR)/$(APP_NAME).dmg
 
-dev: $(SOURCES) Info.plist $(ICON_ICNS)
+dev: $(SOURCES) Info.plist $(ICON_ICNS) Package.swift
 	@mkdir -p "$(MACOS_DIR)" "$(RESOURCES)"
-	swiftc \
-		-parse-as-library \
-		-o "$(MACOS_DIR)/$(APP_NAME)" \
-		-sdk $(shell xcrun --show-sdk-path) \
-		-target $(ARCH)-apple-macosx13.0 \
-		$(SOURCES)
+	swift build --configuration debug
+	@$(MAKE) metallib
+	@cp .build/debug/Wispah "$(MACOS_DIR)/$(APP_NAME)"
+	@cp "$(METAL_BUILD_DIR)/mlx.metallib" "$(MACOS_DIR)/"
 	@cp Info.plist "$(CONTENTS)/"
 	@plutil -replace CFBundleName -string "$(APP_NAME)" "$(CONTENTS)/Info.plist"
 	@plutil -replace CFBundleDisplayName -string "$(DISPLAY_NAME)" "$(CONTENTS)/Info.plist"
@@ -118,6 +112,7 @@ dev: $(SOURCES) Info.plist $(ICON_ICNS)
 	@cp $(ICON_ICNS) "$(RESOURCES)/"
 	@cp -R "$(ADAPTER_DIR)/MediaRemoteAdapter.framework" "$(RESOURCES)/"
 	@cp "$(ADAPTER_DIR)/mediaremote-adapter.pl" "$(RESOURCES)/"
+	@codesign --force --sign "$(DEV_CODESIGN_IDENTITY)" "$(MACOS_DIR)/mlx.metallib"
 	@codesign --force --sign "$(DEV_CODESIGN_IDENTITY)" "$(APP_BUNDLE)"
 	@echo "Dev build ready: $(APP_BUNDLE)"
 
@@ -137,6 +132,7 @@ watch:
 
 clean:
 	rm -rf $(BUILD_DIR)
+	swift package clean
 
 run: all
 	open "$(APP_BUNDLE)"

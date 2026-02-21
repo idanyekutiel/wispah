@@ -27,8 +27,10 @@ extension AppState {
 
         Task {
             do {
-                let service = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
-                let transcript = try await service.transcribe(fileURL: audioURL)
+                let service: TranscriptionProvider = apiProvider == .local
+                    ? LocalTranscriptionService(model: whisperModelId, language: transcriptionLanguage)
+                    : TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
+                let transcript = try await service.transcribe(fileURL: audioURL, prompt: nil)
                 let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
 
                 await MainActor.run {

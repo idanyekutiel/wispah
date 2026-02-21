@@ -74,7 +74,7 @@ extension AppState {
     func startRecording() {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
-        guard !activeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard apiProvider == .local || !activeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             overlayManager.showError("\(apiProvider.displayName) API key not configured")
             statusText = "No API Key"
             return
@@ -284,8 +284,12 @@ extension AppState {
             } catch {}
         }
 
-        let transcriptionService = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
-        let postProcessingService = PostProcessingService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: llmModelId)
+        let transcriptionService: TranscriptionProvider = apiProvider == .local
+            ? LocalTranscriptionService(model: whisperModelId, language: transcriptionLanguage)
+            : TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
+        let postProcessingService: PostProcessingProvider = apiProvider == .local
+            ? LocalPostProcessingService(model: llmModelId)
+            : PostProcessingService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: llmModelId)
 
         // Build Whisper prompt as a fictitious preceding transcript.
         // Whisper treats the prompt as prior transcript text and matches its style —

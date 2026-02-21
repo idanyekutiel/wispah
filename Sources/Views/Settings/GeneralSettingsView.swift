@@ -165,8 +165,14 @@ struct GeneralSettingsView: View {
                 settingsCard("API Key", icon: "key.fill") {
                     apiKeySection
                 }
-                settingsCard("Transcription", icon: "waveform") {
-                    transcriptionSection
+                if appState.apiProvider == .local {
+                    settingsCard("Local Models", icon: "cpu") {
+                        LocalModelSettingsView()
+                    }
+                } else {
+                    settingsCard("Transcription", icon: "waveform") {
+                        transcriptionSection
+                    }
                 }
                 settingsCard("Language", icon: "globe") {
                     languageSection
@@ -376,43 +382,50 @@ struct GeneralSettingsView: View {
                 keyValidationSuccess = false
             }
 
-            HStack(spacing: 4) {
-                Text("Get an API key at")
+            if appState.apiProvider == .local {
+                Label("Fully offline — no API key needed", systemImage: "checkmark.seal.fill")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                Link(appState.apiProvider.keyHelpLabel, destination: URL(string: appState.apiProvider.keyHelpURL)!)
-                    .font(.caption)
-            }
-
-            HStack(spacing: 8) {
-                SecureField(appState.apiProvider.keyPlaceholder, text: $apiKeyInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(.body, design: .monospaced))
-                    .disabled(isValidatingKey)
-                    .onChange(of: apiKeyInput) { _ in
-                        keyValidationError = nil
-                        keyValidationSuccess = false
-                    }
-
-                Button(isValidatingKey ? "Validating..." : "Save") {
-                    validateAndSaveKey()
-                }
-                .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
-            }
-
-            if let error = keyValidationError {
-                Label(error, systemImage: "xmark.circle.fill")
-                    .foregroundStyle(.red)
-                    .font(.caption)
-            } else if keyValidationSuccess {
-                Label("API key saved", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-                    .font(.caption)
+            } else {
+                HStack(spacing: 4) {
+                    Text("Get an API key at")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Link(appState.apiProvider.keyHelpLabel, destination: URL(string: appState.apiProvider.keyHelpURL)!)
+                        .font(.caption)
+                }
+
+                HStack(spacing: 8) {
+                    SecureField(appState.apiProvider.keyPlaceholder, text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(.body, design: .monospaced))
+                        .disabled(isValidatingKey)
+                        .onChange(of: apiKeyInput) { _ in
+                            keyValidationError = nil
+                            keyValidationSuccess = false
+                        }
+
+                    Button(isValidatingKey ? "Validating..." : "Save") {
+                        validateAndSaveKey()
+                    }
+                    .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isValidatingKey)
+                }
+
+                if let error = keyValidationError {
+                    Label(error, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                        .font(.caption)
+                } else if keyValidationSuccess {
+                    Label("API key saved", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                }
             }
         }
     }
 
     private func validateAndSaveKey() {
+        guard appState.apiProvider.requiresAPIKey else { return }
         let key = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
         isValidatingKey = true
         keyValidationError = nil
@@ -428,6 +441,8 @@ struct GeneralSettingsView: View {
                         appState.apiKey = key
                     case .openai:
                         appState.openaiAPIKey = key
+                    case .local:
+                        break
                     }
                     keyValidationSuccess = true
                 } else {
