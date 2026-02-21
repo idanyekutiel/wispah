@@ -6,9 +6,13 @@
 
 ## Changelog
 
-- **Notarized releases** — DMG is now Apple notarized, no more right-click > Open needed on first launch
-- **Settings window persists after update** — if settings was open when you updated, it reopens automatically after relaunch
-- **Onboarding step sizing** — setup wizard steps now resize the window to fit each step's content
+- **Improved transcription quality** — Whisper prompt restructured to use natural context sentences instead of word lists, following OpenAI's prompting guide. Trailing speech padding increased to prevent clipping final words.
+- **Post-processing prompt overhaul** — Restructured with XML-scoped sections to eliminate contradicting instructions. Removed "fix grammar" (was causing sentence rewrites). Vocabulary matching softened to reduce false corrections.
+- **GPT-5 model family** — Added GPT-5 Nano (new default, cheapest), GPT-5 Mini, and GPT-5 as LLM options for OpenAI users. GPT-4.1 family still available.
+- **Developer mode improvements** — Now hints Whisper to expect technical speech. Post-processing preserves shorthand (won't expand "repo"), wraps inline code terms in backticks, and combines spelled-out acronyms.
+- **Expanded app context** — Added Claude Code, Replit, Xcode, JetBrains IDEs, Brave, Telegram, Teams, Linear, and more. Removed opinionated tone suggestions from messaging apps.
+- **Security** — XML wrapping on context inference inputs to prevent prompt injection. Saved audio files now get restricted permissions.
+- **Debug menu moved to dev builds only** — Debug Logs and Debug Overlay no longer appear for users with Developer Mode enabled in production.
 
 ## Requirements
 

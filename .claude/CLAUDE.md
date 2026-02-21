@@ -43,9 +43,9 @@ Menu bar app (`LSUIElement` in Info.plist). Central `AppState` (ObservableObject
 1. `HotkeyManager` detects key press (toggle or hold) → `AppState.startRecording()`
 2. `AudioRecorder` captures audio via `AVAudioEngine` → AAC/m4a file
 3. `AppContextService` captures screenshot + frontmost app context in parallel (via ScreenCaptureKit)
-4. On stop: audio preprocessed (downsample to 16kHz mono, trim trailing silence)
-5. `TranscriptionService` sends audio to Whisper API (Groq or OpenAI, based on active provider)
-6. `PostProcessingService` refines transcript using LLM with screen context
+4. On stop: audio preprocessed (downsample to 16kHz mono, trim to speech boundaries with 0.5s trailing padding)
+5. `TranscriptionService` sends audio to Whisper API (Groq or OpenAI, based on active provider). Custom vocabulary is sent as natural context in the `prompt` parameter ("Glossary of terms that may appear: ...") — never as a bare list, which causes hallucinations.
+6. `PostProcessingService` refines transcript using LLM with screen context. This is a **transcription cleanup tool**, not a writing assistant — the prompt must preserve the speaker's original words and sentence structure. Custom prompt can override this.
 7. Result copied to clipboard and pasted at cursor via accessibility (`Cmd+V` simulation)
 8. Entry saved to `PipelineHistoryStore` (CoreData), stats accumulated in `StatsStore`
 
@@ -115,7 +115,7 @@ Sources/
 All settings use `@Published` properties on `AppState` with `didSet` saving to `UserDefaults`. API keys use file-based storage via `KeychainStorage` (not actual Keychain — file in App Support dir). Separate keys stored per provider (`groq_api_key`, `openai_api_key`), one active at a time via `APIProvider` enum. `activeAPIKey` / `activeBaseURL` computed properties provide provider-agnostic access.
 
 ### Hotkey System
-Dual hotkey support: separate "toggle" key (press to start/stop) and "hold" key (hold to record, release to stop). Both stored as `HotkeyBinding` (Codable struct with keyCode + modifiers). If both are set to the same key, `recordingMode` determines behavior.
+Dual hotkey support: separate "toggle" key (press to start/stop) and "hold" key (hold to record, release to stop). Both stored as `HotkeyBinding` (Codable struct with keyCode + modifiers). If both are set to the same key, `recordingMode` determines behavior. Fn key emoji picker warning in setup is intentionally toggle-only — holding Fn does not trigger the emoji picker on macOS.
 
 ### Stats System
 `StatsStore` persists to `~/Library/Application Support/Wispah/stats.json`. Stores both all-time aggregates and per-day breakdowns (`dailyStats` dictionary keyed by `yyyy-MM-dd`). Supports period filtering via `stats(from: Date?)`. Stats collection is opt-in (toggle in Settings > Log Settings). Disabling shows confirmation and deletes all data. Stats tab is hidden when collection is disabled.
@@ -124,7 +124,7 @@ Dual hotkey support: separate "toggle" key (press to start/stop) and "hold" key 
 Uses [mediaremote-adapter](https://github.com/ungive/mediaremote-adapter) — runs `/usr/bin/perl` (which has `com.apple.perl` bundle ID) to load a compiled Obj-C framework that calls MediaRemote APIs. Needed because Apple blocks third-party bundle IDs from accessing `mediaremoted`. Framework + Perl script bundled in `Resources/MediaRemoteAdapter/`.
 
 ### Auto-Update
-`UpdateManager` checks GitHub Releases API (`idanyekutiel/wispah`). Compares `WispahBuildTag` from Info.plist against latest release tag using numeric version comparison. Downloads DMG → mounts (with signature verification) → verifies extracted .app with `codesign --verify --deep --strict` → copies .app → relaunches. 3-day stability buffer for auto-checks (skips very recent releases).
+`UpdateManager` (singleton, lives for app lifetime) checks GitHub Releases API (`idanyekutiel/wispah`). Compares `WispahBuildTag` from Info.plist against latest release tag using numeric version comparison. Downloads DMG → mounts (with signature verification) → verifies extracted .app with `codesign --verify --deep --strict` → copies .app → relaunches. 3-day stability buffer for auto-checks (skips very recent releases). Self-update uses a shell script that waits for the current PID to die before replacing the .app — `NSApp.terminate` after `process.run()` is intentional.
 
 ### Onboarding
 `SetupView` wizard: welcome → API key → mic → accessibility → screen recording → hotkeys → vocabulary → preferences (language + developer mode) → launch at login → test transcription → ready. Current step persisted to `UserDefaults("setupResumeStep")` so it resumes after app restart. Cleared on completion and on "Re-run Setup". Dev-only notes (e.g., rebuild permission warning) gated on `WispahBuildTag == nil`.
@@ -213,6 +213,9 @@ GitHub Secrets required for CI signing + notarization:
 - **NEVER push without explicit user approval.** Always wait for the user to confirm before running `git push`.
 - **NEVER add Co-Authored-By, attribution lines, or any self-credit to commit messages or PRs.** All commits should appear as authored solely by the user.
 
+### Onboarding
+When modifying any feature, check if it appears in the onboarding wizard (`SetupView.swift`). If it does, update the onboarding to match. The wizard covers: API key, mic, accessibility, screen recording, hotkeys, vocabulary, preferences, launch at login, and test transcription.
+
 ### Code Standards
 - Keep files focused — split large files into logical units (AppState extensions pattern)
 - Use MARK comments for sections within files
@@ -227,3 +230,7 @@ GitHub Secrets required for CI signing + notarization:
 - Set file permissions (0o600) on sensitive files (API key, audio recordings)
 - Differentiate HTTP status codes in API error messages (401 vs 429 vs 500)
 - Wrap user-supplied content in XML delimiters when sending to LLM (prompt injection protection)
+- Base URLs in `APIProvider` are hardcoded enum constants — force unwraps on URL construction from these are safe
+- `isStartingRecording` flag in `AppState+Recording` guards against double-start race conditions — do not remove
+- Audio speech detection uses dual thresholds: `silenceThresholdRMS` (0.005) for "any audio" and `speechThresholdRMS` (0.015) for "actual speech". Trimming uses the speech threshold with padding. Do not conflate the two.
+- OpenAI model defaults: `gpt-5-nano` (LLM), `gpt-5-mini` (vision), `gpt-4o-mini-transcribe` (Whisper). GPT-4.1 family kept as options for users who prefer them.

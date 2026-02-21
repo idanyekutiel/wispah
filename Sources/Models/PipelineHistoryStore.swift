@@ -25,7 +25,7 @@ final class PipelineHistoryStore {
 
         container.loadPersistentStores { description, error in
             if let error = error {
-                print("[PipelineHistoryStore] Failed to load persistent store at \(description.url?.path ?? "unknown"): \(error)")
+                os_log(.error, log: historyLog, "Failed to load persistent store at %{public}@: %{public}@", description.url?.path ?? "unknown", error.localizedDescription)
                 // Attempt to recover by destroying and recreating the store
                 if let storeURL = description.url {
                     try? FileManager.default.removeItem(at: storeURL)

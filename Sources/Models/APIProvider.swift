@@ -51,14 +51,14 @@ enum APIProvider: String, CaseIterable, Identifiable {
     var defaultLLMModel: String {
         switch self {
         case .groq: return "meta-llama/llama-4-scout-17b-16e-instruct"
-        case .openai: return "gpt-4.1-nano"
+        case .openai: return "gpt-5-nano"
         }
     }
 
     var defaultVisionModel: String {
         switch self {
         case .groq: return "meta-llama/llama-4-scout-17b-16e-instruct"
-        case .openai: return "gpt-4.1-mini"
+        case .openai: return "gpt-5-mini"
         }
     }
 
@@ -88,9 +88,12 @@ enum APIProvider: String, CaseIterable, Identifiable {
             ]
         case .openai:
             return [
-                (id: "gpt-4.1-nano", name: "GPT-4.1 Nano", description: "Fastest and cheapest. Great for simple formatting."),
-                (id: "gpt-4.1-mini", name: "GPT-4.1 Mini", description: "Best balance of speed, cost, and quality."),
-                (id: "gpt-4.1", name: "GPT-4.1", description: "Most capable. Higher cost.")
+                (id: "gpt-5-nano", name: "GPT-5 Nano (Recommended)", description: "Fastest and cheapest. Supports vision. $0.05/$0.40 per 1M tokens."),
+                (id: "gpt-5-mini", name: "GPT-5 Mini", description: "Great balance of speed, cost, and quality. Supports vision. $0.25/$2 per 1M tokens."),
+                (id: "gpt-5", name: "GPT-5", description: "Most capable. Supports vision. $1.25/$10 per 1M tokens."),
+                (id: "gpt-4.1-nano", name: "GPT-4.1 Nano", description: "Previous gen. Fast and cheap. $0.10/$0.40 per 1M tokens."),
+                (id: "gpt-4.1-mini", name: "GPT-4.1 Mini", description: "Previous gen. Good quality. $0.40/$1.60 per 1M tokens."),
+                (id: "gpt-4.1", name: "GPT-4.1", description: "Previous gen. Most capable 4.1. $2/$8 per 1M tokens.")
             ]
         }
     }

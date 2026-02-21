@@ -269,7 +269,7 @@ class AudioRecorder: NSObject, ObservableObject {
     var speechTimeRange: (start: Double, end: Double)? {
         guard detectedSpeech else { return nil }
         let start = max(firstSpeechTime - 0.15, 0)  // small pad before first word
-        let end = lastSpeechTime + 0.3               // pad after last word for tails
+        let end = lastSpeechTime + 0.5               // pad after last word for tails
         return (start, end)
     }
 

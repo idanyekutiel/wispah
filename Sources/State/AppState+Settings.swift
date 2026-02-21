@@ -37,6 +37,7 @@ extension AppState {
         let destURL = audioStorageDirectory().appendingPathComponent(fileName)
         do {
             try FileManager.default.copyItem(at: tempURL, to: destURL)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destURL.path)
             return fileName
         } catch {
             return nil

@@ -287,16 +287,30 @@ extension AppState {
         let transcriptionService = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
         let postProcessingService = PostProcessingService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: llmModelId)
 
-        // Build Whisper prompt from custom vocabulary — hints for specific words/spellings
+        // Build Whisper prompt as a fictitious preceding transcript.
+        // Whisper treats the prompt as prior transcript text and matches its style —
+        // it does NOT follow instructions. Longer prompts are more reliable.
+        // Terms embedded in natural sentences work better than glossary lists.
+        // Max 224 tokens (only the final 224 are considered). See:
+        // https://developers.openai.com/cookbook/examples/whisper_prompting_guide
         let whisperPrompt: String? = {
+            var sentences: [String] = []
+            if developerModeEnabled {
+                sentences.append("So I pushed the commit to the repo and opened a PR for the API changes. The CI pipeline ran the tests and everything passed. I need to refactor the config and update the env variables before deploying.")
+            }
             let vocab = customVocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !vocab.isEmpty else { return nil }
-            let terms = vocab
-                .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
-            guard !terms.isEmpty else { return nil }
-            return terms.joined(separator: ", ")
+            if !vocab.isEmpty {
+                let terms = vocab
+                    .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                if !terms.isEmpty {
+                    // Weave terms into natural sentences so Whisper learns spellings from context
+                    let joined = terms.joined(separator: ", ")
+                    sentences.append("Some of the key terms we've been discussing include \(joined). These come up frequently in conversation.")
+                }
+            }
+            return sentences.isEmpty ? nil : sentences.joined(separator: " ")
         }()
 
         transcriptionTask?.cancel()

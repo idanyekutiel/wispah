@@ -157,7 +157,7 @@ struct MenuBarView: View {
                 NotificationCenter.default.post(name: .showSetup, object: nil)
             }
 
-            if appState.developerModeEnabled {
+            if Bundle.main.infoDictionary?["WispahBuildTag"] == nil {
                 Button("Debug Logs") {
                     NotificationCenter.default.post(name: .showDebugLogs, object: nil)
                 }

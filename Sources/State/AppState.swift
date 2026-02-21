@@ -290,7 +290,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
         do {
             removedAudioFileNames = try pipelineHistoryStore.trim(to: storedMaxHistory)
         } catch {
-            print("Failed to trim pipeline history during init: \(error)")
+            os_log(.error, "Failed to trim pipeline history during init: %{public}@", error.localizedDescription)
         }
         for audioFileName in removedAudioFileNames {
             Self.deleteAudioFile(audioFileName)
