@@ -3,3 +3,4 @@ build/
 *.swp
 .env
 docs_tmp/
+.build

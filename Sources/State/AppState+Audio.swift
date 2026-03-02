@@ -8,6 +8,26 @@ extension AppState {
         availableMicrophones = AudioDevice.availableInputDevices()
     }
 
+    /// Verify the selected mic still exists after a device change. Falls back to "default" silently.
+    func validateSelectedMicrophone() {
+        let micID = selectedMicrophoneID
+        guard micID != "default" else { return }
+        let exists = availableMicrophones.contains(where: { $0.uid == micID })
+        if !exists {
+            os_log(.info, log: recordingLog, "selected mic %{public}@ no longer available — falling back to default", micID)
+            selectedMicrophoneID = "default"
+        }
+    }
+
+    /// Wire up the audioRecorder's onRecordingError callback to handle mid-recording failures.
+    func wireRecordingErrorHandler() {
+        audioRecorder.onRecordingError = { [weak self] message in
+            guard let self else { return }
+            os_log(.error, log: recordingLog, "mid-recording error: %{public}@", message)
+            self.handleMidRecordingError(message: message)
+        }
+    }
+
     // MARK: - Media Playback Detection & Control
     //
     // macOS 15.4+ blocks direct MediaRemote access for third-party apps.
@@ -200,22 +220,44 @@ extension AppState {
     }
 
     func installAudioDeviceListener() {
-        var propertyAddress = AudioObjectPropertyAddress(
+        // Listen for device list changes (additions/removals)
+        var devicesAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
-        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+        let devicesBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             DispatchQueue.main.async {
                 self?.refreshAvailableMicrophones()
+                self?.validateSelectedMicrophone()
             }
         }
-        audioDeviceListenerBlock = block
+        audioDeviceListenerBlock = devicesBlock
         AudioObjectAddPropertyListenerBlock(
             AudioObjectID(kAudioObjectSystemObject),
-            &propertyAddress,
+            &devicesAddress,
             DispatchQueue.main,
-            block
+            devicesBlock
+        )
+
+        // Listen for default input device changes (e.g. headphones connect/disconnect)
+        var defaultInputAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        let defaultInputBlock: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            DispatchQueue.main.async {
+                self?.refreshAvailableMicrophones()
+                self?.validateSelectedMicrophone()
+            }
+        }
+        defaultInputDeviceListenerBlock = defaultInputBlock
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &defaultInputAddress,
+            DispatchQueue.main,
+            defaultInputBlock
         )
     }
 }

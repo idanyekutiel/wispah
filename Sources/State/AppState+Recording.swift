@@ -162,8 +162,11 @@ extension AppState {
             guard let self else { return }
             let t0 = CFAbsoluteTimeGetCurrent()
             do {
-                try self.audioRecorder.startRecording(deviceUID: deviceUID)
+                let result = try self.audioRecorder.startRecording(deviceUID: deviceUID)
                 os_log(.info, log: recordingLog, "audioRecorder.startRecording() done: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+                if result.usedFallback {
+                    os_log(.info, log: recordingLog, "recording fell back to system default mic (requested: %{public}@)", deviceUID)
+                }
                 DispatchQueue.main.async {
                     self.isStartingRecording = false
                     if self.pendingStop {
@@ -208,6 +211,25 @@ extension AppState {
         }
 
         return "Failed to start recording: \(error.localizedDescription)"
+    }
+
+    /// Cleanly reset all recording state after a mid-recording failure (e.g. audio config change recovery failed).
+    func handleMidRecordingError(message: String) {
+        os_log(.error, log: recordingLog, "handleMidRecordingError: %{public}@", message)
+        handleAudioOnRecordingStop()
+        audioLevelCancellable?.cancel()
+        audioLevelCancellable = nil
+        contextCaptureTask?.cancel()
+        contextCaptureTask = nil
+        capturedContext = nil
+        isStartingRecording = false
+        pendingStop = false
+        isRecording = false
+        _ = audioRecorder.stopRecording()
+        audioRecorder.cleanup()
+        errorMessage = message
+        statusText = "Error"
+        overlayManager.showError(message)
     }
 
     func stopAndTranscribe() {

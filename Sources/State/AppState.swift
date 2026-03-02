@@ -271,6 +271,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     var capturedContext: AppContext?
     var hasShownScreenshotPermissionAlert = false
     var audioDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+    var defaultInputDeviceListenerBlock: AudioObjectPropertyListenerBlock?
     let pipelineHistoryStore = PipelineHistoryStore()
     let statsStore = StatsStore()
     var wasMediaPlayingBeforeRecording = false
@@ -437,6 +438,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         refreshAvailableMicrophones()
         installAudioDeviceListener()
+        wireRecordingErrorHandler()
     }
 
     /// Load a HotkeyBinding from UserDefaults, migrating from legacy string format if needed

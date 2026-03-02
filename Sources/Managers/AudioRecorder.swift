@@ -17,6 +17,12 @@ enum AudioRecorderError: LocalizedError {
     }
 }
 
+/// Indicates whether `startRecording` used the requested device or fell back to the system default.
+struct RecordingStartResult {
+    let usedFallback: Bool
+    let deviceUID: String?
+}
+
 class AudioRecorder: NSObject, ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var audioFile: AVAudioFile?
@@ -24,46 +30,81 @@ class AudioRecorder: NSObject, ObservableObject {
     private let audioFileQueue = DispatchQueue(label: "com.idanyekutiel.wispah.audiofile")
     private var recordingStartTime: CFAbsoluteTime = 0
     private var firstBufferLogged = false
-    private var bufferCount: Int = 0
     private var currentDeviceUID: String?
     private var storedInputFormat: AVAudioFormat?
     private var tapInstalled = false
+    private var configChangeObserver: NSObjectProtocol?
+
+    // MARK: - Thread-safe tap state
+
+    /// Lock protecting all tap-callback mutable state.
+    private let tapLock = NSLock()
+    private var bufferCount: Int = 0
+    private var speechBufferCount: Int = 0
+    private var readyFired = false
+    private var firstSpeechTime: TimeInterval = 0
+    private var lastSpeechTime: TimeInterval = 0
+    private var lastNonSilentTime: TimeInterval = 0
+    private var smoothedLevel: Float = 0.0
 
     @Published var isRecording = false
     @Published var audioLevel: Float = 0.0
-    private var smoothedLevel: Float = 0.0
-    /// Tracks time of last non-silent audio buffer for trailing silence trimming
-    private var lastNonSilentTime: TimeInterval = 0
     private let silenceThresholdRMS: Float = 0.005
-    /// Count of buffers with speech-level audio (above background noise)
-    private var speechBufferCount: Int = 0
     private let speechThresholdRMS: Float = 0.015
     /// Minimum speech buffers required (~0.3s of speech at 4096-sample buffers / 48kHz)
     private let minSpeechBuffers: Int = 4
-    /// Time of first and last speech-level audio (relative to recording start)
-    private var firstSpeechTime: TimeInterval = 0
-    private var lastSpeechTime: TimeInterval = 0
 
     /// Called on the audio thread when the first non-silent buffer arrives.
     var onRecordingReady: (() -> Void)?
-    private var readyFired = false
 
-    private func setupEngine(deviceUID: String? = nil) throws {
-        // Tear down old engine if device changed
-        if audioEngine != nil, currentDeviceUID != deviceUID {
-            removeTap()
-            audioEngine?.stop()
-            audioEngine = nil
+    /// Called when a mid-recording error occurs (e.g. config change recovery failure).
+    /// The error message is passed as the parameter. Called on the main queue.
+    var onRecordingError: ((String) -> Void)?
+
+    // MARK: - Reset tap state (lock-protected)
+
+    private func resetTapState() {
+        tapLock.lock()
+        defer { tapLock.unlock() }
+        bufferCount = 0
+        speechBufferCount = 0
+        readyFired = false
+        firstSpeechTime = 0
+        lastSpeechTime = 0
+        lastNonSilentTime = 0
+        smoothedLevel = 0.0
+    }
+
+    // MARK: - Engine lifecycle
+
+    /// Tears down the current engine completely — removes tap, stops engine, removes observer, nils engine.
+    private func tearDownEngine() {
+        removeTap()
+        removeConfigChangeObserver()
+        if let engine = audioEngine {
+            engine.stop()
+            os_log(.info, log: recordingLog, "tearDownEngine: engine stopped")
         }
-        guard audioEngine == nil else { return }
+        audioEngine = nil
+        currentDeviceUID = nil
+        storedInputFormat = nil
+    }
 
+    /// Builds a fresh AVAudioEngine targeting the given device, installs tap, starts engine.
+    /// If `deviceUID` is nil or "default", uses the system default input device.
+    /// Throws `missingInputDevice` if the target device doesn't exist.
+    private func buildAndStartEngine(deviceUID: String?) throws {
         let t0 = CFAbsoluteTimeGetCurrent()
         let engine = AVAudioEngine()
         os_log(.info, log: recordingLog, "AVAudioEngine created: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
 
-        // Set specific input device if requested
-        if let uid = deviceUID, !uid.isEmpty, uid != "default",
-           let deviceID = AudioDevice.deviceID(forUID: uid) {
+        // Validate and set the target input device
+        if let uid = deviceUID, !uid.isEmpty, uid != "default" {
+            // Specific device requested — must exist
+            guard let deviceID = AudioDevice.deviceID(forUID: uid) else {
+                os_log(.error, log: recordingLog, "requested device %{public}@ not found", uid)
+                throw AudioRecorderError.missingInputDevice
+            }
             os_log(.info, log: recordingLog, "device lookup resolved to %d for uid=%{public}@: %.3fms", deviceID, uid, (CFAbsoluteTimeGetCurrent() - t0) * 1000)
             guard let inputUnit = engine.inputNode.audioUnit else {
                 throw AudioRecorderError.invalidInputFormat("Could not access audio input unit")
@@ -78,6 +119,11 @@ class AudioRecorder: NSObject, ObservableObject {
                 UInt32(MemoryLayout<AudioDeviceID>.size)
             )
         } else {
+            // System default — verify one exists
+            guard AudioDevice.defaultInputDeviceUID() != nil else {
+                os_log(.error, log: recordingLog, "no default input device available")
+                throw AudioRecorderError.missingInputDevice
+            }
             os_log(.info, log: recordingLog, "using system default input device (uid=%{public}@)", deviceUID ?? "nil")
         }
 
@@ -95,7 +141,65 @@ class AudioRecorder: NSObject, ObservableObject {
         storedInputFormat = inputFormat
         self.audioEngine = engine
         self.currentDeviceUID = deviceUID
+
+        // Install tap
+        installTap()
+
+        // Register for config change notifications on this engine instance
+        registerConfigChangeObserver(for: engine)
+
+        // Start engine
+        engine.prepare()
+        os_log(.info, log: recordingLog, "engine prepared: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        try engine.start()
+        os_log(.info, log: recordingLog, "engine started: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
+
+    // MARK: - Config change observer
+
+    private func registerConfigChangeObserver(for engine: AVAudioEngine) {
+        removeConfigChangeObserver()
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.handleConfigChange()
+        }
+    }
+
+    private func removeConfigChangeObserver() {
+        if let observer = configChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configChangeObserver = nil
+        }
+    }
+
+    private func handleConfigChange() {
+        os_log(.info, log: recordingLog, "AVAudioEngineConfigurationChange received")
+        guard isRecording, let engine = audioEngine else { return }
+
+        // Attempt recovery: re-read format, reinstall tap, restart engine
+        do {
+            removeTap()
+            let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+                throw AudioRecorderError.invalidInputFormat("Post-config-change format invalid (rate=\(inputFormat.sampleRate), ch=\(inputFormat.channelCount))")
+            }
+            storedInputFormat = inputFormat
+            installTap()
+            engine.prepare()
+            try engine.start()
+            os_log(.info, log: recordingLog, "config change recovery succeeded (rate=%.0f, ch=%d)", inputFormat.sampleRate, inputFormat.channelCount)
+        } catch {
+            os_log(.error, log: recordingLog, "config change recovery failed: %{public}@", error.localizedDescription)
+            DispatchQueue.main.async { [weak self] in
+                self?.onRecordingError?("Audio device changed and recovery failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Tap management
 
     /// Install audio tap on the engine's input node.
     private func installTap() {
@@ -106,9 +210,7 @@ class AudioRecorder: NSObject, ObservableObject {
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             guard let self, self.isRecording else { return }
 
-            self.bufferCount += 1
-
-            // Check if this buffer has real audio
+            // Calculate RMS outside the lock
             var rms: Float = 0
             let frames = Int(buffer.frameLength)
             if frames > 0, let channelData = buffer.floatChannelData {
@@ -118,31 +220,41 @@ class AudioRecorder: NSObject, ObservableObject {
                 rms = sqrtf(sum / Float(frames))
             }
 
+            let elapsed = CFAbsoluteTimeGetCurrent() - self.recordingStartTime
+            var shouldFireReady = false
+            var currentBufferCount = 0
+
+            self.tapLock.lock()
+            self.bufferCount += 1
+            currentBufferCount = self.bufferCount
+
             // Track last non-silent buffer for trailing silence trimming
             if rms > self.silenceThresholdRMS {
-                self.lastNonSilentTime = CFAbsoluteTimeGetCurrent() - self.recordingStartTime
+                self.lastNonSilentTime = elapsed
             }
 
             // Track buffers with speech-level audio
             if rms > self.speechThresholdRMS {
                 self.speechBufferCount += 1
-                let elapsed = CFAbsoluteTimeGetCurrent() - self.recordingStartTime
                 if self.firstSpeechTime == 0 {
                     self.firstSpeechTime = elapsed
                 }
                 self.lastSpeechTime = elapsed
             }
 
-            if self.bufferCount <= 40 {
-                let elapsed = (CFAbsoluteTimeGetCurrent() - self.recordingStartTime) * 1000
-                os_log(.info, log: recordingLog, "buffer #%d at %.3fms, frames=%d, rms=%.6f", self.bufferCount, elapsed, buffer.frameLength, rms)
-            }
-
             // Fire ready callback on first non-silent buffer
             if !self.readyFired && rms > 0 {
                 self.readyFired = true
-                let elapsed = (CFAbsoluteTimeGetCurrent() - self.recordingStartTime) * 1000
-                os_log(.info, log: recordingLog, "FIRST non-silent buffer at %.3fms — recording ready", elapsed)
+                shouldFireReady = true
+            }
+            self.tapLock.unlock()
+
+            if currentBufferCount <= 40 {
+                os_log(.info, log: recordingLog, "buffer #%d at %.3fms, frames=%d, rms=%.6f", currentBufferCount, elapsed * 1000, buffer.frameLength, rms)
+            }
+
+            if shouldFireReady {
+                os_log(.info, log: recordingLog, "FIRST non-silent buffer at %.3fms — recording ready", elapsed * 1000)
                 self.onRecordingReady?()
             }
 
@@ -155,7 +267,7 @@ class AudioRecorder: NSObject, ObservableObject {
                     }
                 }
             }
-            self.computeAudioLevel(from: buffer)
+            self.computeAudioLevel(from: buffer, rms: rms)
         }
         tapInstalled = true
         os_log(.info, log: recordingLog, "tap installed")
@@ -169,32 +281,37 @@ class AudioRecorder: NSObject, ObservableObject {
         os_log(.info, log: recordingLog, "tap removed")
     }
 
-    func startRecording(deviceUID: String? = nil) throws {
+    // MARK: - Start / Stop recording
+
+    func startRecording(deviceUID: String? = nil) throws -> RecordingStartResult {
         let t0 = CFAbsoluteTimeGetCurrent()
         recordingStartTime = t0
         firstBufferLogged = false
-        bufferCount = 0
-        readyFired = false
-        speechBufferCount = 0
-        firstSpeechTime = 0
-        lastSpeechTime = 0
+        resetTapState()
 
         os_log(.info, log: recordingLog, "startRecording() entered, deviceUID=%{public}@", deviceUID ?? "nil")
 
-        // Reuse existing engine if same device, otherwise build new one
-        if let _ = audioEngine, currentDeviceUID == deviceUID {
-            os_log(.info, log: recordingLog, "reusing existing engine: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-        } else {
-            try setupEngine(deviceUID: deviceUID)
-        }
+        // Always tear down and create a fresh engine
+        tearDownEngine()
 
-        // Reinstall tap (removed on previous stop) and start engine
-        installTap()
-        if let engine = audioEngine, !engine.isRunning {
-            engine.prepare()
-            os_log(.info, log: recordingLog, "engine prepared: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-            try engine.start()
-            os_log(.info, log: recordingLog, "engine started: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        var usedFallback = false
+        var effectiveDeviceUID = deviceUID
+
+        do {
+            try buildAndStartEngine(deviceUID: deviceUID)
+        } catch {
+            os_log(.error, log: recordingLog, "engine start failed for device %{public}@: %{public}@, retrying with default", deviceUID ?? "nil", error.localizedDescription)
+            tearDownEngine()
+
+            // Retry once with system default
+            if deviceUID != nil && deviceUID != "default" {
+                try buildAndStartEngine(deviceUID: nil)
+                usedFallback = true
+                effectiveDeviceUID = nil
+                os_log(.info, log: recordingLog, "fallback to default device succeeded")
+            } else {
+                throw error
+            }
         }
 
         guard let inputFormat = storedInputFormat else {
@@ -251,70 +368,67 @@ class AudioRecorder: NSObject, ObservableObject {
         audioFileQueue.sync { self.audioFile = newAudioFile }
         DispatchQueue.main.async { self.isRecording = true }
         os_log(.info, log: recordingLog, "startRecording() complete: %.3fms total", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+
+        return RecordingStartResult(usedFallback: usedFallback, deviceUID: effectiveDeviceUID)
     }
 
     /// Duration (in seconds) of the recording up to the last non-silent audio.
     /// Use this to trim trailing silence before uploading.
     var lastNonSilentDuration: TimeInterval {
+        tapLock.lock()
+        defer { tapLock.unlock() }
         // Add a small buffer (0.3s) to avoid cutting off speech tails
         return lastNonSilentTime > 0 ? lastNonSilentTime + 0.3 : 0
     }
 
     /// Whether the recording contained enough speech-level audio (not just background noise).
     /// Requires multiple consecutive speech-level buffers to filter out noise spikes.
-    var detectedSpeech: Bool { speechBufferCount >= minSpeechBuffers }
+    var detectedSpeech: Bool {
+        tapLock.lock()
+        defer { tapLock.unlock() }
+        return speechBufferCount >= minSpeechBuffers
+    }
 
     /// Time range of detected speech with small padding to preserve natural speech tails.
     /// Returns (start, end) in seconds from recording start, or nil if no speech detected.
     var speechTimeRange: (start: Double, end: Double)? {
-        guard detectedSpeech else { return nil }
+        tapLock.lock()
+        defer { tapLock.unlock() }
+        guard speechBufferCount >= minSpeechBuffers else { return nil }
         let start = max(firstSpeechTime - 0.15, 0)  // small pad before first word
         let end = lastSpeechTime + 0.5               // pad after last word for tails
         return (start, end)
     }
 
     func stopRecording() -> URL? {
+        tapLock.lock()
+        let bc = bufferCount
+        let sbc = speechBufferCount
+        let lnst = lastNonSilentTime
+        tapLock.unlock()
+
         let elapsed = (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000
-        os_log(.info, log: recordingLog, "stopRecording() called: %.3fms after start, %d buffers received, speechBuffers=%d", elapsed, bufferCount, speechBufferCount)
-        os_log(.info, log: recordingLog, "last non-silent audio at %.2fs", lastNonSilentTime)
+        os_log(.info, log: recordingLog, "stopRecording() called: %.3fms after start, %d buffers received, speechBuffers=%d", elapsed, bc, sbc)
+        os_log(.info, log: recordingLog, "last non-silent audio at %.2fs", lnst)
 
         audioFileQueue.sync { audioFile = nil }
         DispatchQueue.main.async { self.isRecording = false }
+        tapLock.lock()
         smoothedLevel = 0.0
+        tapLock.unlock()
         DispatchQueue.main.async { self.audioLevel = 0.0 }
 
-        // Remove tap + stop engine so mic is released and indicator goes away.
-        // Engine is kept alive for fast reuse — only the tap is reinstalled on next start.
-        removeTap()
-        audioEngine?.stop()
+        // Tear down engine completely — fresh one created on next start
+        tearDownEngine()
         onRecordingReady = nil
-        os_log(.info, log: recordingLog, "engine stopped, tap removed (mic released)")
+        os_log(.info, log: recordingLog, "engine torn down (mic released)")
 
         return tempFileURL
     }
 
-    private func computeAudioLevel(from buffer: AVAudioPCMBuffer) {
+    private func computeAudioLevel(from buffer: AVAudioPCMBuffer, rms: Float) {
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return }
-
-        var sumOfSquares: Float = 0.0
-        if let channelData = buffer.floatChannelData {
-            let samples = channelData[0]
-            for i in 0..<frames {
-                let sample = samples[i]
-                sumOfSquares += sample * sample
-            }
-        } else if let channelData = buffer.int16ChannelData {
-            let samples = channelData[0]
-            for i in 0..<frames {
-                let sample = Float(samples[i]) / Float(Int16.max)
-                sumOfSquares += sample * sample
-            }
-        } else {
-            return
-        }
-
-        let rms = sqrtf(sumOfSquares / Float(frames))
 
         // Logarithmic scaling for better sensitivity to normal speech levels
         // dB range: -50 (near-silence) to -10 (loud speech)
@@ -323,15 +437,18 @@ class AudioRecorder: NSObject, ObservableObject {
         let maxDb: Float = -10
         let scaled = max(0, min(1, (db - minDb) / (maxDb - minDb)))
 
+        tapLock.lock()
         // Fast attack, slower release — follows speech dynamics closely
         if scaled > smoothedLevel {
             smoothedLevel = smoothedLevel * 0.3 + scaled * 0.7
         } else {
             smoothedLevel = smoothedLevel * 0.6 + scaled * 0.4
         }
+        let level = smoothedLevel
+        tapLock.unlock()
 
         DispatchQueue.main.async {
-            self.audioLevel = self.smoothedLevel
+            self.audioLevel = level
         }
     }
 
@@ -437,15 +554,9 @@ class AudioRecorder: NSObject, ObservableObject {
     /// Forcefully start the audio engine to claim the mic (debug: triggers BT profile switch).
     func captureAudio(deviceUID: String? = nil) {
         do {
-            if audioEngine == nil || currentDeviceUID != deviceUID {
-                try setupEngine(deviceUID: deviceUID)
-            }
-            installTap()
-            if let engine = audioEngine, !engine.isRunning {
-                engine.prepare()
-                try engine.start()
-                os_log(.info, log: recordingLog, "captureAudio: engine started (mic claimed)")
-            }
+            tearDownEngine()
+            try buildAndStartEngine(deviceUID: deviceUID)
+            os_log(.info, log: recordingLog, "captureAudio: engine started (mic claimed)")
         } catch {
             os_log(.error, log: recordingLog, "captureAudio failed: %{public}@", error.localizedDescription)
         }
@@ -454,14 +565,8 @@ class AudioRecorder: NSObject, ObservableObject {
     /// Forcefully tear down the audio engine to release all mic claims.
     /// Use when Bluetooth headphones are stuck in low-quality mode.
     func releaseAudio() {
-        removeTap()
-        if let engine = audioEngine {
-            engine.stop()
-            os_log(.info, log: recordingLog, "releaseAudio: engine fully torn down")
-        }
-        audioEngine = nil
-        currentDeviceUID = nil
-        storedInputFormat = nil
+        tearDownEngine()
+        os_log(.info, log: recordingLog, "releaseAudio: engine fully torn down")
     }
 
     func cleanup() {

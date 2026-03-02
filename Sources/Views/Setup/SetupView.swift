@@ -1187,7 +1187,7 @@ struct SetupView: View {
         }
         do {
             let recorder = AudioRecorder()
-            try recorder.startRecording(deviceUID: appState.selectedMicrophoneID)
+            _ = try recorder.startRecording(deviceUID: appState.selectedMicrophoneID)
             testAudioRecorder = recorder
             testRecordingStartTime = Date()
             testAudioLevelCancellable = recorder.$audioLevel
