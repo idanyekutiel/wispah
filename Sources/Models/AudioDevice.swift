@@ -45,8 +45,10 @@ struct AudioDevice: Identifiable {
             guard AudioObjectGetPropertyDataSize(deviceID, &inputStreamAddress, 0, nil, &streamSize) == noErr,
                   streamSize > 0 else { continue }
 
-            let bufferListPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
-            defer { bufferListPointer.deallocate() }
+            // AudioBufferList is variable-length — allocate based on actual streamSize
+            let bufferListRawPointer = UnsafeMutableRawPointer.allocate(byteCount: Int(streamSize), alignment: MemoryLayout<AudioBufferList>.alignment)
+            defer { bufferListRawPointer.deallocate() }
+            let bufferListPointer = bufferListRawPointer.bindMemory(to: AudioBufferList.self, capacity: 1)
             guard AudioObjectGetPropertyData(deviceID, &inputStreamAddress, 0, nil, &streamSize, bufferListPointer) == noErr else { continue }
 
             let bufferList = UnsafeMutableAudioBufferListPointer(bufferListPointer)
