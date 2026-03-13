@@ -6,10 +6,7 @@
 
 ## Changelog
 
-- **More reliable audio recording** — Recording no longer crashes or fails silently when headphones connect/disconnect, Bluetooth drops, AirPlay routing changes, or audio devices are added/removed mid-session.
-- **Automatic recovery on device changes** — If the audio configuration changes during recording (e.g. unplugging headphones), Wispah now attempts to recover and continue recording instead of failing silently.
-- **Smart microphone fallback** — If your selected microphone is unavailable when you start recording (e.g. Bluetooth headphones turned off), Wispah automatically falls back to the system default mic instead of erroring out.
-- **Selected mic validation** — When audio devices change, Wispah checks if your selected microphone still exists and silently falls back to the system default if it doesn't.
+- **Fix crash with Apple Studio Display** — The app would crash on launch if a Studio Display was connected. Fixed a heap overflow in audio device enumeration that was triggered by the Studio Display's multi-microphone array.
 
 ## Requirements
 
