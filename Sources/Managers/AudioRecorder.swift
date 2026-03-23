@@ -138,7 +138,14 @@ class AudioRecorder: NSObject, ObservableObject {
             throw AudioRecorderError.invalidInputFormat("No input channels available")
         }
 
-        storedInputFormat = inputFormat
+        // Always use mono format for the tap — AVAudioEngine will downmix internally.
+        // Multi-channel devices (AirPods Max, Studio Display 3-mic array) deliver
+        // multi-channel buffers that crash when written to a mono output file.
+        guard let monoFormat = AVAudioFormat(standardFormatWithSampleRate: inputFormat.sampleRate, channels: 1) else {
+            throw AudioRecorderError.invalidInputFormat("Could not create mono format at \(inputFormat.sampleRate)Hz")
+        }
+        os_log(.info, log: recordingLog, "native format: rate=%.0f ch=%d → mono tap format", inputFormat.sampleRate, inputFormat.channelCount)
+        storedInputFormat = monoFormat
         self.audioEngine = engine
         self.currentDeviceUID = deviceUID
 
@@ -177,20 +184,17 @@ class AudioRecorder: NSObject, ObservableObject {
 
     private func handleConfigChange() {
         os_log(.info, log: recordingLog, "AVAudioEngineConfigurationChange received")
-        guard isRecording, let engine = audioEngine else { return }
+        guard isRecording else { return }
 
-        // Attempt recovery: re-read format, reinstall tap, restart engine
+        // Full teardown + rebuild is the only safe recovery after a config change.
+        // Trying to reinstall taps on a partially-reset engine causes an ObjC
+        // NSException ("required condition is false: !_tapNode") inside
+        // AVAudioNode.installTapOnBus that Swift's do/catch cannot intercept.
+        let deviceUID = currentDeviceUID
         do {
-            removeTap()
-            let inputFormat = engine.inputNode.outputFormat(forBus: 0)
-            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-                throw AudioRecorderError.invalidInputFormat("Post-config-change format invalid (rate=\(inputFormat.sampleRate), ch=\(inputFormat.channelCount))")
-            }
-            storedInputFormat = inputFormat
-            installTap()
-            engine.prepare()
-            try engine.start()
-            os_log(.info, log: recordingLog, "config change recovery succeeded (rate=%.0f, ch=%d)", inputFormat.sampleRate, inputFormat.channelCount)
+            tearDownEngine()
+            try buildAndStartEngine(deviceUID: deviceUID)
+            os_log(.info, log: recordingLog, "config change recovery succeeded (full engine rebuild)")
         } catch {
             os_log(.error, log: recordingLog, "config change recovery failed: %{public}@", error.localizedDescription)
             DispatchQueue.main.async { [weak self] in
@@ -274,9 +278,13 @@ class AudioRecorder: NSObject, ObservableObject {
     }
 
     /// Remove the audio tap from the engine's input node.
+    /// Always attempts removal regardless of `tapInstalled` flag — the flag can
+    /// get out of sync after config changes, and `removeTap(onBus:)` is a safe no-op
+    /// when no tap exists.
     private func removeTap() {
-        guard tapInstalled, let engine = audioEngine else { return }
-        engine.inputNode.removeTap(onBus: 0)
+        if let engine = audioEngine {
+            engine.inputNode.removeTap(onBus: 0)
+        }
         tapInstalled = false
         os_log(.info, log: recordingLog, "tap removed")
     }
