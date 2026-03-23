@@ -6,7 +6,7 @@
 
 ## Changelog
 
-- **Fix crash with Apple Studio Display** — The app would crash on launch if a Studio Display was connected. Fixed a heap overflow in audio device enumeration that was triggered by the Studio Display's multi-microphone array.
+- **Fix crash when using AirPods Max** — Resolved an audio crash that occurred with AirPods Max and other multi-channel audio devices.
 
 ## Requirements
 
