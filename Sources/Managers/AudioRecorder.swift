@@ -184,21 +184,50 @@ class AudioRecorder: NSObject, ObservableObject {
 
     private func handleConfigChange() {
         os_log(.info, log: recordingLog, "AVAudioEngineConfigurationChange received")
-        guard isRecording else { return }
+        guard let engine = audioEngine else { return }
 
-        // Full teardown + rebuild is the only safe recovery after a config change.
-        // Trying to reinstall taps on a partially-reset engine causes an ObjC
-        // NSException ("required condition is false: !_tapNode") inside
-        // AVAudioNode.installTapOnBus that Swift's do/catch cannot intercept.
-        let deviceUID = currentDeviceUID
-        do {
-            tearDownEngine()
-            try buildAndStartEngine(deviceUID: deviceUID)
-            os_log(.info, log: recordingLog, "config change recovery succeeded (full engine rebuild)")
-        } catch {
-            os_log(.error, log: recordingLog, "config change recovery failed: %{public}@", error.localizedDescription)
-            DispatchQueue.main.async { [weak self] in
-                self?.onRecordingError?("Audio device changed and recovery failed: \(error.localizedDescription)")
+        if isRecording {
+            // Mid-recording: full teardown + rebuild is the only safe recovery.
+            // Trying to reinstall taps on a partially-reset engine causes an ObjC
+            // NSException ("required condition is false: !_tapNode") inside
+            // AVAudioNode.installTapOnBus that Swift's do/catch cannot intercept.
+            let deviceUID = currentDeviceUID
+            do {
+                tearDownEngine()
+                try buildAndStartEngine(deviceUID: deviceUID)
+                os_log(.info, log: recordingLog, "config change recovery succeeded (full engine rebuild)")
+            } catch {
+                os_log(.error, log: recordingLog, "config change recovery failed: %{public}@", error.localizedDescription)
+                DispatchQueue.main.async { [weak self] in
+                    self?.onRecordingError?("Audio device changed and recovery failed: \(error.localizedDescription)")
+                }
+            }
+        } else {
+            // During startup (isRecording not yet set): the engine was stopped by
+            // the config change but taps/connections are preserved. Re-assert the
+            // target device (BT route changes can override it) and restart.
+            // This happens when connected BT devices (e.g. AirPods Max) trigger an
+            // audio route renegotiation even when using the built-in mic.
+            do {
+                if let uid = currentDeviceUID, !uid.isEmpty, uid != "default",
+                   let deviceID = AudioDevice.deviceID(forUID: uid),
+                   let inputUnit = engine.inputNode.audioUnit {
+                    var id = deviceID
+                    AudioUnitSetProperty(
+                        inputUnit,
+                        kAudioOutputUnitProperty_CurrentDevice,
+                        kAudioUnitScope_Global,
+                        0,
+                        &id,
+                        UInt32(MemoryLayout<AudioDeviceID>.size)
+                    )
+                    os_log(.info, log: recordingLog, "config change: re-asserted device %{public}@", uid)
+                }
+                engine.prepare()
+                try engine.start()
+                os_log(.info, log: recordingLog, "config change recovery succeeded (engine restart during startup)")
+            } catch {
+                os_log(.error, log: recordingLog, "config change engine restart failed: %{public}@", error.localizedDescription)
             }
         }
     }
@@ -212,7 +241,7 @@ class AudioRecorder: NSObject, ObservableObject {
 
         let inputNode = engine.inputNode
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            guard let self, self.isRecording else { return }
+            guard let self else { return }
 
             // Calculate RMS outside the lock
             var rms: Float = 0
