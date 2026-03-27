@@ -366,10 +366,10 @@ extension AppState {
                 var rawResult: String
                 do {
                     rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
-                } catch let error as TranscriptionError where error.isTimeout {
-                    os_log(.info, log: recordingLog, "transcription timed out — retrying once")
+                } catch let error where Self.isTransientNetworkError(error) {
+                    os_log(.info, log: recordingLog, "transcription failed with transient error — retrying once: %{public}@", error.localizedDescription)
                     await MainActor.run { [weak self] in
-                        self?.debugStatusMessage = "Transcription timed out, retrying…"
+                        self?.debugStatusMessage = "Connection issue, retrying…"
                     }
                     rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
                 }
@@ -515,6 +515,30 @@ extension AppState {
                 }
             }
         }
+    }
+
+    // MARK: - Network error classification
+
+    /// Returns true for transient network errors that are worth retrying once
+    /// (connection lost, timeout, DNS failure, etc.)
+    private static func isTransientNetworkError(_ error: Error) -> Bool {
+        if let transcriptionError = error as? TranscriptionError, transcriptionError.isTimeout {
+            return true
+        }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut, .networkConnectionLost, .notConnectedToInternet,
+                 .dnsLookupFailed, .cannotConnectToHost, .secureConnectionFailed:
+                return true
+            default:
+                return false
+            }
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain {
+            return [-1001, -1005, -1009, -1003, -1004, -1200].contains(nsError.code)
+        }
+        return false
     }
 
     // MARK: - Debug Overlay
