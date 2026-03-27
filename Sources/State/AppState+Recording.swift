@@ -363,7 +363,16 @@ extension AppState {
                     self?.debugStatusMessage = "Transcribing audio"
                 }
 
-                var rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                var rawResult: String
+                do {
+                    rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                } catch let error as TranscriptionError where error.isTimeout {
+                    os_log(.info, log: recordingLog, "transcription timed out — retrying once")
+                    await MainActor.run { [weak self] in
+                        self?.debugStatusMessage = "Transcription timed out, retrying…"
+                    }
+                    rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                }
 
                 // Smart retry: if transcript is empty but recording was long enough, retry once
                 if rawResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimDuration > 1.5 {

@@ -227,4 +227,9 @@ enum TranscriptionError: LocalizedError {
         case .pollFailed(let msg): return "Polling failed: \(msg)"
         }
     }
+
+    var isTimeout: Bool {
+        if case .transcriptionTimedOut = self { return true }
+        return false
+    }
 }
