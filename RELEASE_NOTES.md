@@ -6,8 +6,7 @@
 
 ## Changelog
 
-- **Fix recording getting stuck on "loading" with Bluetooth headphones** — Resolved an issue where starting a recording while Bluetooth headphones were connected could cause the app to hang in the loading state.
-- **Auto-retry on transcription timeout** — If a transcription request times out, the app now automatically retries once before showing an error.
+- **Improved transcription retry logic** — Enhanced the automatic retry mechanism for failed transcription requests with better error handling.
 
 ## Requirements
 
