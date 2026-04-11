@@ -10,6 +10,12 @@ import os.log
 
 let recordingLog = OSLog(subsystem: "com.idanyekutiel.wispah", category: "Recording")
 
+enum RecordingTrigger {
+    case direct
+    case hold
+    case toggle
+}
+
 final class AppState: ObservableObject, @unchecked Sendable {
     let apiKeyStorageKey = "groq_api_key"
     private let customVocabularyStorageKey = "custom_vocabulary"
@@ -219,6 +225,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var isRecording = false
     /// True while the audio engine is still starting (between beginRecording and startRecording success/failure)
     var isStartingRecording = false
+    /// True while the user is responding to the first-time microphone permission prompt.
+    var isAwaitingMicrophonePermission = false
+    /// Remembers what triggered the pending microphone permission request so hold-to-record can be cancelled correctly.
+    var pendingPermissionRecordingTrigger: RecordingTrigger?
     /// Set when user releases hold key during engine startup — deferred stop fires once engine is ready
     var pendingStop = false
     @Published var isTranscribing = false

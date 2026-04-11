@@ -6,16 +6,20 @@ import os.log
 extension AppState {
     func refreshAvailableMicrophones() {
         availableMicrophones = AudioDevice.availableInputDevices()
+        validateSelectedMicrophone()
     }
 
     /// Verify the selected mic still exists after a device change. Falls back to "default" silently.
     func validateSelectedMicrophone() {
-        let micID = selectedMicrophoneID
+        let micID = AudioDevice.normalizedSelectionUID(selectedMicrophoneID) ?? AudioDevice.systemDefaultSelectionUID
+        if micID != selectedMicrophoneID {
+            selectedMicrophoneID = micID
+        }
         guard micID != "default" else { return }
         let exists = availableMicrophones.contains(where: { $0.uid == micID })
         if !exists {
             os_log(.info, log: recordingLog, "selected mic %{public}@ no longer available — falling back to default", micID)
-            selectedMicrophoneID = "default"
+            selectedMicrophoneID = AudioDevice.systemDefaultSelectionUID
         }
     }
 

@@ -28,7 +28,7 @@ final class PipelineHistoryStore {
                 os_log(.error, log: historyLog, "Failed to load persistent store at %{public}@: %{public}@", description.url?.path ?? "unknown", error.localizedDescription)
                 // Attempt to recover by destroying and recreating the store
                 if let storeURL = description.url {
-                    try? FileManager.default.removeItem(at: storeURL)
+                    Self.removeStoreFiles(at: storeURL)
                     self.container.loadPersistentStores { _, retryError in
                         if let retryError = retryError {
                             let message = "Failed to recreate store: \(retryError.localizedDescription)"
@@ -212,6 +212,19 @@ final class PipelineHistoryStore {
         attribute.attributeType = type
         attribute.isOptional = isOptional
         return attribute
+    }
+
+    private static func removeStoreFiles(at storeURL: URL) {
+        let fileManager = FileManager.default
+        let relatedURLs = [
+            storeURL,
+            storeURL.appendingPathExtension("wal"),
+            storeURL.appendingPathExtension("shm"),
+        ]
+
+        for url in relatedURLs where fileManager.fileExists(atPath: url.path) {
+            try? fileManager.removeItem(at: url)
+        }
     }
 }
 

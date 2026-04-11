@@ -29,7 +29,7 @@ extension AppState {
         os_log(.info, log: recordingLog, "handleHotkeyDown() fired, key=%{public}@, isRecording=%{public}d, isTranscribing=%{public}d", binding.displayName, isRecording, isTranscribing)
         if binding == holdHotkey && binding != toggleHotkey {
             guard !isRecording && !isTranscribing else { return }
-            startRecording()
+            startRecording(trigger: .hold)
         } else if binding == toggleHotkey && binding != holdHotkey {
             guard !isTranscribing else { return }
             toggleRecording()
@@ -37,7 +37,7 @@ extension AppState {
             switch recordingMode {
             case .holdToRecord:
                 guard !isRecording && !isTranscribing else { return }
-                startRecording()
+                startRecording(trigger: .hold)
             case .toggleToRecord:
                 guard !isTranscribing else { return }
                 toggleRecording()
@@ -47,6 +47,10 @@ extension AppState {
 
     func handleHotkeyUp(binding: HotkeyBinding) {
         if binding == holdHotkey && binding != toggleHotkey {
+            if !isRecording && isAwaitingMicrophonePermission && pendingPermissionRecordingTrigger == .hold {
+                pendingPermissionRecordingTrigger = nil
+                return
+            }
             guard isRecording else { return }
             stopAndTranscribe()
         } else if binding == toggleHotkey && binding != holdHotkey {
@@ -54,6 +58,10 @@ extension AppState {
         } else {
             switch recordingMode {
             case .holdToRecord:
+                if !isRecording && isAwaitingMicrophonePermission && pendingPermissionRecordingTrigger == .hold {
+                    pendingPermissionRecordingTrigger = nil
+                    return
+                }
                 guard isRecording else { return }
                 stopAndTranscribe()
             case .toggleToRecord:
@@ -67,11 +75,11 @@ extension AppState {
         if isRecording {
             stopAndTranscribe()
         } else {
-            startRecording()
+            startRecording(trigger: .toggle)
         }
     }
 
-    func startRecording() {
+    func startRecording(trigger: RecordingTrigger = .direct) {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
         guard !activeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -86,31 +94,43 @@ extension AppState {
             return
         }
         os_log(.info, log: recordingLog, "accessibility check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-        guard ensureMicrophoneAccess() else { return }
+        guard ensureMicrophoneAccess(trigger: trigger) else { return }
         os_log(.info, log: recordingLog, "mic access check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         beginRecording()
         os_log(.info, log: recordingLog, "startRecording() finished: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
 
-    func ensureMicrophoneAccess() -> Bool {
+    func ensureMicrophoneAccess(trigger: RecordingTrigger) -> Bool {
         let status = AVCaptureDevice.authorizationStatus(for: .audio)
         switch status {
         case .authorized:
+            isAwaitingMicrophonePermission = false
+            pendingPermissionRecordingTrigger = nil
             return true
         case .notDetermined:
+            isAwaitingMicrophonePermission = true
+            pendingPermissionRecordingTrigger = trigger
             AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
                 DispatchQueue.main.async {
+                    guard let self else { return }
+                    let pendingTrigger = self.pendingPermissionRecordingTrigger
+                    self.pendingPermissionRecordingTrigger = nil
+                    self.isAwaitingMicrophonePermission = false
+
                     if granted {
-                        self?.beginRecording()
+                        guard pendingTrigger != nil else { return }
+                        self.beginRecording()
                     } else {
-                        self?.errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
-                        self?.statusText = "No Microphone"
-                        self?.showMicrophonePermissionAlert()
+                        self.errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
+                        self.statusText = "No Microphone"
+                        self.showMicrophonePermissionAlert()
                     }
                 }
             }
             return false
         default:
+            isAwaitingMicrophonePermission = false
+            pendingPermissionRecordingTrigger = nil
             errorMessage = "Microphone permission denied. Grant access in System Settings > Privacy & Security > Microphone."
             statusText = "No Microphone"
             showMicrophonePermissionAlert()
@@ -184,6 +204,7 @@ extension AppState {
             } catch {
                 DispatchQueue.main.async {
                     initTimer.cancel()
+                    self.handleAudioOnRecordingStop()
                     self.isStartingRecording = false
                     self.pendingStop = false
                     self.isRecording = false
@@ -338,12 +359,14 @@ extension AppState {
         transcriptionTask?.cancel()
         transcriptionTask = Task {
             do {
-                // Preprocess: downsample to 16KHz mono AAC + trim to speech boundaries
+                // Preprocess: downsample to 16KHz mono AAC and trim only leading/trailing silence.
+                // Internal pauses must survive; trimming to the last speech-level frame is too aggressive
+                // for long dictation where later speech is quieter than the initial section.
                 let uploadURL: URL
                 do {
                     uploadURL = try await audioRecorder.preprocessAudio(
                         inputURL: fileURL,
-                        trimToSeconds: speechRange?.end,
+                        trimToSeconds: trimDuration > 0 ? trimDuration : nil,
                         skipLeadingSeconds: speechRange?.start ?? 0
                     )
                     // Overwrite saved audio with the trimmed version (what Whisper hears)
@@ -523,11 +546,11 @@ extension AppState {
     /// (connection lost, timeout, DNS failure, etc.)
     private static func isTransientNetworkError(_ error: Error) -> Bool {
         if let transcriptionError = error as? TranscriptionError, transcriptionError.isTimeout {
-            return true
+            return false
         }
         if let urlError = error as? URLError {
             switch urlError.code {
-            case .timedOut, .networkConnectionLost, .notConnectedToInternet,
+            case .networkConnectionLost, .notConnectedToInternet,
                  .dnsLookupFailed, .cannotConnectToHost, .secureConnectionFailed:
                 return true
             default:
@@ -536,7 +559,7 @@ extension AppState {
         }
         let nsError = error as NSError
         if nsError.domain == NSURLErrorDomain {
-            return [-1001, -1005, -1009, -1003, -1004, -1200].contains(nsError.code)
+            return [-1005, -1009, -1003, -1004, -1200].contains(nsError.code)
         }
         return false
     }

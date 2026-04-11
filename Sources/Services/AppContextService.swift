@@ -24,6 +24,8 @@ final class AppContextService {
     private let baseURL: String
     private let fallbackTextModel: String
     private let visionModel: String
+    private let contextInferenceTimeoutSeconds: TimeInterval = 4
+    private let contextInferenceRequestTimeoutSeconds: TimeInterval = 3
     private let maxScreenshotDataURILength = 500_000
     private let screenshotCompressionPrimary = 0.5
     private let screenshotMaxDimension: CGFloat = 1024
@@ -114,26 +116,40 @@ final class AppContextService {
         selectedText: String?,
         screenshotDataURL: String?
     ) async -> (activity: String, prompt: String)? {
-        let modelsToTry = [
-            screenshotDataURL != nil ? visionModel : fallbackTextModel,
-            fallbackTextModel
-        ]
+        return await withTaskGroup(of: (activity: String, prompt: String)?.self) { group in
+            group.addTask { [self] in
+                let modelsToTry = [
+                    screenshotDataURL != nil ? visionModel : fallbackTextModel,
+                    fallbackTextModel
+                ]
 
-        for model in modelsToTry {
-            let screenshotPayload = model == visionModel ? screenshotDataURL : nil
-            if let inferred = await inferActivityWithLLM(
-                appName: appName,
-                bundleIdentifier: bundleIdentifier,
-                windowTitle: windowTitle,
-                selectedText: selectedText,
-                screenshotDataURL: screenshotPayload,
-                model: model
-            ) {
-                return inferred
+                for model in modelsToTry {
+                    guard !Task.isCancelled else { return nil }
+                    let screenshotPayload = model == visionModel ? screenshotDataURL : nil
+                    if let inferred = await inferActivityWithLLM(
+                        appName: appName,
+                        bundleIdentifier: bundleIdentifier,
+                        windowTitle: windowTitle,
+                        selectedText: selectedText,
+                        screenshotDataURL: screenshotPayload,
+                        model: model
+                    ) {
+                        return inferred
+                    }
+                }
+
+                return nil
             }
-        }
 
-        return nil
+            group.addTask { [contextInferenceTimeoutSeconds] in
+                try? await Task.sleep(nanoseconds: UInt64(contextInferenceTimeoutSeconds * 1_000_000_000))
+                return nil
+            }
+
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
     }
 
     private func inferActivityWithLLM(
@@ -149,6 +165,7 @@ final class AppContextService {
             request.httpMethod = "POST"
             request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = contextInferenceRequestTimeoutSeconds
 
             let metadata = """
 <app_name>\(appName ?? "Unknown")</app_name>
