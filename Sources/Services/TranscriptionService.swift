@@ -7,7 +7,8 @@ class TranscriptionService {
     private let baseURL: String
     private let transcriptionModel: String
     private let transcriptionLanguage: String?
-    private let minimumTimeoutSeconds: TimeInterval = 30
+    private let minimumTimeoutSeconds: TimeInterval = 10
+    private let maximumTimeoutSeconds: TimeInterval = 20
 
     init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", model: String = "whisper-large-v3", language: String? = nil) {
         self.apiKey = apiKey
@@ -16,7 +17,8 @@ class TranscriptionService {
         self.transcriptionLanguage = language
     }
 
-    /// Timeout: 30s base, plus 2s per second of audio beyond 10s
+    /// Timeout budget is intentionally aggressive because these providers are expected
+    /// to respond quickly; hung requests should fail fast instead of stalling the UX.
     private func timeoutForFile(_ fileURL: URL) async -> TimeInterval {
         let asset = AVURLAsset(url: fileURL)
         do {
@@ -24,13 +26,13 @@ class TranscriptionService {
             let durationSeconds = CMTimeGetSeconds(duration)
             if durationSeconds.isFinite && durationSeconds > 0 {
                 let extraSeconds = max(0, durationSeconds - 10)
-                let calculatedTimeout = max(minimumTimeoutSeconds, 30 + extraSeconds * 2)
-                return min(calculatedTimeout, 600)
+                let calculatedTimeout = minimumTimeoutSeconds + min(extraSeconds * 0.25, maximumTimeoutSeconds - minimumTimeoutSeconds)
+                return min(max(calculatedTimeout, minimumTimeoutSeconds), maximumTimeoutSeconds)
             }
         } catch {
             os_log(.error, "Failed to load audio duration for timeout calculation: %{public}@", error.localizedDescription)
         }
-        return 120
+        return 15
     }
 
     // Validate API key by hitting a lightweight endpoint
@@ -59,7 +61,7 @@ class TranscriptionService {
                 guard let self else {
                     throw TranscriptionError.submissionFailed("Service deallocated")
                 }
-                return try await self.transcribeAudio(fileURL: fileURL, prompt: prompt)
+                return try await self.transcribeAudio(fileURL: fileURL, prompt: prompt, timeout: timeout)
             }
 
             group.addTask {
@@ -76,11 +78,11 @@ class TranscriptionService {
     }
 
     // Send audio file for transcription and return text
-    private func transcribeAudio(fileURL: URL, prompt: String? = nil) async throws -> String {
+    private func transcribeAudio(fileURL: URL, prompt: String? = nil, timeout: TimeInterval) async throws -> String {
         let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 300
+        request.timeoutInterval = timeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         let boundary = UUID().uuidString
         let contentType = "multipart/form-data; boundary=\(boundary)"

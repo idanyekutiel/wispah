@@ -1,7 +1,10 @@
+import AVFoundation
 import CoreAudio
 import Foundation
 
 struct AudioDevice: Identifiable {
+    static let systemDefaultSelectionUID = "default"
+
     let id: AudioDeviceID
     let uid: String
     let name: String
@@ -99,6 +102,54 @@ struct AudioDevice: Identifiable {
 
     static func deviceID(forUID uid: String) -> AudioDeviceID? {
         return availableInputDevices().first(where: { $0.uid == uid })?.id
+    }
+
+    static func normalizedSelectionUID(_ uid: String?) -> String? {
+        guard let trimmed = uid?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return systemDefaultSelectionUID
+        }
+        return trimmed
+    }
+
+    /// Resolves the stored microphone selection into a concrete device UID.
+    /// `"default"` always maps to the current CoreAudio default input device.
+    static func resolvedInputDeviceUID(forSelectionUID selectionUID: String?) -> String? {
+        let normalized = normalizedSelectionUID(selectionUID)
+        if normalized == systemDefaultSelectionUID {
+            return defaultInputDeviceUID() ?? availableInputDevices().first?.uid
+        }
+        return normalized
+    }
+
+    /// Returns the AVFoundation capture device matching the current selection.
+    static func captureDevice(forSelectionUID selectionUID: String?) -> AVCaptureDevice? {
+        let devices: [AVCaptureDevice]
+        if #available(macOS 14.0, *) {
+            devices = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.microphone, .external],
+                mediaType: .audio,
+                position: .unspecified
+            ).devices
+        } else {
+            devices = AVCaptureDevice.DiscoverySession(
+                deviceTypes: [.builtInMicrophone, .externalUnknown],
+                mediaType: .audio,
+                position: .unspecified
+            ).devices
+        }
+
+        guard let resolvedUID = resolvedInputDeviceUID(forSelectionUID: selectionUID) else {
+            return AVCaptureDevice.default(for: .audio)
+        }
+
+        let normalizedSelection = normalizedSelectionUID(selectionUID)
+        let matchedDevice = devices.first(where: { $0.uniqueID == resolvedUID })
+
+        if normalizedSelection == systemDefaultSelectionUID {
+            return matchedDevice ?? AVCaptureDevice.default(for: .audio)
+        }
+
+        return matchedDevice
     }
 
     /// Whether this device uses the built-in transport type (e.g. MacBook Pro Microphone).

@@ -27,8 +27,14 @@ struct RunLogEntryView: View {
     }
 
     private var canRetry: Bool {
-        guard item.audioFileName != nil && retryState != .retrying else { return false }
-        return isError || item.postProcessedTranscript.isEmpty
+        item.audioFileName != nil && retryState != .retrying
+    }
+
+    private var retryButtonHelp: String {
+        if isError || item.postProcessedTranscript.isEmpty {
+            return "Retry transcription"
+        }
+        return "Retranscribe audio"
     }
 
     var body: some View {
@@ -130,7 +136,7 @@ struct RunLogEntryView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Retry transcription")
+                    .help(retryButtonHelp)
                 }
 
                 Button {
@@ -422,28 +428,70 @@ struct RunLogEntryView: View {
         retryTask = Task {
             do {
                 await MainActor.run { retryStep = "Transcribing audio..." }
-                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL, model: appState.whisperModelId, language: appState.transcriptionLanguage)
-                let transcript = try await service.transcribe(fileURL: audioURL)
-                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let transcriptionService = TranscriptionService(
+                    apiKey: appState.activeAPIKey,
+                    baseURL: appState.activeBaseURL,
+                    model: appState.whisperModelId,
+                    language: appState.transcriptionLanguage
+                )
+                let rawTranscript = try await transcriptionService.transcribe(fileURL: audioURL)
+                let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                let finalTranscript: String
+                let processingStatus: String
+                let postProcessingPrompt: String
+
+                if appState.postProcessingEnabled && !trimmedRawTranscript.isEmpty {
+                    await MainActor.run { retryStep = "Post-processing..." }
+                    let postProcessingService = PostProcessingService(
+                        apiKey: appState.activeAPIKey,
+                        baseURL: appState.activeBaseURL,
+                        model: appState.llmModelId
+                    )
+                    do {
+                        let result = try await postProcessingService.postProcess(
+                            transcript: trimmedRawTranscript,
+                            context: historyAppContext(),
+                            customVocabulary: item.customVocabulary,
+                            smartFormatting: appState.smartFormattingEnabled,
+                            smartCorrections: appState.smartCorrectionsEnabled,
+                            developerMode: appState.developerModeEnabled,
+                            customPrompt: appState.customPostProcessingPrompt
+                        )
+                        finalTranscript = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                        processingStatus = "Retranscribed successfully"
+                        postProcessingPrompt = result.prompt
+                    } catch {
+                        finalTranscript = trimmedRawTranscript
+                        processingStatus = "Post-processing failed on retranscribe, using raw transcript"
+                        postProcessingPrompt = ""
+                    }
+                } else {
+                    finalTranscript = trimmedRawTranscript
+                    processingStatus = appState.postProcessingEnabled
+                        ? "Retranscribed successfully"
+                        : "Post-processing disabled"
+                    postProcessingPrompt = ""
+                }
 
                 await MainActor.run {
                     retryStep = "Copying to clipboard..."
                     NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(trimmed, forType: .string)
+                    NSPasteboard.general.setString(finalTranscript, forType: .string)
 
                     if let index = appState.pipelineHistory.firstIndex(where: { $0.id == item.id }) {
                         let updated = PipelineHistoryItem(
                             id: item.id,
                             timestamp: item.timestamp,
-                            rawTranscript: trimmed,
-                            postProcessedTranscript: trimmed,
-                            postProcessingPrompt: item.postProcessingPrompt,
+                            rawTranscript: trimmedRawTranscript,
+                            postProcessedTranscript: finalTranscript,
+                            postProcessingPrompt: postProcessingPrompt,
                             contextSummary: item.contextSummary,
                             contextPrompt: item.contextPrompt,
                             contextScreenshotDataURL: item.contextScreenshotDataURL,
                             contextScreenshotStatus: item.contextScreenshotStatus,
-                            postProcessingStatus: "Retried successfully",
-                            debugStatus: "Retry",
+                            postProcessingStatus: processingStatus,
+                            debugStatus: "Retranscribe",
                             customVocabulary: item.customVocabulary,
                             audioFileName: item.audioFileName,
                             recordingDurationSeconds: item.recordingDurationSeconds
@@ -467,6 +515,20 @@ struct RunLogEntryView: View {
                 }
             }
         }
+    }
+
+    private func historyAppContext() -> AppContext {
+        AppContext(
+            appName: nil,
+            bundleIdentifier: nil,
+            windowTitle: nil,
+            selectedText: nil,
+            currentActivity: item.contextSummary.isEmpty ? "No context captured" : item.contextSummary,
+            contextPrompt: item.contextPrompt,
+            screenshotDataURL: item.contextScreenshotDataURL,
+            screenshotMimeType: nil,
+            screenshotError: item.contextScreenshotStatus.hasPrefix("available") ? nil : item.contextScreenshotStatus
+        )
     }
 
     private func deleteAudioFile(audioURL: URL) {

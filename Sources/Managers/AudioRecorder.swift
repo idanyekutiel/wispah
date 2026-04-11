@@ -1,11 +1,12 @@
 import AVFoundation
-import CoreAudio
 import Foundation
 import os.log
 
 enum AudioRecorderError: LocalizedError {
     case invalidInputFormat(String)
     case missingInputDevice
+    case startupTimedOut
+    case captureSessionError(String)
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +14,10 @@ enum AudioRecorderError: LocalizedError {
             return "Invalid input format: \(details)"
         case .missingInputDevice:
             return "No audio input device available."
+        case .startupTimedOut:
+            return "Audio input did not produce data in time."
+        case .captureSessionError(let details):
+            return "Audio capture failed: \(details)"
         }
     }
 }
@@ -23,21 +28,28 @@ struct RecordingStartResult {
     let deviceUID: String?
 }
 
-class AudioRecorder: NSObject, ObservableObject {
-    private var audioEngine: AVAudioEngine?
-    private var audioFile: AVAudioFile?
+final class AudioRecorder: NSObject, ObservableObject {
+    private let captureQueue = DispatchQueue(label: "com.idanyekutiel.wispah.capture")
+    private var captureSession: AVCaptureSession?
+    private var audioOutput: AVCaptureAudioDataOutput?
+    private var audioDeviceInput: AVCaptureDeviceInput?
+    private var assetWriter: AVAssetWriter?
+    private var assetWriterInput: AVAssetWriterInput?
     private var tempFileURL: URL?
-    private let audioFileQueue = DispatchQueue(label: "com.idanyekutiel.wispah.audiofile")
-    private var recordingStartTime: CFAbsoluteTime = 0
-    private var firstBufferLogged = false
     private var currentDeviceUID: String?
-    private var storedInputFormat: AVAudioFormat?
-    private var tapInstalled = false
-    private var configChangeObserver: NSObjectProtocol?
+    private var firstSampleTimestamp: CMTime?
+    private var writerSessionStarted = false
+    private var runtimeErrorObserver: NSObjectProtocol?
+    private var deviceDisconnectObserver: NSObjectProtocol?
+    private let startupLock = NSLock()
+    private var startupSemaphore: DispatchSemaphore?
+    private var startupError: Error?
+    private var startupResolved = false
+    private var recordingStartTime: CFAbsoluteTime = 0
 
-    // MARK: - Thread-safe tap state
+    // MARK: - Thread-safe audio state
 
-    /// Lock protecting all tap-callback mutable state.
+    /// Lock protecting mutable audio analysis state shared with the capture queue.
     private let tapLock = NSLock()
     private var bufferCount: Int = 0
     private var speechBufferCount: Int = 0
@@ -53,15 +65,16 @@ class AudioRecorder: NSObject, ObservableObject {
     private let speechThresholdRMS: Float = 0.015
     /// Minimum speech buffers required (~0.3s of speech at 4096-sample buffers / 48kHz)
     private let minSpeechBuffers: Int = 4
+    private let startupTimeout: TimeInterval = 2.0
 
-    /// Called on the audio thread when the first non-silent buffer arrives.
+    /// Called once capture is alive and a real audio buffer has arrived.
     var onRecordingReady: (() -> Void)?
 
-    /// Called when a mid-recording error occurs (e.g. config change recovery failure).
+    /// Called when a mid-recording error occurs (for example, capture device disconnect).
     /// The error message is passed as the parameter. Called on the main queue.
     var onRecordingError: ((String) -> Void)?
 
-    // MARK: - Reset tap state (lock-protected)
+    // MARK: - Reset audio state
 
     private func resetTapState() {
         tapLock.lock()
@@ -75,338 +88,435 @@ class AudioRecorder: NSObject, ObservableObject {
         smoothedLevel = 0.0
     }
 
-    // MARK: - Engine lifecycle
+    // MARK: - Startup synchronization
 
-    /// Tears down the current engine completely — removes tap, stops engine, removes observer, nils engine.
-    private func tearDownEngine() {
-        removeTap()
-        removeConfigChangeObserver()
-        if let engine = audioEngine {
-            engine.stop()
-            os_log(.info, log: recordingLog, "tearDownEngine: engine stopped")
-        }
-        audioEngine = nil
-        currentDeviceUID = nil
-        storedInputFormat = nil
+    private func prepareForStartupWait() -> DispatchSemaphore {
+        let semaphore = DispatchSemaphore(value: 0)
+        startupLock.lock()
+        startupSemaphore = semaphore
+        startupError = nil
+        startupResolved = false
+        startupLock.unlock()
+        return semaphore
     }
 
-    /// Builds a fresh AVAudioEngine targeting the given device, installs tap, starts engine.
-    /// If `deviceUID` is nil or "default", uses the system default input device.
-    /// Throws `missingInputDevice` if the target device doesn't exist.
-    private func buildAndStartEngine(deviceUID: String?) throws {
-        let t0 = CFAbsoluteTimeGetCurrent()
-        let engine = AVAudioEngine()
-        os_log(.info, log: recordingLog, "AVAudioEngine created: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-
-        // Validate and set the target input device
-        if let uid = deviceUID, !uid.isEmpty, uid != "default" {
-            // Specific device requested — must exist
-            guard let deviceID = AudioDevice.deviceID(forUID: uid) else {
-                os_log(.error, log: recordingLog, "requested device %{public}@ not found", uid)
-                throw AudioRecorderError.missingInputDevice
-            }
-            os_log(.info, log: recordingLog, "device lookup resolved to %d for uid=%{public}@: %.3fms", deviceID, uid, (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-            guard let inputUnit = engine.inputNode.audioUnit else {
-                throw AudioRecorderError.invalidInputFormat("Could not access audio input unit")
-            }
-            var id = deviceID
-            AudioUnitSetProperty(
-                inputUnit,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &id,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
-        } else {
-            // System default — verify one exists
-            guard AudioDevice.defaultInputDeviceUID() != nil else {
-                os_log(.error, log: recordingLog, "no default input device available")
-                throw AudioRecorderError.missingInputDevice
-            }
-            os_log(.info, log: recordingLog, "using system default input device (uid=%{public}@)", deviceUID ?? "nil")
+    private func resolveStartup(error: Error?) {
+        startupLock.lock()
+        guard !startupResolved else {
+            startupLock.unlock()
+            return
         }
-
-        let inputNode = engine.inputNode
-        os_log(.info, log: recordingLog, "inputNode accessed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-        os_log(.info, log: recordingLog, "inputFormat retrieved (rate=%.0f, ch=%d): %.3fms", inputFormat.sampleRate, inputFormat.channelCount, (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-        guard inputFormat.sampleRate > 0 else {
-            throw AudioRecorderError.invalidInputFormat("Invalid sample rate: \(inputFormat.sampleRate)")
-        }
-        guard inputFormat.channelCount > 0 else {
-            throw AudioRecorderError.invalidInputFormat("No input channels available")
-        }
-
-        // Always use mono format for the tap — AVAudioEngine will downmix internally.
-        // Multi-channel devices (AirPods Max, Studio Display 3-mic array) deliver
-        // multi-channel buffers that crash when written to a mono output file.
-        guard let monoFormat = AVAudioFormat(standardFormatWithSampleRate: inputFormat.sampleRate, channels: 1) else {
-            throw AudioRecorderError.invalidInputFormat("Could not create mono format at \(inputFormat.sampleRate)Hz")
-        }
-        os_log(.info, log: recordingLog, "native format: rate=%.0f ch=%d → mono tap format", inputFormat.sampleRate, inputFormat.channelCount)
-        storedInputFormat = monoFormat
-        self.audioEngine = engine
-        self.currentDeviceUID = deviceUID
-
-        // Install tap
-        installTap()
-
-        // Register for config change notifications on this engine instance
-        registerConfigChangeObserver(for: engine)
-
-        // Start engine
-        engine.prepare()
-        os_log(.info, log: recordingLog, "engine prepared: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-        try engine.start()
-        os_log(.info, log: recordingLog, "engine started: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        startupResolved = true
+        startupError = error
+        let semaphore = startupSemaphore
+        startupSemaphore = nil
+        startupLock.unlock()
+        semaphore?.signal()
     }
 
-    // MARK: - Config change observer
+    private func finishStartupWait(_ semaphore: DispatchSemaphore) throws {
+        let waitResult = semaphore.wait(timeout: .now() + startupTimeout)
 
-    private func registerConfigChangeObserver(for engine: AVAudioEngine) {
-        removeConfigChangeObserver()
-        configChangeObserver = NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: nil
-        ) { [weak self] _ in
-            self?.handleConfigChange()
+        startupLock.lock()
+        let error = startupError
+        let resolved = startupResolved
+        if startupSemaphore === semaphore {
+            startupSemaphore = nil
+        }
+        startupLock.unlock()
+
+        if let error {
+            throw error
+        }
+        if waitResult == .timedOut || !resolved {
+            throw AudioRecorderError.startupTimedOut
         }
     }
 
-    private func removeConfigChangeObserver() {
-        if let observer = configChangeObserver {
+    // MARK: - Capture lifecycle
+
+    private func removeObservers() {
+        if let observer = runtimeErrorObserver {
             NotificationCenter.default.removeObserver(observer)
-            configChangeObserver = nil
+            runtimeErrorObserver = nil
+        }
+        if let observer = deviceDisconnectObserver {
+            NotificationCenter.default.removeObserver(observer)
+            deviceDisconnectObserver = nil
         }
     }
 
-    private func handleConfigChange() {
-        os_log(.info, log: recordingLog, "AVAudioEngineConfigurationChange received")
-        guard let engine = audioEngine else { return }
+    private func tearDownCapture(cancelWriter: Bool) {
+        removeObservers()
+
+        if let output = audioOutput {
+            output.setSampleBufferDelegate(nil, queue: nil)
+        }
+
+        if let session = captureSession, session.isRunning {
+            session.stopRunning()
+            os_log(.info, log: recordingLog, "capture session stopped")
+        }
+
+        if cancelWriter, let writer = assetWriter {
+            if writer.status == .writing {
+                assetWriterInput?.markAsFinished()
+                writer.cancelWriting()
+            } else if writer.status == .unknown {
+                writer.cancelWriting()
+            }
+        }
+
+        captureSession = nil
+        audioOutput = nil
+        audioDeviceInput = nil
+        assetWriter = nil
+        assetWriterInput = nil
+        currentDeviceUID = nil
+        firstSampleTimestamp = nil
+        writerSessionStarted = false
+    }
+
+    private func registerObservers(for session: AVCaptureSession, deviceUID: String) {
+        removeObservers()
+
+        runtimeErrorObserver = NotificationCenter.default.addObserver(
+            forName: .AVCaptureSessionRuntimeError,
+            object: session,
+            queue: nil
+        ) { [weak self] notification in
+            let nsError = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
+            let message = nsError?.localizedDescription ?? "Unknown runtime error"
+            self?.handleCaptureFailure(AudioRecorderError.captureSessionError(message))
+        }
+
+        deviceDisconnectObserver = NotificationCenter.default.addObserver(
+            forName: .AVCaptureDeviceWasDisconnected,
+            object: nil,
+            queue: nil
+        ) { [weak self] notification in
+            guard let self,
+                  let device = notification.object as? AVCaptureDevice,
+                  device.uniqueID == deviceUID else { return }
+
+            self.handleCaptureFailure(
+                AudioRecorderError.captureSessionError("Selected microphone disconnected")
+            )
+        }
+    }
+
+    private func handleCaptureFailure(_ error: Error) {
+        os_log(.error, log: recordingLog, "audio capture failure: %{public}@", error.localizedDescription)
+        resolveStartup(error: error)
 
         if isRecording {
-            // Mid-recording: full teardown + rebuild is the only safe recovery.
-            // Trying to reinstall taps on a partially-reset engine causes an ObjC
-            // NSException ("required condition is false: !_tapNode") inside
-            // AVAudioNode.installTapOnBus that Swift's do/catch cannot intercept.
-            let deviceUID = currentDeviceUID
-            do {
-                tearDownEngine()
-                try buildAndStartEngine(deviceUID: deviceUID)
-                os_log(.info, log: recordingLog, "config change recovery succeeded (full engine rebuild)")
-            } catch {
-                os_log(.error, log: recordingLog, "config change recovery failed: %{public}@", error.localizedDescription)
-                DispatchQueue.main.async { [weak self] in
-                    self?.onRecordingError?("Audio device changed and recovery failed: \(error.localizedDescription)")
-                }
-            }
-        } else {
-            // During startup (isRecording not yet set): the engine was stopped by
-            // the config change but taps/connections are preserved. Re-assert the
-            // target device (BT route changes can override it) and restart.
-            // This happens when connected BT devices (e.g. AirPods Max) trigger an
-            // audio route renegotiation even when using the built-in mic.
-            do {
-                if let uid = currentDeviceUID, !uid.isEmpty, uid != "default",
-                   let deviceID = AudioDevice.deviceID(forUID: uid),
-                   let inputUnit = engine.inputNode.audioUnit {
-                    var id = deviceID
-                    AudioUnitSetProperty(
-                        inputUnit,
-                        kAudioOutputUnitProperty_CurrentDevice,
-                        kAudioUnitScope_Global,
-                        0,
-                        &id,
-                        UInt32(MemoryLayout<AudioDeviceID>.size)
-                    )
-                    os_log(.info, log: recordingLog, "config change: re-asserted device %{public}@", uid)
-                }
-                engine.prepare()
-                try engine.start()
-                os_log(.info, log: recordingLog, "config change recovery succeeded (engine restart during startup)")
-            } catch {
-                os_log(.error, log: recordingLog, "config change engine restart failed: %{public}@", error.localizedDescription)
+            DispatchQueue.main.async { [weak self] in
+                self?.onRecordingError?(error.localizedDescription)
             }
         }
     }
 
-    // MARK: - Tap management
+    private func prepareOutputURL() throws -> URL {
+        if let existingURL = tempFileURL {
+            try? FileManager.default.removeItem(at: existingURL)
+        }
 
-    /// Install audio tap on the engine's input node.
-    private func installTap() {
-        guard let engine = audioEngine, let inputFormat = storedInputFormat else { return }
-        guard !tapInstalled else { return }
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("caf")
+        tempFileURL = fileURL
+        return fileURL
+    }
 
-        let inputNode = engine.inputNode
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            guard let self else { return }
+    private func buildCaptureSession(for device: AVCaptureDevice, outputURL: URL) throws {
+        let session = AVCaptureSession()
+        session.beginConfiguration()
 
-            // Calculate RMS outside the lock
-            var rms: Float = 0
-            let frames = Int(buffer.frameLength)
-            if frames > 0, let channelData = buffer.floatChannelData {
-                let samples = channelData[0]
-                var sum: Float = 0
-                for i in 0..<frames { sum += samples[i] * samples[i] }
-                rms = sqrtf(sum / Float(frames))
+        let input = try AVCaptureDeviceInput(device: device)
+        guard session.canAddInput(input) else {
+            session.commitConfiguration()
+            throw AudioRecorderError.captureSessionError("Could not add microphone input")
+        }
+        session.addInput(input)
+
+        let output = AVCaptureAudioDataOutput()
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            throw AudioRecorderError.captureSessionError("Could not add audio output")
+        }
+        session.addOutput(output)
+        output.setSampleBufferDelegate(self, queue: captureQueue)
+
+        session.commitConfiguration()
+
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .caf)
+
+        captureSession = session
+        audioDeviceInput = input
+        audioOutput = output
+        assetWriter = writer
+        assetWriterInput = nil
+        currentDeviceUID = device.uniqueID
+        firstSampleTimestamp = nil
+        writerSessionStarted = false
+
+        registerObservers(for: session, deviceUID: device.uniqueID)
+        session.startRunning()
+
+        guard session.isRunning else {
+            throw AudioRecorderError.captureSessionError("Capture session failed to start")
+        }
+
+        os_log(.info, log: recordingLog, "capture session started for %{public}@", device.uniqueID)
+    }
+
+    private func configureWriterIfNeeded(from sampleBuffer: CMSampleBuffer) throws {
+        guard assetWriterInput == nil else { return }
+        guard let writer = assetWriter else {
+            throw AudioRecorderError.captureSessionError("Audio writer missing")
+        }
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee else {
+            throw AudioRecorderError.invalidInputFormat("Missing stream description")
+        }
+
+        let sampleRate = streamDescription.mSampleRate > 0 ? streamDescription.mSampleRate : 44_100
+        let channelCount = max(Int(streamDescription.mChannelsPerFrame), 1)
+        let outputSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: channelCount,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+
+        let input = AVAssetWriterInput(
+            mediaType: .audio,
+            outputSettings: outputSettings,
+            sourceFormatHint: formatDescription
+        )
+        input.expectsMediaDataInRealTime = true
+
+        guard writer.canAdd(input) else {
+            throw AudioRecorderError.captureSessionError("Could not configure audio writer input")
+        }
+        writer.add(input)
+
+        guard writer.startWriting() else {
+            let details = writer.error?.localizedDescription ?? "Unknown writer error"
+            throw AudioRecorderError.captureSessionError(details)
+        }
+
+        assetWriterInput = input
+        os_log(.info, log: recordingLog, "audio writer started (rate=%.0f, ch=%d)", sampleRate, channelCount)
+    }
+
+    private func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer) throws {
+        try configureWriterIfNeeded(from: sampleBuffer)
+
+        guard let writer = assetWriter, let input = assetWriterInput else {
+            throw AudioRecorderError.captureSessionError("Audio writer unavailable")
+        }
+
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        if !writerSessionStarted {
+            writer.startSession(atSourceTime: timestamp)
+            writerSessionStarted = true
+            firstSampleTimestamp = timestamp
+        }
+
+        guard input.isReadyForMoreMediaData else { return }
+        guard input.append(sampleBuffer) else {
+            let details = writer.error?.localizedDescription ?? "Failed to append audio sample"
+            throw AudioRecorderError.captureSessionError(details)
+        }
+    }
+
+    private func elapsedSeconds(for sampleBuffer: CMSampleBuffer) -> TimeInterval {
+        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        guard let firstSampleTimestamp else { return 0 }
+        let elapsed = CMTimeSubtract(timestamp, firstSampleTimestamp)
+        return max(CMTimeGetSeconds(elapsed), 0)
+    }
+
+    private func rms(from sampleBuffer: CMSampleBuffer) -> Float {
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee else {
+            return 0
+        }
+
+        var blockBuffer: CMBlockBuffer?
+        var audioBufferList = AudioBufferList(
+            mNumberBuffers: 1,
+            mBuffers: AudioBuffer(mNumberChannels: 0, mDataByteSize: 0, mData: nil)
+        )
+
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: nil,
+            bufferListOut: &audioBufferList,
+            bufferListSize: MemoryLayout<AudioBufferList>.size,
+            blockBufferAllocator: nil,
+            blockBufferMemoryAllocator: nil,
+            flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
+            blockBufferOut: &blockBuffer
+        )
+
+        guard status == noErr else { return 0 }
+
+        let isFloat = (streamDescription.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+        let isSignedInteger = (streamDescription.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
+        let buffers = UnsafeMutableAudioBufferListPointer(&audioBufferList)
+
+        var sum: Double = 0
+        var sampleCount = 0
+
+        for buffer in buffers {
+            guard let data = buffer.mData, buffer.mDataByteSize > 0 else { continue }
+
+            if isFloat && streamDescription.mBitsPerChannel == 32 {
+                let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
+                let samples = data.bindMemory(to: Float.self, capacity: count)
+                for index in 0..<count {
+                    let sample = Double(samples[index])
+                    sum += sample * sample
+                }
+                sampleCount += count
+            } else if isSignedInteger && streamDescription.mBitsPerChannel == 16 {
+                let count = Int(buffer.mDataByteSize) / MemoryLayout<Int16>.size
+                let samples = data.bindMemory(to: Int16.self, capacity: count)
+                let scale = Double(Int16.max)
+                for index in 0..<count {
+                    let sample = Double(samples[index]) / scale
+                    sum += sample * sample
+                }
+                sampleCount += count
+            } else if isSignedInteger && streamDescription.mBitsPerChannel == 32 {
+                let count = Int(buffer.mDataByteSize) / MemoryLayout<Int32>.size
+                let samples = data.bindMemory(to: Int32.self, capacity: count)
+                let scale = Double(Int32.max)
+                for index in 0..<count {
+                    let sample = Double(samples[index]) / scale
+                    sum += sample * sample
+                }
+                sampleCount += count
             }
+        }
 
-            let elapsed = CFAbsoluteTimeGetCurrent() - self.recordingStartTime
+        guard sampleCount > 0 else { return 0 }
+        return Float(sqrt(sum / Double(sampleCount)))
+    }
+
+    private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+        do {
+            try appendSampleBuffer(sampleBuffer)
+
+            let rmsValue = rms(from: sampleBuffer)
+            let elapsed = elapsedSeconds(for: sampleBuffer)
             var shouldFireReady = false
             var currentBufferCount = 0
 
-            self.tapLock.lock()
-            self.bufferCount += 1
-            currentBufferCount = self.bufferCount
+            tapLock.lock()
+            bufferCount += 1
+            currentBufferCount = bufferCount
 
-            // Track last non-silent buffer for trailing silence trimming
-            if rms > self.silenceThresholdRMS {
-                self.lastNonSilentTime = elapsed
+            if rmsValue > silenceThresholdRMS {
+                lastNonSilentTime = elapsed
             }
 
-            // Track buffers with speech-level audio
-            if rms > self.speechThresholdRMS {
-                self.speechBufferCount += 1
-                if self.firstSpeechTime == 0 {
-                    self.firstSpeechTime = elapsed
+            if rmsValue > speechThresholdRMS {
+                speechBufferCount += 1
+                if firstSpeechTime == 0 {
+                    firstSpeechTime = elapsed
                 }
-                self.lastSpeechTime = elapsed
+                lastSpeechTime = elapsed
             }
 
-            // Fire ready callback on first non-silent buffer
-            if !self.readyFired && rms > 0 {
-                self.readyFired = true
+            if !readyFired {
+                readyFired = true
                 shouldFireReady = true
             }
-            self.tapLock.unlock()
+            tapLock.unlock()
 
-            if currentBufferCount <= 40 {
-                os_log(.info, log: recordingLog, "buffer #%d at %.3fms, frames=%d, rms=%.6f", currentBufferCount, elapsed * 1000, buffer.frameLength, rms)
+            if currentBufferCount <= 20 {
+                os_log(.info, log: recordingLog, "sample #%d at %.3fms, rms=%.6f", currentBufferCount, elapsed * 1000, rmsValue)
             }
 
             if shouldFireReady {
-                os_log(.info, log: recordingLog, "FIRST non-silent buffer at %.3fms — recording ready", elapsed * 1000)
-                self.onRecordingReady?()
+                resolveStartup(error: nil)
+                os_log(.info, log: recordingLog, "first audio buffer received — recording ready")
+                onRecordingReady?()
             }
 
-            self.audioFileQueue.sync {
-                if let file = self.audioFile {
-                    do {
-                        try file.write(from: buffer)
-                    } catch {
-                        self.audioFile = nil
-                    }
-                }
-            }
-            self.computeAudioLevel(from: buffer, rms: rms)
+            computeAudioLevel(rms: rmsValue)
+        } catch {
+            handleCaptureFailure(error)
         }
-        tapInstalled = true
-        os_log(.info, log: recordingLog, "tap installed")
     }
 
-    /// Remove the audio tap from the engine's input node.
-    /// Always attempts removal regardless of `tapInstalled` flag — the flag can
-    /// get out of sync after config changes, and `removeTap(onBus:)` is a safe no-op
-    /// when no tap exists.
-    private func removeTap() {
-        if let engine = audioEngine {
-            engine.inputNode.removeTap(onBus: 0)
+    private func resolveCaptureDevice(for selectionUID: String?) -> AVCaptureDevice? {
+        AudioDevice.captureDevice(forSelectionUID: selectionUID)
+    }
+
+    private func attemptStartRecording(selectionUID: String?) throws -> String? {
+        resetTapState()
+        firstSampleTimestamp = nil
+
+        guard let captureDevice = resolveCaptureDevice(for: selectionUID) else {
+            throw AudioRecorderError.missingInputDevice
         }
-        tapInstalled = false
-        os_log(.info, log: recordingLog, "tap removed")
+
+        let outputURL = try prepareOutputURL()
+        let startupSemaphore = prepareForStartupWait()
+
+        do {
+            try captureQueue.sync {
+                tearDownCapture(cancelWriter: true)
+                try buildCaptureSession(for: captureDevice, outputURL: outputURL)
+            }
+        } catch {
+            resolveStartup(error: error)
+            captureQueue.sync {
+                tearDownCapture(cancelWriter: true)
+            }
+            throw error
+        }
+
+        do {
+            try finishStartupWait(startupSemaphore)
+        } catch {
+            captureQueue.sync {
+                tearDownCapture(cancelWriter: true)
+            }
+            throw error
+        }
+
+        return captureDevice.uniqueID
     }
 
     // MARK: - Start / Stop recording
 
     func startRecording(deviceUID: String? = nil) throws -> RecordingStartResult {
-        let t0 = CFAbsoluteTimeGetCurrent()
-        recordingStartTime = t0
-        firstBufferLogged = false
-        resetTapState()
-
+        recordingStartTime = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered, deviceUID=%{public}@", deviceUID ?? "nil")
 
-        // Always tear down and create a fresh engine
-        tearDownEngine()
-
-        var usedFallback = false
-        var effectiveDeviceUID = deviceUID
+        let normalizedSelection = AudioDevice.normalizedSelectionUID(deviceUID)
+        let shouldRetryWithDefault = normalizedSelection != nil && normalizedSelection != AudioDevice.systemDefaultSelectionUID
 
         do {
-            try buildAndStartEngine(deviceUID: deviceUID)
+            let resolvedDeviceUID = try attemptStartRecording(selectionUID: normalizedSelection)
+            DispatchQueue.main.async { self.isRecording = true }
+            return RecordingStartResult(usedFallback: false, deviceUID: resolvedDeviceUID)
         } catch {
-            os_log(.error, log: recordingLog, "engine start failed for device %{public}@: %{public}@, retrying with default", deviceUID ?? "nil", error.localizedDescription)
-            tearDownEngine()
+            guard shouldRetryWithDefault else { throw error }
 
-            // Retry once with system default
-            if deviceUID != nil && deviceUID != "default" {
-                try buildAndStartEngine(deviceUID: nil)
-                usedFallback = true
-                effectiveDeviceUID = nil
-                os_log(.info, log: recordingLog, "fallback to default device succeeded")
-            } else {
-                throw error
-            }
+            os_log(.error, log: recordingLog, "explicit device start failed for %{public}@, retrying default: %{public}@", normalizedSelection ?? "nil", error.localizedDescription)
+            let resolvedDeviceUID = try attemptStartRecording(selectionUID: AudioDevice.systemDefaultSelectionUID)
+            DispatchQueue.main.async { self.isRecording = true }
+            return RecordingStartResult(usedFallback: true, deviceUID: resolvedDeviceUID)
         }
-
-        guard let inputFormat = storedInputFormat else {
-            throw AudioRecorderError.invalidInputFormat("No stored input format")
-        }
-
-        // Create a temp file to write audio to (AAC for much smaller file size)
-        let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent(UUID().uuidString + ".m4a")
-        self.tempFileURL = fileURL
-
-        let newAudioFile: AVAudioFile
-        let aacSettings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: inputFormat.sampleRate,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: 128_000,
-        ]
-        do {
-            newAudioFile = try AVAudioFile(
-                forWriting: fileURL,
-                settings: aacSettings,
-                commonFormat: .pcmFormatFloat32,
-                interleaved: false
-            )
-        } catch {
-            // Fall back to WAV if AAC encoding isn't available
-            os_log(.error, log: recordingLog, "AAC file creation failed, falling back to WAV: %{public}@", error.localizedDescription)
-            let wavURL = tempDir.appendingPathComponent(UUID().uuidString + ".wav")
-            self.tempFileURL = wavURL
-            let fallbackSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatLinearPCM,
-                AVSampleRateKey: inputFormat.sampleRate,
-                AVNumberOfChannelsKey: inputFormat.channelCount,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsBigEndianKey: false,
-                AVLinearPCMIsNonInterleaved: inputFormat.isInterleaved ? 0 : 1,
-            ]
-            newAudioFile = try AVAudioFile(
-                forWriting: wavURL,
-                settings: fallbackSettings,
-                commonFormat: .pcmFormatInt16,
-                interleaved: inputFormat.isInterleaved
-            )
-        }
-        os_log(.info, log: recordingLog, "audio file created: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-
-        // Set audio file permissions to owner-only read/write
-        if let audioPath = self.tempFileURL?.path {
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: audioPath)
-        }
-
-        audioFileQueue.sync { self.audioFile = newAudioFile }
-        DispatchQueue.main.async { self.isRecording = true }
-        os_log(.info, log: recordingLog, "startRecording() complete: %.3fms total", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-
-        return RecordingStartResult(usedFallback: usedFallback, deviceUID: effectiveDeviceUID)
     }
 
     /// Duration (in seconds) of the recording up to the last non-silent audio.
@@ -439,43 +549,86 @@ class AudioRecorder: NSObject, ObservableObject {
 
     func stopRecording() -> URL? {
         tapLock.lock()
-        let bc = bufferCount
-        let sbc = speechBufferCount
-        let lnst = lastNonSilentTime
+        let recordedBuffers = bufferCount
+        let recordedSpeechBuffers = speechBufferCount
+        let lastAudioTime = lastNonSilentTime
         tapLock.unlock()
 
-        let elapsed = (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000
-        os_log(.info, log: recordingLog, "stopRecording() called: %.3fms after start, %d buffers received, speechBuffers=%d", elapsed, bc, sbc)
-        os_log(.info, log: recordingLog, "last non-silent audio at %.2fs", lnst)
+        os_log(
+            .info,
+            log: recordingLog,
+            "stopRecording() called after %.3fms, buffers=%d, speechBuffers=%d, lastAudio=%.2fs",
+            (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000,
+            recordedBuffers,
+            recordedSpeechBuffers,
+            lastAudioTime
+        )
 
-        audioFileQueue.sync { audioFile = nil }
-        DispatchQueue.main.async { self.isRecording = false }
+        let finishedURL = captureQueue.sync { () -> URL? in
+            guard let fileURL = tempFileURL else {
+                tearDownCapture(cancelWriter: true)
+                return nil
+            }
+
+            let writer = assetWriter
+            let input = assetWriterInput
+            tearDownCapture(cancelWriter: false)
+
+            if let writer {
+                var writerFailed = false
+                if writer.status == .writing {
+                    input?.markAsFinished()
+                    let group = DispatchGroup()
+                    group.enter()
+                    writer.finishWriting {
+                        group.leave()
+                    }
+                    let waitResult = group.wait(timeout: .now() + 5)
+                    if waitResult == .timedOut {
+                        writer.cancelWriting()
+                        writerFailed = true
+                    }
+                    if writer.status != .completed {
+                        writerFailed = true
+                        os_log(.error, log: recordingLog, "finishWriting ended with status=%{public}d error=%{public}@", writer.status.rawValue, writer.error?.localizedDescription ?? "none")
+                    }
+                } else if writer.status == .unknown {
+                    writer.cancelWriting()
+                    writerFailed = true
+                } else if writer.status != .completed {
+                    writerFailed = true
+                }
+
+                if writerFailed {
+                    try? FileManager.default.removeItem(at: fileURL)
+                    tempFileURL = nil
+                    return nil
+                }
+            }
+
+            return fileURL
+        }
+
+        DispatchQueue.main.async {
+            self.isRecording = false
+            self.audioLevel = 0.0
+        }
+
         tapLock.lock()
         smoothedLevel = 0.0
         tapLock.unlock()
-        DispatchQueue.main.async { self.audioLevel = 0.0 }
-
-        // Tear down engine completely — fresh one created on next start
-        tearDownEngine()
         onRecordingReady = nil
-        os_log(.info, log: recordingLog, "engine torn down (mic released)")
 
-        return tempFileURL
+        return finishedURL
     }
 
-    private func computeAudioLevel(from buffer: AVAudioPCMBuffer, rms: Float) {
-        let frames = Int(buffer.frameLength)
-        guard frames > 0 else { return }
-
-        // Logarithmic scaling for better sensitivity to normal speech levels
-        // dB range: -50 (near-silence) to -10 (loud speech)
+    private func computeAudioLevel(rms: Float) {
         let db = 20 * log10f(max(rms, 1e-6))
         let minDb: Float = -50
         let maxDb: Float = -10
         let scaled = max(0, min(1, (db - minDb) / (maxDb - minDb)))
 
         tapLock.lock()
-        // Fast attack, slower release — follows speech dynamics closely
         if scaled > smoothedLevel {
             smoothedLevel = smoothedLevel * 0.3 + scaled * 0.7
         } else {
@@ -576,34 +729,34 @@ class AudioRecorder: NSObject, ObservableObject {
             throw AudioRecorderError.invalidInputFormat("Audio preprocessing failed: \(errorMsg)")
         }
 
-        // Set preprocessed audio file permissions to owner-only read/write
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
 
         os_log(.info, log: recordingLog, "preprocessed audio: %{public}@", outputURL.lastPathComponent)
         return outputURL
     }
 
-    /// Whether the audio engine is actively capturing (for debug UI)
+    /// Whether capture is actively running (for debug UI).
     var isCapturing: Bool {
-        audioEngine?.isRunning ?? false
+        captureQueue.sync {
+            captureSession?.isRunning ?? false
+        }
     }
 
-    /// Forcefully start the audio engine to claim the mic (debug: triggers BT profile switch).
+    /// Forcefully start audio capture to claim the mic.
     func captureAudio(deviceUID: String? = nil) {
         do {
-            tearDownEngine()
-            try buildAndStartEngine(deviceUID: deviceUID)
-            os_log(.info, log: recordingLog, "captureAudio: engine started (mic claimed)")
+            _ = try startRecording(deviceUID: deviceUID)
+            os_log(.info, log: recordingLog, "captureAudio: capture session started")
         } catch {
             os_log(.error, log: recordingLog, "captureAudio failed: %{public}@", error.localizedDescription)
         }
     }
 
-    /// Forcefully tear down the audio engine to release all mic claims.
-    /// Use when Bluetooth headphones are stuck in low-quality mode.
+    /// Forcefully tear down capture and release the mic.
     func releaseAudio() {
-        tearDownEngine()
-        os_log(.info, log: recordingLog, "releaseAudio: engine fully torn down")
+        _ = stopRecording()
+        cleanup()
+        os_log(.info, log: recordingLog, "releaseAudio: capture fully torn down")
     }
 
     func cleanup() {
@@ -611,5 +764,11 @@ class AudioRecorder: NSObject, ObservableObject {
             try? FileManager.default.removeItem(at: url)
             tempFileURL = nil
         }
+    }
+}
+
+extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        processSampleBuffer(sampleBuffer)
     }
 }
