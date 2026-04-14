@@ -32,20 +32,23 @@ final class AudioRecorder: NSObject, ObservableObject {
     private let captureQueue = DispatchQueue(label: "com.idanyekutiel.wispah.capture")
     private var captureSession: AVCaptureSession?
     private var audioOutput: AVCaptureAudioDataOutput?
+    private var audioFileOutput: AVCaptureAudioFileOutput?
     private var audioDeviceInput: AVCaptureDeviceInput?
-    private var assetWriter: AVAssetWriter?
-    private var assetWriterInput: AVAssetWriterInput?
-    private var recommendedWriterAudioSettings: [String: Any]?
     private var tempFileURL: URL?
+    private var fileOutputType: AVFileType = .caf
     private var currentDeviceUID: String?
     private var firstSampleTimestamp: CMTime?
-    private var writerSessionStarted = false
     private var runtimeErrorObserver: NSObjectProtocol?
     private var deviceDisconnectObserver: NSObjectProtocol?
     private let startupLock = NSLock()
     private var startupSemaphore: DispatchSemaphore?
     private var startupError: Error?
     private var startupResolved = false
+    private let fileRecordingLock = NSLock()
+    private var fileRecordingSemaphore: DispatchSemaphore?
+    private var fileRecordingResolved = false
+    private var fileRecordingError: Error?
+    private var finishedRecordingURL: URL?
     private var recordingStartTime: CFAbsoluteTime = 0
 
     // MARK: - Thread-safe audio state
@@ -134,6 +137,53 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
     }
 
+    private func prepareForFileRecordingWait() -> DispatchSemaphore {
+        let semaphore = DispatchSemaphore(value: 0)
+        fileRecordingLock.lock()
+        fileRecordingSemaphore = semaphore
+        fileRecordingResolved = false
+        fileRecordingError = nil
+        finishedRecordingURL = nil
+        fileRecordingLock.unlock()
+        return semaphore
+    }
+
+    private func resolveFileRecording(url: URL?, error: Error?) {
+        fileRecordingLock.lock()
+        guard !fileRecordingResolved else {
+            fileRecordingLock.unlock()
+            return
+        }
+        fileRecordingResolved = true
+        finishedRecordingURL = url
+        fileRecordingError = error
+        let semaphore = fileRecordingSemaphore
+        fileRecordingSemaphore = nil
+        fileRecordingLock.unlock()
+        semaphore?.signal()
+    }
+
+    private func finishFileRecordingWait(_ semaphore: DispatchSemaphore) throws -> URL {
+        let waitResult = semaphore.wait(timeout: .now() + 15)
+
+        fileRecordingLock.lock()
+        let error = fileRecordingError
+        let resolved = fileRecordingResolved
+        let url = finishedRecordingURL
+        if fileRecordingSemaphore === semaphore {
+            fileRecordingSemaphore = nil
+        }
+        fileRecordingLock.unlock()
+
+        if let error {
+            throw error
+        }
+        guard waitResult == .success, resolved, let url else {
+            throw AudioRecorderError.captureSessionError("Audio file did not finish writing in time")
+        }
+        return url
+    }
+
     // MARK: - Capture lifecycle
 
     private func removeObservers() {
@@ -154,29 +204,21 @@ final class AudioRecorder: NSObject, ObservableObject {
             output.setSampleBufferDelegate(nil, queue: nil)
         }
 
+        if cancelWriter, let fileOutput = audioFileOutput, fileOutput.isRecording {
+            fileOutput.stopRecording()
+        }
+
         if let session = captureSession, session.isRunning {
             session.stopRunning()
             os_log(.info, log: recordingLog, "capture session stopped")
         }
 
-        if cancelWriter, let writer = assetWriter {
-            if writer.status == .writing {
-                assetWriterInput?.markAsFinished()
-                writer.cancelWriting()
-            } else if writer.status == .unknown {
-                writer.cancelWriting()
-            }
-        }
-
         captureSession = nil
         audioOutput = nil
+        audioFileOutput = nil
         audioDeviceInput = nil
-        assetWriter = nil
-        assetWriterInput = nil
-        recommendedWriterAudioSettings = nil
         currentDeviceUID = nil
         firstSampleTimestamp = nil
-        writerSessionStarted = false
     }
 
     private func registerObservers(for session: AVCaptureSession, deviceUID: String) {
@@ -218,14 +260,43 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func prepareOutputURL() throws -> URL {
+    private func recordingFileType() -> AVFileType {
+        let supportedTypes = Set(AVCaptureAudioFileOutput.availableOutputFileTypes())
+        if supportedTypes.contains(.caf) {
+            return .caf
+        }
+        if supportedTypes.contains(.wav) {
+            return .wav
+        }
+        if supportedTypes.contains(.aiff) {
+            return .aiff
+        }
+        return AVCaptureAudioFileOutput.availableOutputFileTypes().first ?? .caf
+    }
+
+    private func fileExtension(for fileType: AVFileType) -> String {
+        switch fileType {
+        case .caf:
+            return "caf"
+        case .wav:
+            return "wav"
+        case .aiff:
+            return "aiff"
+        case .m4a:
+            return "m4a"
+        default:
+            return "caf"
+        }
+    }
+
+    private func prepareOutputURL(for fileType: AVFileType) throws -> URL {
         if let existingURL = tempFileURL {
             try? FileManager.default.removeItem(at: existingURL)
         }
 
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("caf")
+            .appendingPathExtension(fileExtension(for: fileType))
         tempFileURL = fileURL
         return fileURL
     }
@@ -242,6 +313,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         session.addInput(input)
 
         let output = AVCaptureAudioDataOutput()
+        output.audioSettings = normalizedCaptureAudioSettings()
         guard session.canAddOutput(output) else {
             session.commitConfiguration()
             throw AudioRecorderError.captureSessionError("Could not add audio output")
@@ -249,20 +321,22 @@ final class AudioRecorder: NSObject, ObservableObject {
         session.addOutput(output)
         output.setSampleBufferDelegate(self, queue: captureQueue)
 
-        session.commitConfiguration()
+        let fileOutput = AVCaptureAudioFileOutput()
+        fileOutput.audioSettings = nil
+        guard session.canAddOutput(fileOutput) else {
+            session.commitConfiguration()
+            throw AudioRecorderError.captureSessionError("Could not add audio file output")
+        }
+        session.addOutput(fileOutput)
 
-        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .caf)
-        let recommendedSettings = output.recommendedAudioSettingsForAssetWriter(writingTo: .caf)
+        session.commitConfiguration()
 
         captureSession = session
         audioDeviceInput = input
         audioOutput = output
-        assetWriter = writer
-        assetWriterInput = nil
-        recommendedWriterAudioSettings = recommendedSettings
+        audioFileOutput = fileOutput
         currentDeviceUID = device.uniqueID
         firstSampleTimestamp = nil
-        writerSessionStarted = false
 
         registerObservers(for: session, deviceUID: device.uniqueID)
         session.startRunning()
@@ -271,65 +345,20 @@ final class AudioRecorder: NSObject, ObservableObject {
             throw AudioRecorderError.captureSessionError("Capture session failed to start")
         }
 
+        fileOutput.startRecording(to: outputURL, outputFileType: fileOutputType, recordingDelegate: self)
         os_log(.info, log: recordingLog, "capture session started for %{public}@", device.uniqueID)
     }
 
-    private func configureWriterIfNeeded(from sampleBuffer: CMSampleBuffer) throws {
-        guard assetWriterInput == nil else { return }
-        guard let writer = assetWriter else {
-            throw AudioRecorderError.captureSessionError("Audio writer missing")
-        }
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee else {
-            throw AudioRecorderError.invalidInputFormat("Missing stream description")
-        }
-
-        let sampleRate = streamDescription.mSampleRate > 0 ? streamDescription.mSampleRate : 44_100
-        let channelCount = max(Int(streamDescription.mChannelsPerFrame), 1)
-        let outputSettings = recommendedWriterAudioSettings ?? [
+    private func normalizedCaptureAudioSettings() -> [String: Any] {
+        [
             AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
         ]
-
-        let input = AVAssetWriterInput(
-            mediaType: .audio,
-            outputSettings: outputSettings,
-            sourceFormatHint: formatDescription
-        )
-        input.expectsMediaDataInRealTime = true
-
-        guard writer.canAdd(input) else {
-            throw AudioRecorderError.captureSessionError("Could not configure audio writer input")
-        }
-        writer.add(input)
-
-        guard writer.startWriting() else {
-            let details = writer.error?.localizedDescription ?? "Unknown writer error"
-            throw AudioRecorderError.captureSessionError(details)
-        }
-
-        assetWriterInput = input
-        os_log(.info, log: recordingLog, "audio writer started (rate=%.0f, ch=%d)", sampleRate, channelCount)
-    }
-
-    private func appendSampleBuffer(_ sampleBuffer: CMSampleBuffer) throws {
-        try configureWriterIfNeeded(from: sampleBuffer)
-
-        guard let writer = assetWriter, let input = assetWriterInput else {
-            throw AudioRecorderError.captureSessionError("Audio writer unavailable")
-        }
-
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        if !writerSessionStarted {
-            writer.startSession(atSourceTime: timestamp)
-            writerSessionStarted = true
-            firstSampleTimestamp = timestamp
-        }
-
-        guard input.isReadyForMoreMediaData else { return }
-        guard input.append(sampleBuffer) else {
-            let details = writer.error?.localizedDescription ?? "Failed to append audio sample"
-            throw AudioRecorderError.captureSessionError(details)
-        }
     }
 
     private func elapsedSeconds(for sampleBuffer: CMSampleBuffer) -> TimeInterval {
@@ -408,50 +437,47 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
-        do {
-            try appendSampleBuffer(sampleBuffer)
-
-            let rmsValue = rms(from: sampleBuffer)
-            let elapsed = elapsedSeconds(for: sampleBuffer)
-            var shouldFireReady = false
-            var currentBufferCount = 0
-
-            tapLock.lock()
-            bufferCount += 1
-            currentBufferCount = bufferCount
-
-            if rmsValue > silenceThresholdRMS {
-                lastNonSilentTime = elapsed
-            }
-
-            if rmsValue > speechThresholdRMS {
-                speechBufferCount += 1
-                if firstSpeechTime == 0 {
-                    firstSpeechTime = elapsed
-                }
-                lastSpeechTime = elapsed
-            }
-
-            if !readyFired {
-                readyFired = true
-                shouldFireReady = true
-            }
-            tapLock.unlock()
-
-            if currentBufferCount <= 20 {
-                os_log(.info, log: recordingLog, "sample #%d at %.3fms, rms=%.6f", currentBufferCount, elapsed * 1000, rmsValue)
-            }
-
-            if shouldFireReady {
-                resolveStartup(error: nil)
-                os_log(.info, log: recordingLog, "first audio buffer received — recording ready")
-                onRecordingReady?()
-            }
-
-            computeAudioLevel(rms: rmsValue)
-        } catch {
-            handleCaptureFailure(error)
+        if firstSampleTimestamp == nil {
+            firstSampleTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         }
+        let rmsValue = rms(from: sampleBuffer)
+        let elapsed = elapsedSeconds(for: sampleBuffer)
+        var shouldFireReady = false
+        var currentBufferCount = 0
+
+        tapLock.lock()
+        bufferCount += 1
+        currentBufferCount = bufferCount
+
+        if rmsValue > silenceThresholdRMS {
+            lastNonSilentTime = elapsed
+        }
+
+        if rmsValue > speechThresholdRMS {
+            speechBufferCount += 1
+            if firstSpeechTime == 0 {
+                firstSpeechTime = elapsed
+            }
+            lastSpeechTime = elapsed
+        }
+
+        if !readyFired {
+            readyFired = true
+            shouldFireReady = true
+        }
+        tapLock.unlock()
+
+        if currentBufferCount <= 20 {
+            os_log(.info, log: recordingLog, "sample #%d at %.3fms, rms=%.6f", currentBufferCount, elapsed * 1000, rmsValue)
+        }
+
+        if shouldFireReady {
+            resolveStartup(error: nil)
+            os_log(.info, log: recordingLog, "first audio buffer received — recording ready")
+            onRecordingReady?()
+        }
+
+        computeAudioLevel(rms: rmsValue)
     }
 
     private func resolveCaptureDevice(for selectionUID: String?) -> AVCaptureDevice? {
@@ -466,7 +492,8 @@ final class AudioRecorder: NSObject, ObservableObject {
             throw AudioRecorderError.missingInputDevice
         }
 
-        let outputURL = try prepareOutputURL()
+        fileOutputType = recordingFileType()
+        let outputURL = try prepareOutputURL(for: fileOutputType)
         let startupSemaphore = prepareForStartupWait()
 
         do {
@@ -551,7 +578,6 @@ final class AudioRecorder: NSObject, ObservableObject {
         let recordedSpeechBuffers = speechBufferCount
         let lastAudioTime = lastNonSilentTime
         tapLock.unlock()
-
         os_log(
             .info,
             log: recordingLog,
@@ -562,49 +588,32 @@ final class AudioRecorder: NSObject, ObservableObject {
             lastAudioTime
         )
 
-        let finishedURL = captureQueue.sync { () -> URL? in
-            guard let fileURL = tempFileURL else {
-                tearDownCapture(cancelWriter: true)
-                return nil
+        let fileOutput = captureQueue.sync { () -> AVCaptureAudioFileOutput? in
+            audioFileOutput
+        }
+        guard let fileOutput else {
+            captureQueue.sync { tearDownCapture(cancelWriter: true) }
+            return nil
+        }
+
+        let finishedURL: URL?
+        if fileOutput.isRecording {
+            let semaphore = prepareForFileRecordingWait()
+            fileOutput.stopRecording()
+            do {
+                finishedURL = try finishFileRecordingWait(semaphore)
+            } catch {
+                os_log(.error, log: recordingLog, "audio file output failed to finish: %{public}@", error.localizedDescription)
+                finishedURL = nil
             }
+        } else {
+            finishedURL = tempFileURL
+        }
+        captureQueue.sync { tearDownCapture(cancelWriter: false) }
 
-            let writer = assetWriter
-            let input = assetWriterInput
-            tearDownCapture(cancelWriter: false)
-
-            if let writer {
-                var writerFailed = false
-                if writer.status == .writing {
-                    input?.markAsFinished()
-                    let group = DispatchGroup()
-                    group.enter()
-                    writer.finishWriting {
-                        group.leave()
-                    }
-                    let waitResult = group.wait(timeout: .now() + 5)
-                    if waitResult == .timedOut {
-                        writer.cancelWriting()
-                        writerFailed = true
-                    }
-                    if writer.status != .completed {
-                        writerFailed = true
-                        os_log(.error, log: recordingLog, "finishWriting ended with status=%{public}d error=%{public}@", writer.status.rawValue, writer.error?.localizedDescription ?? "none")
-                    }
-                } else if writer.status == .unknown {
-                    writer.cancelWriting()
-                    writerFailed = true
-                } else if writer.status != .completed {
-                    writerFailed = true
-                }
-
-                if writerFailed {
-                    try? FileManager.default.removeItem(at: fileURL)
-                    tempFileURL = nil
-                    return nil
-                }
-            }
-
-            return fileURL
+        if finishedURL == nil, let tempFileURL {
+            try? FileManager.default.removeItem(at: tempFileURL)
+            self.tempFileURL = nil
         }
 
         DispatchQueue.main.async {
@@ -768,5 +777,16 @@ final class AudioRecorder: NSObject, ObservableObject {
 extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         processSampleBuffer(sampleBuffer)
+    }
+}
+
+extension AudioRecorder: AVCaptureFileOutputRecordingDelegate {
+    func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didFinishRecordingTo outputFileURL: URL,
+        from connections: [AVCaptureConnection],
+        error: (any Error)?
+    ) {
+        resolveFileRecording(url: outputFileURL, error: error)
     }
 }
