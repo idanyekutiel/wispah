@@ -35,6 +35,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var audioDeviceInput: AVCaptureDeviceInput?
     private var assetWriter: AVAssetWriter?
     private var assetWriterInput: AVAssetWriterInput?
+    private var recommendedWriterAudioSettings: [String: Any]?
     private var tempFileURL: URL?
     private var currentDeviceUID: String?
     private var firstSampleTimestamp: CMTime?
@@ -172,6 +173,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         audioDeviceInput = nil
         assetWriter = nil
         assetWriterInput = nil
+        recommendedWriterAudioSettings = nil
         currentDeviceUID = nil
         firstSampleTimestamp = nil
         writerSessionStarted = false
@@ -250,12 +252,14 @@ final class AudioRecorder: NSObject, ObservableObject {
         session.commitConfiguration()
 
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .caf)
+        let recommendedSettings = output.recommendedAudioSettingsForAssetWriter(writingTo: .caf)
 
         captureSession = session
         audioDeviceInput = input
         audioOutput = output
         assetWriter = writer
         assetWriterInput = nil
+        recommendedWriterAudioSettings = recommendedSettings
         currentDeviceUID = device.uniqueID
         firstSampleTimestamp = nil
         writerSessionStarted = false
@@ -282,7 +286,7 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         let sampleRate = streamDescription.mSampleRate > 0 ? streamDescription.mSampleRate : 44_100
         let channelCount = max(Int(streamDescription.mChannelsPerFrame), 1)
-        let outputSettings: [String: Any] = [
+        let outputSettings = recommendedWriterAudioSettings ?? [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: channelCount,

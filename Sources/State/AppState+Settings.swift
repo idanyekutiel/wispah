@@ -3,6 +3,8 @@ import ServiceManagement
 import os.log
 
 extension AppState {
+    private static let defaultSavedAudioExtension = "m4a"
+
     static func loadStoredAPIKey(account: String) -> String {
         if let storedKey = AppSettingsStorage.load(account: account), !storedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return storedKey
@@ -33,10 +35,15 @@ extension AppState {
     }
 
     static func saveAudioFile(from tempURL: URL) -> String? {
-        let fileName = UUID().uuidString + "." + tempURL.pathExtension
+        saveAudioFile(from: tempURL, preferredExtension: nil)
+    }
+
+    static func saveAudioFile(from sourceURL: URL, preferredExtension: String?) -> String? {
+        let fileExtension = normalizedAudioFileExtension(preferredExtension ?? sourceURL.pathExtension)
+        let fileName = UUID().uuidString + "." + fileExtension
         let destURL = audioStorageDirectory().appendingPathComponent(fileName)
         do {
-            try FileManager.default.copyItem(at: tempURL, to: destURL)
+            try FileManager.default.copyItem(at: sourceURL, to: destURL)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destURL.path)
             return fileName
         } catch {
@@ -44,9 +51,27 @@ extension AppState {
         }
     }
 
+    static func replaceAudioFile(named existingFileName: String?, with sourceURL: URL, preferredExtension: String? = nil) -> String? {
+        guard let newFileName = saveAudioFile(from: sourceURL, preferredExtension: preferredExtension) else {
+            return existingFileName
+        }
+        if let existingFileName, existingFileName != newFileName {
+            deleteAudioFile(existingFileName)
+        }
+        return newFileName
+    }
+
     static func deleteAudioFile(_ fileName: String) {
         let fileURL = audioStorageDirectory().appendingPathComponent(fileName)
         try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    private static func normalizedAudioFileExtension(_ pathExtension: String?) -> String {
+        let trimmed = pathExtension?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard !trimmed.isEmpty else {
+            return defaultSavedAudioExtension
+        }
+        return trimmed
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {

@@ -427,6 +427,18 @@ struct RunLogEntryView: View {
 
         retryTask = Task {
             do {
+                let uploadURL: URL
+                do {
+                    uploadURL = try await appState.audioRecorder.preprocessAudio(inputURL: audioURL)
+                } catch {
+                    uploadURL = audioURL
+                }
+                defer {
+                    if uploadURL != audioURL {
+                        try? FileManager.default.removeItem(at: uploadURL)
+                    }
+                }
+
                 await MainActor.run { retryStep = "Transcribing audio..." }
                 let transcriptionService = TranscriptionService(
                     apiKey: appState.activeAPIKey,
@@ -434,8 +446,13 @@ struct RunLogEntryView: View {
                     model: appState.whisperModelId,
                     language: appState.transcriptionLanguage
                 )
-                let rawTranscript = try await transcriptionService.transcribe(fileURL: audioURL)
+                let rawTranscript = try await transcriptionService.transcribe(fileURL: uploadURL)
                 let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let updatedAudioFileName = AppState.replaceAudioFile(
+                    named: item.audioFileName,
+                    with: uploadURL,
+                    preferredExtension: uploadURL.pathExtension
+                )
 
                 let finalTranscript: String
                 let processingStatus: String
@@ -493,7 +510,7 @@ struct RunLogEntryView: View {
                             postProcessingStatus: processingStatus,
                             debugStatus: "Retranscribe",
                             customVocabulary: item.customVocabulary,
-                            audioFileName: item.audioFileName,
+                            audioFileName: updatedAudioFileName,
                             recordingDurationSeconds: item.recordingDurationSeconds
                         )
                         appState.pipelineHistory[index] = updated

@@ -27,9 +27,26 @@ extension AppState {
 
         Task {
             do {
+                let uploadURL: URL
+                do {
+                    uploadURL = try await audioRecorder.preprocessAudio(inputURL: audioURL)
+                } catch {
+                    uploadURL = audioURL
+                }
+                defer {
+                    if uploadURL != audioURL {
+                        try? FileManager.default.removeItem(at: uploadURL)
+                    }
+                }
+
                 let service = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
-                let transcript = try await service.transcribe(fileURL: audioURL)
+                let transcript = try await service.transcribe(fileURL: uploadURL)
                 let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let updatedAudioFileName = Self.replaceAudioFile(
+                    named: item.audioFileName,
+                    with: uploadURL,
+                    preferredExtension: uploadURL.pathExtension
+                )
 
                 await MainActor.run {
                     NSPasteboard.general.clearContents()
@@ -49,7 +66,7 @@ extension AppState {
                             postProcessingStatus: "Retried successfully",
                             debugStatus: "Retry",
                             customVocabulary: item.customVocabulary,
-                            audioFileName: item.audioFileName,
+                            audioFileName: updatedAudioFileName,
                             recordingDurationSeconds: item.recordingDurationSeconds
                         )
                         pipelineHistory[index] = updated
