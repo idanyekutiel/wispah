@@ -288,12 +288,6 @@ final class AudioRecorder: NSObject, ObservableObject {
         let channelCount = max(Int(streamDescription.mChannelsPerFrame), 1)
         let outputSettings = recommendedWriterAudioSettings ?? [
             AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: channelCount,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
         ]
 
         let input = AVAssetWriterInput(
