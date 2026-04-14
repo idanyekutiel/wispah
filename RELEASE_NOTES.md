@@ -6,7 +6,8 @@
 
 ## Changelog
 
-- **Improved transcription retry logic** — Enhanced the automatic retry mechanism for failed transcription requests with better error handling.
+- **Fixed Studio Display microphone export corruption** — Recording export now follows AVFoundation's documented writer configuration path so device-native external microphone formats are serialized correctly instead of producing cursed playback or bad transcriptions.
+- **Safer audio writer fallback settings** — When AVFoundation does not provide recommended writer settings, the recorder now lets `sourceFormatHint` fill in the channel and PCM details rather than constructing an invalid multichannel audio dictionary.
 
 ## Requirements
 
