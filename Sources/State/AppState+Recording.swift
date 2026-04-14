@@ -358,6 +358,7 @@ extension AppState {
 
         transcriptionTask?.cancel()
         transcriptionTask = Task {
+            var effectiveSavedAudioFileName = savedAudioFileName
             do {
                 // Preprocess: downsample to 16KHz mono AAC and trim only leading/trailing silence.
                 // Internal pauses must survive; trimming to the last speech-level frame is too aggressive
@@ -369,12 +370,11 @@ extension AppState {
                         trimToSeconds: trimDuration > 0 ? trimDuration : nil,
                         skipLeadingSeconds: speechRange?.start ?? 0
                     )
-                    // Overwrite saved audio with the trimmed version (what Whisper hears)
-                    if let audioFileName = savedAudioFileName {
-                        let savedURL = Self.audioStorageDirectory().appendingPathComponent(audioFileName)
-                        try? FileManager.default.removeItem(at: savedURL)
-                        try? FileManager.default.copyItem(at: uploadURL, to: savedURL)
-                    }
+                    effectiveSavedAudioFileName = Self.replaceAudioFile(
+                        named: effectiveSavedAudioFileName,
+                        with: uploadURL,
+                        preferredExtension: uploadURL.pathExtension
+                    )
                 } catch {
                     os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
                     await MainActor.run { [weak self] in
@@ -446,6 +446,7 @@ extension AppState {
                     processingStatus = "Post-processing disabled"
                     postProcessingPrompt = ""
                 }
+                let historyAudioFileName = effectiveSavedAudioFileName
                 await MainActor.run {
                     self.lastContextSummary = appContext.contextSummary
                     self.lastContextScreenshotDataURL = appContext.screenshotDataURL
@@ -463,7 +464,7 @@ extension AppState {
                         postProcessingPrompt: postProcessingPrompt,
                         context: appContext,
                         processingStatus: processingStatus,
-                        audioFileName: savedAudioFileName,
+                        audioFileName: historyAudioFileName,
                         recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil
                     )
                     self.transcribingIndicatorTask?.cancel()
@@ -510,6 +511,7 @@ extension AppState {
                 } else {
                     resolvedContext = fallbackContextAtStop()
                 }
+                let historyAudioFileName = effectiveSavedAudioFileName
                 await MainActor.run {
                     self.transcribingIndicatorTask?.cancel()
                     self.transcribingIndicatorTask = nil
@@ -532,7 +534,7 @@ extension AppState {
                         postProcessingPrompt: "",
                         context: resolvedContext,
                         processingStatus: "Error: \(error.localizedDescription)",
-                        audioFileName: savedAudioFileName,
+                        audioFileName: historyAudioFileName,
                         recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil
                     )
                 }

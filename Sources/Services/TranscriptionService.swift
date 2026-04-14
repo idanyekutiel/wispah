@@ -196,7 +196,7 @@ class TranscriptionService {
 
             // Always return within the JSON block — don't fall through to plain text,
             // which would return the raw JSON string as the transcript
-            return text
+            return sanitizeTranscript(text)
         }
 
         // Non-JSON fallback (plain text response)
@@ -209,7 +209,101 @@ class TranscriptionService {
             throw TranscriptionError.pollFailed("Invalid response")
         }
 
-        return text
+        return sanitizeTranscript(text)
+    }
+
+    private func sanitizeTranscript(_ transcript: String) -> String {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ""
+        }
+
+        if isKnownHallucinatedOutro(trimmed) {
+            os_log(.info, "Dropping known transcription hallucination: %{public}@", trimmed)
+            return ""
+        }
+
+        if let stripped = strippingKnownHallucinatedOutroSuffix(from: trimmed), !stripped.isEmpty {
+            os_log(.info, "Removed known hallucinated transcript suffix")
+            return stripped
+        }
+
+        return trimmed
+    }
+
+    private func isKnownHallucinatedOutro(_ transcript: String) -> Bool {
+        let normalized = normalizeHallucinationCandidate(transcript)
+        return normalized == "thanks for watching" || normalized == "thank you for watching"
+    }
+
+    private func strippingKnownHallucinatedOutroSuffix(from transcript: String) -> String? {
+        let coreEnd = trimmedHallucinationBoundary(in: transcript)
+        let coreTranscript = transcript[..<coreEnd]
+        let lowercased = coreTranscript.lowercased()
+        let phrases = ["thanks for watching", "thank you for watching"]
+
+        for phrase in phrases {
+            guard lowercased.hasSuffix(phrase) else { continue }
+
+            let suffixStart = coreTranscript.index(coreTranscript.endIndex, offsetBy: -phrase.count)
+            let prefix = coreTranscript[..<suffixStart]
+            guard shouldRemoveHallucinatedSuffix(in: prefix) else { continue }
+
+            return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return nil
+    }
+
+    private func trimmedHallucinationBoundary(in transcript: String) -> String.Index {
+        var end = transcript.endIndex
+
+        while end > transcript.startIndex {
+            let previous = transcript.index(before: end)
+            let character = transcript[previous]
+            if character.isWhitespace || ".!?,;:)]}\"'".contains(character) {
+                end = previous
+                continue
+            }
+            break
+        }
+
+        return end
+    }
+
+    private func shouldRemoveHallucinatedSuffix(in prefix: Substring) -> Bool {
+        guard !prefix.isEmpty else { return false }
+
+        var sawLineBreak = false
+        var lastSignificantCharacter: Character?
+
+        for character in prefix.reversed() {
+            if character == "\n" || character == "\r" {
+                sawLineBreak = true
+                break
+            }
+            if character.isWhitespace {
+                continue
+            }
+            lastSignificantCharacter = character
+            break
+        }
+
+        if sawLineBreak {
+            return true
+        }
+
+        guard let lastSignificantCharacter else {
+            return false
+        }
+
+        return ".!?:;)]}\"'".contains(lastSignificantCharacter)
+    }
+
+    private func normalizeHallucinationCandidate(_ transcript: String) -> String {
+        transcript
+            .lowercased()
+            .trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines))
     }
 }
 
