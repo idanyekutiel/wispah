@@ -6,8 +6,9 @@
 
 ## Changelog
 
-- **Fixed Studio Display microphone export corruption** — Recording export now follows AVFoundation's documented writer configuration path so device-native external microphone formats are serialized correctly instead of producing cursed playback or bad transcriptions.
-- **Safer audio writer fallback settings** — When AVFoundation does not provide recommended writer settings, the recorder now lets `sourceFormatHint` fill in the channel and PCM details rather than constructing an invalid multichannel audio dictionary.
+- **Reworked long recording stability on macOS** — The recorder now uses `AVCaptureAudioFileOutput` for the actual on-disk recording file instead of manually appending audio buffers through `AVAssetWriterInput`, which is a safer fit for longer-running captures.
+- **Separated recording from waveform analysis** — `AVCaptureAudioDataOutput` is now used only for waveform and speech detection, while file writing is handled by AVFoundation's dedicated file output path.
+- **Improved Studio Display compatibility** — External microphones like Studio Display now go through the same dedicated file-recording path, which should avoid the corrupted playback and transcription issues that only showed up on longer recordings.
 
 ## Requirements
 
