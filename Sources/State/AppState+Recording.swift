@@ -278,38 +278,10 @@ extension AppState {
 
         let trimDuration = audioRecorder.lastNonSilentDuration
         let speechRange = audioRecorder.speechTimeRange
-        guard let fileURL = audioRecorder.stopRecording() else {
-            errorMessage = "No audio recorded"
-            isRecording = false
-            statusText = "Error"
-            overlayManager.dismiss()
-            return
-        }
-
-        // Skip transcription if no actual audio or no speech detected
-        // (Whisper hallucinates on silent/near-silent audio — "thank you", etc.)
-        if trimDuration <= 0 || !audioRecorder.detectedSpeech {
-            if !audioRecorder.detectedSpeech {
-                os_log(.info, log: recordingLog, "no speech detected — skipping transcription")
-            }
-            isRecording = false
-            statusText = "Nothing to transcribe"
-            overlayManager.dismiss()
-            audioRecorder.cleanup()
-            try? FileManager.default.removeItem(at: fileURL)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                if self.statusText == "Nothing to transcribe" {
-                    self.statusText = "Ready"
-                }
-            }
-            return
-        }
-
-        let savedAudioFileName = Self.saveAudioFile(from: fileURL)
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."
-        debugStatusMessage = "Processing audio"
+        debugStatusMessage = "Finalizing audio"
         errorMessage = nil
         if playSoundsEnabled { NSSound(named: "Pop")?.play() }
         overlayManager.slideUpToNotch { }
@@ -327,216 +299,247 @@ extension AppState {
             } catch {}
         }
 
-        let transcriptionService = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
-        let postProcessingService = PostProcessingService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: llmModelId)
-
-        // Build Whisper prompt as a fictitious preceding transcript.
-        // Whisper treats the prompt as prior transcript text and matches its style —
-        // it does NOT follow instructions. Longer prompts are more reliable.
-        // Terms embedded in natural sentences work better than glossary lists.
-        // Max 224 tokens (only the final 224 are considered). See:
-        // https://developers.openai.com/cookbook/examples/whisper_prompting_guide
-        let whisperPrompt: String? = {
-            var sentences: [String] = []
-            if developerModeEnabled {
-                sentences.append("So I pushed the commit to the repo and opened a PR for the API changes. The CI pipeline ran the tests and everything passed. I need to refactor the config and update the env variables before deploying.")
+        audioRecorder.stopRecordingAsync { [weak self] fileURL in
+            guard let self else { return }
+            guard let fileURL else {
+                self.transcribingIndicatorTask?.cancel()
+                self.transcribingIndicatorTask = nil
+                self.errorMessage = "No audio recorded"
+                self.isTranscribing = false
+                self.statusText = "Error"
+                self.overlayManager.dismiss()
+                return
             }
-            let vocab = customVocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !vocab.isEmpty {
-                let terms = vocab
-                    .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-                if !terms.isEmpty {
-                    // Weave terms into natural sentences so Whisper learns spellings from context
-                    let joined = terms.joined(separator: ", ")
-                    sentences.append("Some of the key terms we've been discussing include \(joined). These come up frequently in conversation.")
+
+            // Skip transcription if no actual audio or no speech detected
+            // (Whisper hallucinates on silent/near-silent audio — "thank you", etc.)
+            if trimDuration <= 0 || !self.audioRecorder.detectedSpeech {
+                if !self.audioRecorder.detectedSpeech {
+                    os_log(.info, log: recordingLog, "no speech detected — skipping transcription")
                 }
+                self.transcribingIndicatorTask?.cancel()
+                self.transcribingIndicatorTask = nil
+                self.isTranscribing = false
+                self.statusText = "Nothing to transcribe"
+                self.overlayManager.dismiss()
+                self.audioRecorder.cleanup()
+                try? FileManager.default.removeItem(at: fileURL)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    if self.statusText == "Nothing to transcribe" {
+                        self.statusText = "Ready"
+                    }
+                }
+                return
             }
-            return sentences.isEmpty ? nil : sentences.joined(separator: " ")
-        }()
 
-        transcriptionTask?.cancel()
-        transcriptionTask = Task {
-            var effectiveSavedAudioFileName = savedAudioFileName
-            do {
-                // Preprocess: downsample to 16KHz mono AAC and trim only leading/trailing silence.
-                // Internal pauses must survive; trimming to the last speech-level frame is too aggressive
-                // for long dictation where later speech is quieter than the initial section.
-                let uploadURL: URL
-                do {
-                    uploadURL = try await audioRecorder.preprocessAudio(
-                        inputURL: fileURL,
-                        trimToSeconds: trimDuration > 0 ? trimDuration : nil,
-                        skipLeadingSeconds: speechRange?.start ?? 0
-                    )
-                    effectiveSavedAudioFileName = Self.replaceAudioFile(
-                        named: effectiveSavedAudioFileName,
-                        with: uploadURL,
-                        preferredExtension: uploadURL.pathExtension
-                    )
-                } catch {
-                    os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
-                    await MainActor.run { [weak self] in
-                        self?.debugStatusMessage = "Audio preprocessing failed, using original"
+            let savedAudioFileName = Self.saveAudioFile(from: fileURL)
+            self.debugStatusMessage = "Processing audio"
+
+            let transcriptionService = TranscriptionService(apiKey: self.activeAPIKey, baseURL: self.activeBaseURL, model: self.whisperModelId, language: self.transcriptionLanguage)
+            let postProcessingService = PostProcessingService(apiKey: self.activeAPIKey, baseURL: self.activeBaseURL, model: self.llmModelId)
+
+            // Build Whisper prompt as a fictitious preceding transcript.
+            // Whisper treats the prompt as prior transcript text and matches its style —
+            // it does NOT follow instructions. Longer prompts are more reliable.
+            // Terms embedded in natural sentences work better than glossary lists.
+            // Max 224 tokens (only the final 224 are considered). See:
+            // https://developers.openai.com/cookbook/examples/whisper_prompting_guide
+            let whisperPrompt: String? = {
+                var sentences: [String] = []
+                if self.developerModeEnabled {
+                    sentences.append("So I pushed the commit to the repo and opened a PR for the API changes. The CI pipeline ran the tests and everything passed. I need to refactor the config and update the env variables before deploying.")
+                }
+                let vocab = self.customVocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !vocab.isEmpty {
+                    let terms = vocab
+                        .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    if !terms.isEmpty {
+                        let joined = terms.joined(separator: ", ")
+                        sentences.append("Some of the key terms we've been discussing include \(joined). These come up frequently in conversation.")
                     }
-                    uploadURL = fileURL
                 }
-                await MainActor.run { [weak self] in
-                    self?.debugStatusMessage = "Transcribing audio"
-                }
+                return sentences.isEmpty ? nil : sentences.joined(separator: " ")
+            }()
 
-                var rawResult: String
+            self.transcriptionTask?.cancel()
+            self.transcriptionTask = Task {
+                var effectiveSavedAudioFileName = savedAudioFileName
                 do {
-                    rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
-                } catch let error where Self.isTransientNetworkError(error) {
-                    os_log(.info, log: recordingLog, "transcription failed with transient error — retrying once: %{public}@", error.localizedDescription)
-                    await MainActor.run { [weak self] in
-                        self?.debugStatusMessage = "Connection issue, retrying…"
-                    }
-                    rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
-                }
-
-                // Smart retry: if transcript is empty but recording was long enough, retry once
-                if rawResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimDuration > 1.5 {
-                    os_log(.info, log: recordingLog, "empty transcript on %.1fs recording — retrying once", trimDuration)
-                    rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
-                }
-                let rawTranscript = rawResult
-
-                // Clean up preprocessed file if different from original
-                if uploadURL != fileURL {
-                    try? FileManager.default.removeItem(at: uploadURL)
-                }
-                let appContext: AppContext
-                if let sessionContext {
-                    appContext = sessionContext
-                } else if let inFlightContext = await inFlightContextTask?.value {
-                    appContext = inFlightContext
-                } else {
-                    appContext = fallbackContextAtStop()
-                }
-                await MainActor.run { [weak self] in
-                    self?.debugStatusMessage = "Running post-processing"
-                }
-                let finalTranscript: String
-                let processingStatus: String
-                let postProcessingPrompt: String
-                if self.postProcessingEnabled {
+                    let uploadURL: URL
                     do {
-                        let postProcessingResult = try await postProcessingService.postProcess(
-                            transcript: rawTranscript,
-                            context: appContext,
-                            customVocabulary: customVocabulary,
-                            smartFormatting: smartFormattingEnabled,
-                            smartCorrections: smartCorrectionsEnabled,
-                            developerMode: developerModeEnabled,
-                            customPrompt: customPostProcessingPrompt
+                        uploadURL = try await self.audioRecorder.preprocessAudio(
+                            inputURL: fileURL,
+                            trimToSeconds: trimDuration > 0 ? trimDuration : nil,
+                            skipLeadingSeconds: speechRange?.start ?? 0
                         )
-                        finalTranscript = postProcessingResult.transcript
-                        processingStatus = "Post-processing succeeded"
-                        postProcessingPrompt = postProcessingResult.prompt
+                        effectiveSavedAudioFileName = Self.replaceAudioFile(
+                            named: effectiveSavedAudioFileName,
+                            with: uploadURL,
+                            preferredExtension: uploadURL.pathExtension
+                        )
                     } catch {
+                        os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
+                        await MainActor.run { [weak self] in
+                            self?.debugStatusMessage = "Audio preprocessing failed, using original"
+                        }
+                        uploadURL = fileURL
+                    }
+                    await MainActor.run { [weak self] in
+                        self?.debugStatusMessage = "Transcribing audio"
+                    }
+
+                    var rawResult: String
+                    do {
+                        rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                    } catch let error where Self.isTransientNetworkError(error) {
+                        os_log(.info, log: recordingLog, "transcription failed with transient error — retrying once: %{public}@", error.localizedDescription)
+                        await MainActor.run { [weak self] in
+                            self?.debugStatusMessage = "Connection issue, retrying…"
+                        }
+                        rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                    }
+
+                    if rawResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimDuration > 1.5 {
+                        os_log(.info, log: recordingLog, "empty transcript on %.1fs recording — retrying once", trimDuration)
+                        rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                    }
+                    let rawTranscript = rawResult
+
+                    if uploadURL != fileURL {
+                        try? FileManager.default.removeItem(at: uploadURL)
+                    }
+                    let appContext: AppContext
+                    if let sessionContext {
+                        appContext = sessionContext
+                    } else if let inFlightContext = await inFlightContextTask?.value {
+                        appContext = inFlightContext
+                    } else {
+                        appContext = self.fallbackContextAtStop()
+                    }
+                    await MainActor.run { [weak self] in
+                        self?.debugStatusMessage = "Running post-processing"
+                    }
+                    let finalTranscript: String
+                    let processingStatus: String
+                    let postProcessingPrompt: String
+                    if self.postProcessingEnabled {
+                        do {
+                            let postProcessingResult = try await postProcessingService.postProcess(
+                                transcript: rawTranscript,
+                                context: appContext,
+                                customVocabulary: self.customVocabulary,
+                                smartFormatting: self.smartFormattingEnabled,
+                                smartCorrections: self.smartCorrectionsEnabled,
+                                developerMode: self.developerModeEnabled,
+                                customPrompt: self.customPostProcessingPrompt
+                            )
+                            finalTranscript = postProcessingResult.transcript
+                            processingStatus = "Post-processing succeeded"
+                            postProcessingPrompt = postProcessingResult.prompt
+                        } catch {
+                            finalTranscript = rawTranscript
+                            processingStatus = "Post-processing failed, using raw transcript"
+                            postProcessingPrompt = ""
+                        }
+                    } else {
                         finalTranscript = rawTranscript
-                        processingStatus = "Post-processing failed, using raw transcript"
+                        processingStatus = "Post-processing disabled"
                         postProcessingPrompt = ""
                     }
-                } else {
-                    finalTranscript = rawTranscript
-                    processingStatus = "Post-processing disabled"
-                    postProcessingPrompt = ""
-                }
-                let historyAudioFileName = effectiveSavedAudioFileName
-                await MainActor.run {
-                    self.lastContextSummary = appContext.contextSummary
-                    self.lastContextScreenshotDataURL = appContext.screenshotDataURL
-                    self.lastContextScreenshotStatus = appContext.screenshotError
-                        ?? "available (\(appContext.screenshotMimeType ?? "image"))"
-                    let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let trimmedFinalTranscript = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.lastPostProcessingPrompt = postProcessingPrompt
-                    self.lastRawTranscript = trimmedRawTranscript
-                    self.lastPostProcessedTranscript = trimmedFinalTranscript
-                    self.lastPostProcessingStatus = processingStatus
-                    self.recordPipelineHistoryEntry(
-                        rawTranscript: trimmedRawTranscript,
-                        postProcessedTranscript: trimmedFinalTranscript,
-                        postProcessingPrompt: postProcessingPrompt,
-                        context: appContext,
-                        processingStatus: processingStatus,
-                        audioFileName: historyAudioFileName,
-                        recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil
-                    )
-                    self.transcribingIndicatorTask?.cancel()
-                    self.transcribingIndicatorTask = nil
-                    self.lastTranscript = trimmedFinalTranscript
-                    self.isTranscribing = false
-                    self.debugStatusMessage = "Done"
+                    let historyAudioFileName = effectiveSavedAudioFileName
+                    await MainActor.run {
+                        self.lastContextSummary = appContext.contextSummary
+                        self.lastContextScreenshotDataURL = appContext.screenshotDataURL
+                        self.lastContextScreenshotStatus = appContext.screenshotError
+                            ?? "available (\(appContext.screenshotMimeType ?? "image"))"
+                        let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let trimmedFinalTranscript = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                        self.lastPostProcessingPrompt = postProcessingPrompt
+                        self.lastRawTranscript = trimmedRawTranscript
+                        self.lastPostProcessedTranscript = trimmedFinalTranscript
+                        self.lastPostProcessingStatus = processingStatus
+                        self.recordPipelineHistoryEntry(
+                            rawTranscript: trimmedRawTranscript,
+                            postProcessedTranscript: trimmedFinalTranscript,
+                            postProcessingPrompt: postProcessingPrompt,
+                            context: appContext,
+                            processingStatus: processingStatus,
+                            audioFileName: historyAudioFileName,
+                            recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil
+                        )
+                        self.transcribingIndicatorTask?.cancel()
+                        self.transcribingIndicatorTask = nil
+                        self.lastTranscript = trimmedFinalTranscript
+                        self.isTranscribing = false
+                        self.debugStatusMessage = "Done"
 
-                    if trimmedFinalTranscript.isEmpty {
-                        self.statusText = "Nothing to transcribe"
-                        self.overlayManager.dismiss()
-                    } else {
-                        self.overlayManager.showDone()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                        if trimmedFinalTranscript.isEmpty {
+                            self.statusText = "Nothing to transcribe"
                             self.overlayManager.dismiss()
+                        } else {
+                            self.overlayManager.showDone()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                                self.overlayManager.dismiss()
+                            }
+
+                            let textToPaste = self.needsLeadingSpace() ? " " + trimmedFinalTranscript : trimmedFinalTranscript
+
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(textToPaste, forType: .string)
+
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                self.pasteAtCursor()
+                            }
+
+                            self.statusText = "Pasted!"
                         }
 
-                        let textToPaste = self.needsLeadingSpace() ? " " + trimmedFinalTranscript : trimmedFinalTranscript
+                        self.audioRecorder.cleanup()
 
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(textToPaste, forType: .string)
-
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            self.pasteAtCursor()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            if self.statusText == "Pasted!" || self.statusText == "Nothing to transcribe" {
+                                self.statusText = "Ready"
+                            }
                         }
-
-                        self.statusText = "Pasted!"
                     }
-
-                    self.audioRecorder.cleanup()
-
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                        if self.statusText == "Pasted!" || self.statusText == "Nothing to transcribe" {
-                            self.statusText = "Ready"
-                        }
+                } catch {
+                    let resolvedContext: AppContext
+                    if let sessionContext {
+                        resolvedContext = sessionContext
+                    } else if let inFlightContext = await inFlightContextTask?.value {
+                        resolvedContext = inFlightContext
+                    } else {
+                        resolvedContext = self.fallbackContextAtStop()
                     }
-                }
-            } catch {
-                let resolvedContext: AppContext
-                if let sessionContext {
-                    resolvedContext = sessionContext
-                } else if let inFlightContext = await inFlightContextTask?.value {
-                    resolvedContext = inFlightContext
-                } else {
-                    resolvedContext = fallbackContextAtStop()
-                }
-                let historyAudioFileName = effectiveSavedAudioFileName
-                await MainActor.run {
-                    self.transcribingIndicatorTask?.cancel()
-                    self.transcribingIndicatorTask = nil
-                    self.errorMessage = error.localizedDescription
-                    self.isTranscribing = false
-                    self.statusText = "Error"
-                    self.audioRecorder.cleanup()
-                    self.overlayManager.showError(error.localizedDescription)
-                    self.lastPostProcessedTranscript = ""
-                    self.lastRawTranscript = ""
-                    self.lastContextSummary = ""
-                    self.lastPostProcessingStatus = "Error: \(error.localizedDescription)"
-                    self.lastPostProcessingPrompt = ""
-                    self.lastContextScreenshotDataURL = resolvedContext.screenshotDataURL
-                    self.lastContextScreenshotStatus = resolvedContext.screenshotError
-                        ?? "available (\(resolvedContext.screenshotMimeType ?? "image"))"
-                    self.recordPipelineHistoryEntry(
-                        rawTranscript: "",
-                        postProcessedTranscript: "",
-                        postProcessingPrompt: "",
-                        context: resolvedContext,
-                        processingStatus: "Error: \(error.localizedDescription)",
-                        audioFileName: historyAudioFileName,
-                        recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil
-                    )
+                    let historyAudioFileName = effectiveSavedAudioFileName
+                    await MainActor.run {
+                        self.transcribingIndicatorTask?.cancel()
+                        self.transcribingIndicatorTask = nil
+                        self.errorMessage = error.localizedDescription
+                        self.isTranscribing = false
+                        self.statusText = "Error"
+                        self.audioRecorder.cleanup()
+                        self.overlayManager.showError(error.localizedDescription)
+                        self.lastPostProcessedTranscript = ""
+                        self.lastRawTranscript = ""
+                        self.lastContextSummary = ""
+                        self.lastPostProcessingStatus = "Error: \(error.localizedDescription)"
+                        self.lastPostProcessingPrompt = ""
+                        self.lastContextScreenshotDataURL = resolvedContext.screenshotDataURL
+                        self.lastContextScreenshotStatus = resolvedContext.screenshotError
+                            ?? "available (\(resolvedContext.screenshotMimeType ?? "image"))"
+                        self.recordPipelineHistoryEntry(
+                            rawTranscript: "",
+                            postProcessedTranscript: "",
+                            postProcessingPrompt: "",
+                            context: resolvedContext,
+                            processingStatus: "Error: \(error.localizedDescription)",
+                            audioFileName: historyAudioFileName,
+                            recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil
+                        )
+                    }
                 }
             }
         }

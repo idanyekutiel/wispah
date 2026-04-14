@@ -164,7 +164,22 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     private func finishFileRecordingWait(_ semaphore: DispatchSemaphore) throws -> URL {
-        let waitResult = semaphore.wait(timeout: .now() + 15)
+        var waitResult: DispatchTimeoutResult = .timedOut
+        if Thread.isMainThread {
+            let deadline = Date().addingTimeInterval(15)
+            while Date() < deadline {
+                fileRecordingLock.lock()
+                let resolved = fileRecordingResolved
+                fileRecordingLock.unlock()
+                if resolved {
+                    waitResult = .success
+                    break
+                }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+        } else {
+            waitResult = semaphore.wait(timeout: .now() + 15)
+        }
 
         fileRecordingLock.lock()
         let error = fileRecordingError
@@ -627,6 +642,77 @@ final class AudioRecorder: NSObject, ObservableObject {
         onRecordingReady = nil
 
         return finishedURL
+    }
+
+    func stopRecordingAsync(completion: @escaping (URL?) -> Void) {
+        tapLock.lock()
+        let recordedBuffers = bufferCount
+        let recordedSpeechBuffers = speechBufferCount
+        let lastAudioTime = lastNonSilentTime
+        tapLock.unlock()
+        os_log(
+            .info,
+            log: recordingLog,
+            "stopRecordingAsync() called after %.3fms, buffers=%d, speechBuffers=%d, lastAudio=%.2fs",
+            (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000,
+            recordedBuffers,
+            recordedSpeechBuffers,
+            lastAudioTime
+        )
+
+        let finish: (URL?) -> Void = { [weak self] finishedURL in
+            guard let self else { return }
+
+            if finishedURL == nil, let tempFileURL = self.tempFileURL {
+                try? FileManager.default.removeItem(at: tempFileURL)
+                self.tempFileURL = nil
+            }
+
+            DispatchQueue.main.async {
+                self.isRecording = false
+                self.audioLevel = 0.0
+                completion(finishedURL)
+            }
+
+            self.tapLock.lock()
+            self.smoothedLevel = 0.0
+            self.tapLock.unlock()
+            self.onRecordingReady = nil
+        }
+
+        let fileOutput = captureQueue.sync { () -> AVCaptureAudioFileOutput? in
+            audioFileOutput
+        }
+        guard let fileOutput else {
+            captureQueue.async { [weak self] in
+                self?.tearDownCapture(cancelWriter: true)
+                finish(nil)
+            }
+            return
+        }
+
+        if fileOutput.isRecording {
+            let semaphore = prepareForFileRecordingWait()
+            fileOutput.stopRecording()
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let self else { return }
+                let finishedURL: URL?
+                do {
+                    finishedURL = try self.finishFileRecordingWait(semaphore)
+                } catch {
+                    os_log(.error, log: recordingLog, "audio file output failed to finish: %{public}@", error.localizedDescription)
+                    finishedURL = nil
+                }
+                self.captureQueue.sync { self.tearDownCapture(cancelWriter: false) }
+                finish(finishedURL)
+            }
+        } else {
+            let finishedURL = tempFileURL
+            captureQueue.async { [weak self] in
+                self?.tearDownCapture(cancelWriter: false)
+                finish(finishedURL)
+            }
+        }
     }
 
     private func computeAudioLevel(rms: Float) {
