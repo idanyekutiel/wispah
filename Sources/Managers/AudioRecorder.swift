@@ -28,6 +28,12 @@ struct RecordingStartResult {
     let deviceUID: String?
 }
 
+private final class SampleAccurateFileOutputDelegate: NSObject, AVCaptureFileOutputDelegate {
+    func fileOutputShouldProvideSampleAccurateRecordingStart(_ output: AVCaptureFileOutput) -> Bool {
+        true
+    }
+}
+
 final class AudioRecorder: NSObject, ObservableObject {
     private let captureQueue = DispatchQueue(label: "com.idanyekutiel.wispah.capture")
     private var captureSession: AVCaptureSession?
@@ -40,10 +46,13 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var firstSampleTimestamp: CMTime?
     private var runtimeErrorObserver: NSObjectProtocol?
     private var deviceDisconnectObserver: NSObjectProtocol?
+    private let fileOutputDelegate = SampleAccurateFileOutputDelegate()
     private let startupLock = NSLock()
     private var startupSemaphore: DispatchSemaphore?
     private var startupError: Error?
     private var startupResolved = false
+    private var startupSawAudioBuffer = false
+    private var startupSawFileRecordingStart = false
     private let fileRecordingLock = NSLock()
     private var fileRecordingSemaphore: DispatchSemaphore?
     private var fileRecordingResolved = false
@@ -100,8 +109,38 @@ final class AudioRecorder: NSObject, ObservableObject {
         startupSemaphore = semaphore
         startupError = nil
         startupResolved = false
+        startupSawAudioBuffer = false
+        startupSawFileRecordingStart = false
         startupLock.unlock()
         return semaphore
+    }
+
+    private func noteStartupAudioBuffer() -> Bool {
+        startupLock.lock()
+        defer { startupLock.unlock() }
+
+        startupSawAudioBuffer = true
+        guard !startupResolved, startupSawFileRecordingStart else { return false }
+        startupResolved = true
+        startupError = nil
+        let semaphore = startupSemaphore
+        startupSemaphore = nil
+        semaphore?.signal()
+        return true
+    }
+
+    private func noteStartupFileRecordingStart() -> Bool {
+        startupLock.lock()
+        defer { startupLock.unlock() }
+
+        startupSawFileRecordingStart = true
+        guard !startupResolved, startupSawAudioBuffer else { return false }
+        startupResolved = true
+        startupError = nil
+        let semaphore = startupSemaphore
+        startupSemaphore = nil
+        semaphore?.signal()
+        return true
     }
 
     private func resolveStartup(error: Error?) {
@@ -234,6 +273,10 @@ final class AudioRecorder: NSObject, ObservableObject {
         audioDeviceInput = nil
         currentDeviceUID = nil
         firstSampleTimestamp = nil
+        startupLock.lock()
+        startupSawAudioBuffer = false
+        startupSawFileRecordingStart = false
+        startupLock.unlock()
     }
 
     private func registerObservers(for session: AVCaptureSession, deviceUID: String) {
@@ -338,6 +381,7 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         let fileOutput = AVCaptureAudioFileOutput()
         fileOutput.audioSettings = nil
+        fileOutput.delegate = fileOutputDelegate
         guard session.canAddOutput(fileOutput) else {
             session.commitConfiguration()
             throw AudioRecorderError.captureSessionError("Could not add audio file output")
@@ -487,9 +531,12 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
 
         if shouldFireReady {
-            resolveStartup(error: nil)
-            os_log(.info, log: recordingLog, "first audio buffer received — recording ready")
-            onRecordingReady?()
+            if noteStartupAudioBuffer() {
+                os_log(.info, log: recordingLog, "first audio buffer received and file output started — recording ready")
+                onRecordingReady?()
+            } else {
+                os_log(.info, log: recordingLog, "first audio buffer received — waiting for file output start")
+            }
         }
 
         computeAudioLevel(rms: rmsValue)
@@ -867,6 +914,19 @@ extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
 }
 
 extension AudioRecorder: AVCaptureFileOutputRecordingDelegate {
+    func fileOutput(
+        _ output: AVCaptureFileOutput,
+        didStartRecordingTo fileURL: URL,
+        from connections: [AVCaptureConnection]
+    ) {
+        if noteStartupFileRecordingStart() {
+            os_log(.info, log: recordingLog, "file output started and audio buffers are flowing — recording ready")
+            onRecordingReady?()
+        } else {
+            os_log(.info, log: recordingLog, "file output started writing to %{public}@", fileURL.lastPathComponent)
+        }
+    }
+
     func fileOutput(
         _ output: AVCaptureFileOutput,
         didFinishRecordingTo outputFileURL: URL,
