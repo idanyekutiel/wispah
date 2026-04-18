@@ -151,7 +151,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func tearDownCapture(cancelWriter: Bool) {
+    private func tearDownCapture(cancelWriter: Bool, preserveRecordingArtifacts: Bool = false) {
         removeObservers()
 
         if let output = audioOutput {
@@ -168,18 +168,21 @@ final class AudioRecorder: NSObject, ObservableObject {
             self.tempFileURL = nil
         }
 
-        for chunk in recordingChunks {
-            try? FileManager.default.removeItem(at: chunk.url)
-        }
-
         masterRecordingFile = nil
         chunkRecordingFile = nil
-        recordingFormat = nil
         captureSession = nil
         audioOutput = nil
         audioDeviceInput = nil
         currentDeviceUID = nil
         firstSampleTimestamp = nil
+
+        guard !preserveRecordingArtifacts else { return }
+
+        for chunk in recordingChunks {
+            try? FileManager.default.removeItem(at: chunk.url)
+        }
+
+        recordingFormat = nil
         masterFrameCount = 0
         recordingChunks.removeAll()
         masterRecordingHealthy = true
@@ -790,7 +793,7 @@ final class AudioRecorder: NSObject, ObservableObject {
                     return nil
                 }
             }
-            tearDownCapture(cancelWriter: false)
+            tearDownCapture(cancelWriter: false, preserveRecordingArtifacts: true)
             guard frameCount > 0 else { return nil }
             return outputURL
         }
@@ -843,7 +846,7 @@ final class AudioRecorder: NSObject, ObservableObject {
                     outputURL = nil
                 }
             }
-            self.tearDownCapture(cancelWriter: false)
+            self.tearDownCapture(cancelWriter: false, preserveRecordingArtifacts: true)
             let finishedURL = frameCount > 0 ? outputURL : nil
 
             DispatchQueue.main.async {
@@ -1000,6 +1003,26 @@ final class AudioRecorder: NSObject, ObservableObject {
         if let url = tempFileURL {
             try? FileManager.default.removeItem(at: url)
             tempFileURL = nil
+        }
+        for chunk in recordingChunks {
+            try? FileManager.default.removeItem(at: chunk.url)
+        }
+        recordingChunks.removeAll()
+        recordingFormat = nil
+        masterFrameCount = 0
+        masterRecordingHealthy = true
+    }
+
+    func assembleFallbackRecordingIfAvailable() -> URL? {
+        captureQueue.sync {
+            trimEmptyTrailingChunks()
+            guard !recordingChunks.isEmpty else { return nil }
+            do {
+                return try assembleChunks()
+            } catch {
+                os_log(.error, log: recordingLog, "failed to assemble fallback chunks: %{public}@", error.localizedDescription)
+                return nil
+            }
         }
     }
 }

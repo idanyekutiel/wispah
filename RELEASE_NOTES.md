@@ -6,6 +6,8 @@
 
 ## Changelog
 
+- **Automatically retries transcription with recovered chunk audio** — If the fast primary recording returns an empty transcript or fails during transcription, the app now assembles the preserved fallback chunks and retries automatically instead of leaving recovery to manual retranscribe.
+- **Keeps fallback chunks alive until transcription finishes** — Recording cleanup no longer destroys chunk checkpoints immediately after stop, so the app can still recover from a bad primary file during the same transcription pass.
 - **Fixed stuck error overlays** — Error banners now always schedule a managed auto-dismiss cleanup instead of relying on an unmanaged timer path, so file and recording errors no longer get stranded on screen.
 - **Added a manual dismiss control for recording errors** — Error overlays now expose an explicit close button, so even if the automatic cleanup path is delayed you can still clear the banner immediately.
 - **Rebuilt recording for fast start and fallback recovery** — Recording now enters its active state immediately after the mic session and writers are armed, instead of waiting for the first analyzed buffer before the UI can proceed.

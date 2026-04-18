@@ -392,48 +392,91 @@ extension AppState {
             self.transcriptionTask = Task {
                 var effectiveSavedAudioFileName = savedAudioFileName
                 do {
-                    let uploadURL: URL
+                    var temporaryUploadURLs: [URL] = []
+
+                    func prepareUploadURL(from sourceURL: URL) async -> URL {
+                        do {
+                            let uploadURL = try await self.audioRecorder.preprocessAudio(
+                                inputURL: sourceURL,
+                                trimToSeconds: trimDuration > 0 ? trimDuration : nil,
+                                skipLeadingSeconds: speechRange?.start ?? 0
+                            )
+                            if uploadURL != sourceURL {
+                                temporaryUploadURLs.append(uploadURL)
+                            }
+                            effectiveSavedAudioFileName = Self.replaceAudioFile(
+                                named: effectiveSavedAudioFileName,
+                                with: uploadURL,
+                                preferredExtension: uploadURL.pathExtension
+                            )
+                            return uploadURL
+                        } catch {
+                            os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
+                            await MainActor.run { [weak self] in
+                                self?.debugStatusMessage = "Audio preprocessing failed, using original"
+                            }
+                            return sourceURL
+                        }
+                    }
+
+                    func transcribeWithRetry(uploadURL: URL) async throws -> String {
+                        await MainActor.run { [weak self] in
+                            self?.debugStatusMessage = "Transcribing audio"
+                        }
+
+                        var rawResult: String
+                        do {
+                            rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                        } catch let error where Self.isTransientNetworkError(error) {
+                            os_log(.info, log: recordingLog, "transcription failed with transient error — retrying once: %{public}@", error.localizedDescription)
+                            await MainActor.run { [weak self] in
+                                self?.debugStatusMessage = "Connection issue, retrying…"
+                            }
+                            rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                        }
+
+                        if rawResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimDuration > 1.5 {
+                            os_log(.info, log: recordingLog, "empty transcript on %.1fs recording — retrying once", trimDuration)
+                            rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
+                        }
+
+                        return rawResult
+                    }
+
+                    func retryWithRecoveredAudio(reason: String) async throws -> String? {
+                        guard let recoveredSourceURL = self.audioRecorder.assembleFallbackRecordingIfAvailable() else {
+                            return nil
+                        }
+                        os_log(.info, log: recordingLog, "retrying transcription with recovered chunk audio after %{public}@", reason)
+                        await MainActor.run { [weak self] in
+                            self?.debugStatusMessage = "Recovering audio and retrying"
+                        }
+                        let recoveredUploadURL = await prepareUploadURL(from: recoveredSourceURL)
+                        return try await transcribeWithRetry(uploadURL: recoveredUploadURL)
+                    }
+
+                    let uploadURL = await prepareUploadURL(from: fileURL)
+
+                    let rawResult: String
                     do {
-                        uploadURL = try await self.audioRecorder.preprocessAudio(
-                            inputURL: fileURL,
-                            trimToSeconds: trimDuration > 0 ? trimDuration : nil,
-                            skipLeadingSeconds: speechRange?.start ?? 0
-                        )
-                        effectiveSavedAudioFileName = Self.replaceAudioFile(
-                            named: effectiveSavedAudioFileName,
-                            with: uploadURL,
-                            preferredExtension: uploadURL.pathExtension
-                        )
+                        let primaryResult = try await transcribeWithRetry(uploadURL: uploadURL)
+                        if primaryResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           let recoveredResult = try await retryWithRecoveredAudio(reason: "empty primary transcript") {
+                            rawResult = recoveredResult
+                        } else {
+                            rawResult = primaryResult
+                        }
                     } catch {
-                        os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
-                        await MainActor.run { [weak self] in
-                            self?.debugStatusMessage = "Audio preprocessing failed, using original"
+                        if let recoveredResult = try await retryWithRecoveredAudio(reason: error.localizedDescription) {
+                            rawResult = recoveredResult
+                        } else {
+                            throw error
                         }
-                        uploadURL = fileURL
-                    }
-                    await MainActor.run { [weak self] in
-                        self?.debugStatusMessage = "Transcribing audio"
-                    }
-
-                    var rawResult: String
-                    do {
-                        rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
-                    } catch let error where Self.isTransientNetworkError(error) {
-                        os_log(.info, log: recordingLog, "transcription failed with transient error — retrying once: %{public}@", error.localizedDescription)
-                        await MainActor.run { [weak self] in
-                            self?.debugStatusMessage = "Connection issue, retrying…"
-                        }
-                        rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
-                    }
-
-                    if rawResult.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimDuration > 1.5 {
-                        os_log(.info, log: recordingLog, "empty transcript on %.1fs recording — retrying once", trimDuration)
-                        rawResult = try await transcriptionService.transcribe(fileURL: uploadURL, prompt: whisperPrompt)
                     }
                     let rawTranscript = rawResult
 
-                    if uploadURL != fileURL {
-                        try? FileManager.default.removeItem(at: uploadURL)
+                    for temporaryUploadURL in temporaryUploadURLs {
+                        try? FileManager.default.removeItem(at: temporaryUploadURL)
                     }
                     let appContext: AppContext
                     if let sessionContext {
