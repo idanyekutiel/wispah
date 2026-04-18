@@ -28,37 +28,34 @@ struct RecordingStartResult {
     let deviceUID: String?
 }
 
-private final class SampleAccurateFileOutputDelegate: NSObject, AVCaptureFileOutputDelegate {
-    func fileOutputShouldProvideSampleAccurateRecordingStart(_ output: AVCaptureFileOutput) -> Bool {
-        true
-    }
+private struct RecordingChunk {
+    let url: URL
+    var frameCount: AVAudioFramePosition
 }
 
 final class AudioRecorder: NSObject, ObservableObject {
     private let captureQueue = DispatchQueue(label: "com.idanyekutiel.wispah.capture")
     private var captureSession: AVCaptureSession?
     private var audioOutput: AVCaptureAudioDataOutput?
-    private var audioFileOutput: AVCaptureAudioFileOutput?
     private var audioDeviceInput: AVCaptureDeviceInput?
+    private var masterRecordingFile: AVAudioFile?
+    private var chunkRecordingFile: AVAudioFile?
+    private var recordingFormat: AVAudioFormat?
     private var tempFileURL: URL?
     private var fileOutputType: AVFileType = .caf
     private var currentDeviceUID: String?
     private var firstSampleTimestamp: CMTime?
     private var runtimeErrorObserver: NSObjectProtocol?
     private var deviceDisconnectObserver: NSObjectProtocol?
-    private let fileOutputDelegate = SampleAccurateFileOutputDelegate()
     private let startupLock = NSLock()
-    private var startupSemaphore: DispatchSemaphore?
     private var startupError: Error?
     private var startupResolved = false
-    private var startupSawAudioBuffer = false
-    private var startupSawFileRecordingStart = false
-    private let fileRecordingLock = NSLock()
-    private var fileRecordingSemaphore: DispatchSemaphore?
-    private var fileRecordingResolved = false
-    private var fileRecordingError: Error?
-    private var finishedRecordingURL: URL?
+    private var startupTimeoutWorkItem: DispatchWorkItem?
     private var recordingStartTime: CFAbsoluteTime = 0
+    private var masterFrameCount: AVAudioFramePosition = 0
+    private var recordingChunks: [RecordingChunk] = []
+    private let chunkDurationSeconds: Double = 5.0
+    private var masterRecordingHealthy = true
 
     // MARK: - Thread-safe audio state
 
@@ -103,44 +100,13 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     // MARK: - Startup synchronization
 
-    private func prepareForStartupWait() -> DispatchSemaphore {
-        let semaphore = DispatchSemaphore(value: 0)
+    private func prepareForStartupMonitoring() {
         startupLock.lock()
-        startupSemaphore = semaphore
+        startupTimeoutWorkItem?.cancel()
+        startupTimeoutWorkItem = nil
         startupError = nil
         startupResolved = false
-        startupSawAudioBuffer = false
-        startupSawFileRecordingStart = false
         startupLock.unlock()
-        return semaphore
-    }
-
-    private func noteStartupAudioBuffer() -> Bool {
-        startupLock.lock()
-        defer { startupLock.unlock() }
-
-        startupSawAudioBuffer = true
-        guard !startupResolved, startupSawFileRecordingStart else { return false }
-        startupResolved = true
-        startupError = nil
-        let semaphore = startupSemaphore
-        startupSemaphore = nil
-        semaphore?.signal()
-        return true
-    }
-
-    private func noteStartupFileRecordingStart() -> Bool {
-        startupLock.lock()
-        defer { startupLock.unlock() }
-
-        startupSawFileRecordingStart = true
-        guard !startupResolved, startupSawAudioBuffer else { return false }
-        startupResolved = true
-        startupError = nil
-        let semaphore = startupSemaphore
-        startupSemaphore = nil
-        semaphore?.signal()
-        return true
     }
 
     private func resolveStartup(error: Error?) {
@@ -151,91 +117,25 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
         startupResolved = true
         startupError = error
-        let semaphore = startupSemaphore
-        startupSemaphore = nil
+        let timeoutWorkItem = startupTimeoutWorkItem
+        startupTimeoutWorkItem = nil
         startupLock.unlock()
-        semaphore?.signal()
+        timeoutWorkItem?.cancel()
     }
 
-    private func finishStartupWait(_ semaphore: DispatchSemaphore) throws {
-        let waitResult = semaphore.wait(timeout: .now() + startupTimeout)
-
+    private func armStartupWatchdog() {
         startupLock.lock()
-        let error = startupError
-        let resolved = startupResolved
-        if startupSemaphore === semaphore {
-            startupSemaphore = nil
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.startupLock.lock()
+            let shouldTimeout = !self.startupResolved
+            self.startupLock.unlock()
+            guard shouldTimeout else { return }
+            self.handleCaptureFailure(AudioRecorderError.startupTimedOut)
         }
+        startupTimeoutWorkItem = workItem
         startupLock.unlock()
-
-        if let error {
-            throw error
-        }
-        if waitResult == .timedOut || !resolved {
-            throw AudioRecorderError.startupTimedOut
-        }
-    }
-
-    private func prepareForFileRecordingWait() -> DispatchSemaphore {
-        let semaphore = DispatchSemaphore(value: 0)
-        fileRecordingLock.lock()
-        fileRecordingSemaphore = semaphore
-        fileRecordingResolved = false
-        fileRecordingError = nil
-        finishedRecordingURL = nil
-        fileRecordingLock.unlock()
-        return semaphore
-    }
-
-    private func resolveFileRecording(url: URL?, error: Error?) {
-        fileRecordingLock.lock()
-        guard !fileRecordingResolved else {
-            fileRecordingLock.unlock()
-            return
-        }
-        fileRecordingResolved = true
-        finishedRecordingURL = url
-        fileRecordingError = error
-        let semaphore = fileRecordingSemaphore
-        fileRecordingSemaphore = nil
-        fileRecordingLock.unlock()
-        semaphore?.signal()
-    }
-
-    private func finishFileRecordingWait(_ semaphore: DispatchSemaphore) throws -> URL {
-        var waitResult: DispatchTimeoutResult = .timedOut
-        if Thread.isMainThread {
-            let deadline = Date().addingTimeInterval(15)
-            while Date() < deadline {
-                fileRecordingLock.lock()
-                let resolved = fileRecordingResolved
-                fileRecordingLock.unlock()
-                if resolved {
-                    waitResult = .success
-                    break
-                }
-                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
-            }
-        } else {
-            waitResult = semaphore.wait(timeout: .now() + 15)
-        }
-
-        fileRecordingLock.lock()
-        let error = fileRecordingError
-        let resolved = fileRecordingResolved
-        let url = finishedRecordingURL
-        if fileRecordingSemaphore === semaphore {
-            fileRecordingSemaphore = nil
-        }
-        fileRecordingLock.unlock()
-
-        if let error {
-            throw error
-        }
-        guard waitResult == .success, resolved, let url else {
-            throw AudioRecorderError.captureSessionError("Audio file did not finish writing in time")
-        }
-        return url
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + startupTimeout, execute: workItem)
     }
 
     // MARK: - Capture lifecycle
@@ -258,25 +158,31 @@ final class AudioRecorder: NSObject, ObservableObject {
             output.setSampleBufferDelegate(nil, queue: nil)
         }
 
-        if cancelWriter, let fileOutput = audioFileOutput, fileOutput.isRecording {
-            fileOutput.stopRecording()
-        }
-
         if let session = captureSession, session.isRunning {
             session.stopRunning()
             os_log(.info, log: recordingLog, "capture session stopped")
         }
 
+        if cancelWriter, let tempFileURL {
+            try? FileManager.default.removeItem(at: tempFileURL)
+            self.tempFileURL = nil
+        }
+
+        for chunk in recordingChunks {
+            try? FileManager.default.removeItem(at: chunk.url)
+        }
+
+        masterRecordingFile = nil
+        chunkRecordingFile = nil
+        recordingFormat = nil
         captureSession = nil
         audioOutput = nil
-        audioFileOutput = nil
         audioDeviceInput = nil
         currentDeviceUID = nil
         firstSampleTimestamp = nil
-        startupLock.lock()
-        startupSawAudioBuffer = false
-        startupSawFileRecordingStart = false
-        startupLock.unlock()
+        masterFrameCount = 0
+        recordingChunks.removeAll()
+        masterRecordingHealthy = true
     }
 
     private func registerObservers(for session: AVCaptureSession, deviceUID: String) {
@@ -359,6 +265,150 @@ final class AudioRecorder: NSObject, ObservableObject {
         return fileURL
     }
 
+    private func chunkURL(forFinalURL finalURL: URL, index: Int) -> URL {
+        finalURL
+            .deletingPathExtension()
+            .appendingPathExtension("part\(String(format: "%04d", index)).\(finalURL.pathExtension)")
+    }
+
+    private func createRecordingFormat() throws -> AVAudioFormat {
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: 48_000,
+            channels: 1,
+            interleaved: true
+        ) else {
+            throw AudioRecorderError.invalidInputFormat("Could not create recording format")
+        }
+        return format
+    }
+
+    private func startNewChunk() throws {
+        guard let finalURL = tempFileURL else {
+            throw AudioRecorderError.captureSessionError("Recording output URL is not available")
+        }
+        guard let format = recordingFormat else {
+            throw AudioRecorderError.invalidInputFormat("Recording format is not available")
+        }
+
+        let chunkIndex = recordingChunks.count + 1
+        let chunkURL = chunkURL(forFinalURL: finalURL, index: chunkIndex)
+        try? FileManager.default.removeItem(at: chunkURL)
+        chunkRecordingFile = try AVAudioFile(
+            forWriting: chunkURL,
+            settings: format.settings,
+            commonFormat: format.commonFormat,
+            interleaved: format.isInterleaved
+        )
+        recordingChunks.append(RecordingChunk(url: chunkURL, frameCount: 0))
+        os_log(.info, log: recordingLog, "started chunk %d: %{public}@", chunkIndex, chunkURL.lastPathComponent)
+    }
+
+    private func createRecordingFile(at outputURL: URL) throws {
+        let format = try createRecordingFormat()
+        recordingFormat = format
+        tempFileURL = outputURL
+        masterRecordingFile = try AVAudioFile(
+            forWriting: outputURL,
+            settings: format.settings,
+            commonFormat: format.commonFormat,
+            interleaved: format.isInterleaved
+        )
+        masterFrameCount = 0
+        masterRecordingHealthy = true
+        recordingChunks.removeAll()
+        try startNewChunk()
+    }
+
+    private func currentChunkFrameCount() -> AVAudioFramePosition {
+        recordingChunks.last?.frameCount ?? 0
+    }
+
+    private func rotateChunkIfNeeded() throws {
+        guard let format = recordingFormat else { return }
+        let frameLimit = AVAudioFramePosition(format.sampleRate * chunkDurationSeconds)
+        guard currentChunkFrameCount() >= frameLimit else { return }
+        chunkRecordingFile = nil
+        try startNewChunk()
+    }
+
+    private func trimEmptyTrailingChunks() {
+        while let last = recordingChunks.last, last.frameCount == 0 {
+            try? FileManager.default.removeItem(at: last.url)
+            recordingChunks.removeLast()
+        }
+    }
+
+    private func recoverWriterAndRetry(sampleBuffer: CMSampleBuffer) throws {
+        os_log(.error, log: recordingLog, "chunk write failed — rotating chunk and retrying")
+        chunkRecordingFile = nil
+        trimEmptyTrailingChunks()
+        try startNewChunk()
+        let recovered = try writeChunkBuffer(sampleBuffer, allowRecovery: false)
+        if !recovered {
+            throw AudioRecorderError.captureSessionError("Chunk writer could not recover")
+        }
+    }
+
+    private func assembleChunks() throws -> URL? {
+        trimEmptyTrailingChunks()
+        let validChunks = recordingChunks.filter { $0.frameCount > 0 }
+        guard !validChunks.isEmpty else { return nil }
+        guard let finalURL = tempFileURL else {
+            throw AudioRecorderError.captureSessionError("Final output URL is not available")
+        }
+
+        if validChunks.count == 1 {
+            let onlyChunk = validChunks[0].url
+            try? FileManager.default.removeItem(at: finalURL)
+            try FileManager.default.moveItem(at: onlyChunk, to: finalURL)
+            return finalURL
+        }
+
+        try? FileManager.default.removeItem(at: finalURL)
+        let firstInput = try AVAudioFile(forReading: validChunks[0].url)
+        let outputFile = try AVAudioFile(
+            forWriting: finalURL,
+            settings: firstInput.fileFormat.settings,
+            commonFormat: firstInput.processingFormat.commonFormat,
+            interleaved: firstInput.processingFormat.isInterleaved
+        )
+
+        for chunk in validChunks {
+            let inputFile = try AVAudioFile(forReading: chunk.url)
+            guard let buffer = AVAudioPCMBuffer(
+                pcmFormat: inputFile.processingFormat,
+                frameCapacity: 8_192
+            ) else {
+                throw AudioRecorderError.invalidInputFormat("Could not allocate assembly buffer")
+            }
+
+            while true {
+                try inputFile.read(into: buffer, frameCount: buffer.frameCapacity)
+                if buffer.frameLength == 0 {
+                    break
+                }
+                try outputFile.write(from: buffer)
+            }
+        }
+
+        for chunk in validChunks {
+            try? FileManager.default.removeItem(at: chunk.url)
+        }
+        return finalURL
+    }
+
+    private var totalChunkFrameCount: AVAudioFramePosition {
+        recordingChunks.reduce(0) { $0 + $1.frameCount }
+    }
+
+    private func shouldUseMasterRecording() -> Bool {
+        let chunkFrames = totalChunkFrameCount
+        guard masterRecordingHealthy, masterFrameCount > 0 else { return false }
+        guard chunkFrames > 0 else { return true }
+        return Double(masterFrameCount) >= Double(chunkFrames) * 0.95
+    }
+
     private func buildCaptureSession(for device: AVCaptureDevice, outputURL: URL) throws {
         let session = AVCaptureSession()
         session.beginConfiguration()
@@ -379,21 +429,12 @@ final class AudioRecorder: NSObject, ObservableObject {
         session.addOutput(output)
         output.setSampleBufferDelegate(self, queue: captureQueue)
 
-        let fileOutput = AVCaptureAudioFileOutput()
-        fileOutput.audioSettings = nil
-        fileOutput.delegate = fileOutputDelegate
-        guard session.canAddOutput(fileOutput) else {
-            session.commitConfiguration()
-            throw AudioRecorderError.captureSessionError("Could not add audio file output")
-        }
-        session.addOutput(fileOutput)
-
         session.commitConfiguration()
 
+        try createRecordingFile(at: outputURL)
         captureSession = session
         audioDeviceInput = input
         audioOutput = output
-        audioFileOutput = fileOutput
         currentDeviceUID = device.uniqueID
         firstSampleTimestamp = nil
 
@@ -403,8 +444,6 @@ final class AudioRecorder: NSObject, ObservableObject {
         guard session.isRunning else {
             throw AudioRecorderError.captureSessionError("Capture session failed to start")
         }
-
-        fileOutput.startRecording(to: outputURL, outputFileType: fileOutputType, recordingDelegate: self)
         os_log(.info, log: recordingLog, "capture session started for %{public}@", device.uniqueID)
     }
 
@@ -495,9 +534,94 @@ final class AudioRecorder: NSObject, ObservableObject {
         return Float(sqrt(sum / Double(sampleCount)))
     }
 
+    private func makePCMBuffer(from sampleBuffer: CMSampleBuffer) throws -> AVAudioPCMBuffer {
+        guard let recordingFormat else {
+            throw AudioRecorderError.captureSessionError("Recording format is not available")
+        }
+        let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard sampleCount > 0 else {
+            throw AudioRecorderError.invalidInputFormat("Sample buffer contained no audio frames")
+        }
+        guard let pcmBuffer = AVAudioPCMBuffer(
+            pcmFormat: recordingFormat,
+            frameCapacity: AVAudioFrameCount(sampleCount)
+        ) else {
+            throw AudioRecorderError.invalidInputFormat("Could not allocate audio buffer")
+        }
+
+        pcmBuffer.frameLength = pcmBuffer.frameCapacity
+        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer,
+            at: 0,
+            frameCount: Int32(sampleCount),
+            into: pcmBuffer.mutableAudioBufferList
+        )
+        guard status == noErr else {
+            throw AudioRecorderError.invalidInputFormat("Could not copy audio samples (\(status))")
+        }
+        return pcmBuffer
+    }
+
+    private func writeMasterBuffer(_ pcmBuffer: AVAudioPCMBuffer) -> Bool {
+        guard let masterRecordingFile else { return false }
+        do {
+            try masterRecordingFile.write(from: pcmBuffer)
+            masterFrameCount += AVAudioFramePosition(pcmBuffer.frameLength)
+            return true
+        } catch {
+            masterRecordingHealthy = false
+            self.masterRecordingFile = nil
+            os_log(.error, log: recordingLog, "master recording write failed: %{public}@", error.localizedDescription)
+            return false
+        }
+    }
+
+    private func writeChunkBuffer(_ sampleBuffer: CMSampleBuffer, allowRecovery: Bool = true) throws -> Bool {
+        guard let chunkRecordingFile else { return false }
+        let pcmBuffer = try makePCMBuffer(from: sampleBuffer)
+        do {
+            try chunkRecordingFile.write(from: pcmBuffer)
+        } catch {
+            guard allowRecovery else {
+                self.chunkRecordingFile = nil
+                os_log(.error, log: recordingLog, "chunk recording write failed permanently: %{public}@", error.localizedDescription)
+                return false
+            }
+            do {
+                try recoverWriterAndRetry(sampleBuffer: sampleBuffer)
+                return true
+            } catch {
+                self.chunkRecordingFile = nil
+                os_log(.error, log: recordingLog, "chunk recovery failed permanently: %{public}@", error.localizedDescription)
+                return false
+            }
+        }
+        if !recordingChunks.isEmpty {
+            recordingChunks[recordingChunks.count - 1].frameCount += AVAudioFramePosition(pcmBuffer.frameLength)
+        }
+        try rotateChunkIfNeeded()
+        return true
+    }
+
+    private func appendSampleBufferToRecordingFile(_ sampleBuffer: CMSampleBuffer) throws {
+        guard CMSampleBufferGetNumSamples(sampleBuffer) > 0 else { return }
+        let pcmBuffer = try makePCMBuffer(from: sampleBuffer)
+        let masterSucceeded = writeMasterBuffer(pcmBuffer)
+        let chunkSucceeded = try writeChunkBuffer(sampleBuffer)
+        guard masterSucceeded || chunkSucceeded else {
+            throw AudioRecorderError.captureSessionError("No recording sink is accepting audio")
+        }
+    }
+
     private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
         if firstSampleTimestamp == nil {
             firstSampleTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        }
+        do {
+            try appendSampleBufferToRecordingFile(sampleBuffer)
+        } catch {
+            handleCaptureFailure(error)
+            return
         }
         let rmsValue = rms(from: sampleBuffer)
         let elapsed = elapsedSeconds(for: sampleBuffer)
@@ -531,12 +655,9 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
 
         if shouldFireReady {
-            if noteStartupAudioBuffer() {
-                os_log(.info, log: recordingLog, "first audio buffer received and file output started — recording ready")
-                onRecordingReady?()
-            } else {
-                os_log(.info, log: recordingLog, "first audio buffer received — waiting for file output start")
-            }
+            resolveStartup(error: nil)
+            os_log(.info, log: recordingLog, "first audio buffer written to disk — recording ready")
+            onRecordingReady?()
         }
 
         computeAudioLevel(rms: rmsValue)
@@ -556,7 +677,7 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         fileOutputType = recordingFileType()
         let outputURL = try prepareOutputURL(for: fileOutputType)
-        let startupSemaphore = prepareForStartupWait()
+        prepareForStartupMonitoring()
 
         do {
             try captureQueue.sync {
@@ -570,15 +691,7 @@ final class AudioRecorder: NSObject, ObservableObject {
             }
             throw error
         }
-
-        do {
-            try finishStartupWait(startupSemaphore)
-        } catch {
-            captureQueue.sync {
-                tearDownCapture(cancelWriter: true)
-            }
-            throw error
-        }
+        armStartupWatchdog()
 
         return captureDevice.uniqueID
     }
@@ -623,6 +736,15 @@ final class AudioRecorder: NSObject, ObservableObject {
         return speechBufferCount >= minSpeechBuffers
     }
 
+    var writtenDuration: TimeInterval {
+        guard let recordingFormat else { return 0 }
+        return Double(max(masterFrameCount, totalChunkFrameCount)) / recordingFormat.sampleRate
+    }
+
+    var wallClockDuration: TimeInterval {
+        max(CFAbsoluteTimeGetCurrent() - recordingStartTime, 0)
+    }
+
     /// Time range of detected speech with small padding to preserve natural speech tails.
     /// Returns (start, end) in seconds from recording start, or nil if no speech detected.
     var speechTimeRange: (start: Double, end: Double)? {
@@ -649,33 +771,28 @@ final class AudioRecorder: NSObject, ObservableObject {
             recordedSpeechBuffers,
             lastAudioTime
         )
-
-        let fileOutput = captureQueue.sync { () -> AVCaptureAudioFileOutput? in
-            audioFileOutput
-        }
-        guard let fileOutput else {
-            captureQueue.sync { tearDownCapture(cancelWriter: true) }
-            return nil
-        }
-
-        let finishedURL: URL?
-        if fileOutput.isRecording {
-            let semaphore = prepareForFileRecordingWait()
-            fileOutput.stopRecording()
-            do {
-                finishedURL = try finishFileRecordingWait(semaphore)
-            } catch {
-                os_log(.error, log: recordingLog, "audio file output failed to finish: %{public}@", error.localizedDescription)
-                finishedURL = nil
+        let finishedURL = captureQueue.sync { () -> URL? in
+            let frameCount = max(masterFrameCount, totalChunkFrameCount)
+            masterRecordingFile = nil
+            chunkRecordingFile = nil
+            trimEmptyTrailingChunks()
+            let outputURL: URL?
+            if shouldUseMasterRecording() {
+                outputURL = tempFileURL
+                for chunk in recordingChunks {
+                    try? FileManager.default.removeItem(at: chunk.url)
+                }
+            } else {
+                do {
+                    outputURL = try assembleChunks()
+                } catch {
+                    os_log(.error, log: recordingLog, "failed to assemble chunks: %{public}@", error.localizedDescription)
+                    return nil
+                }
             }
-        } else {
-            finishedURL = tempFileURL
-        }
-        captureQueue.sync { tearDownCapture(cancelWriter: false) }
-
-        if finishedURL == nil, let tempFileURL {
-            try? FileManager.default.removeItem(at: tempFileURL)
-            self.tempFileURL = nil
+            tearDownCapture(cancelWriter: false)
+            guard frameCount > 0 else { return nil }
+            return outputURL
         }
 
         DispatchQueue.main.async {
@@ -706,14 +823,28 @@ final class AudioRecorder: NSObject, ObservableObject {
             recordedSpeechBuffers,
             lastAudioTime
         )
-
-        let finish: (URL?) -> Void = { [weak self] finishedURL in
+        captureQueue.async { [weak self] in
             guard let self else { return }
-
-            if finishedURL == nil, let tempFileURL = self.tempFileURL {
-                try? FileManager.default.removeItem(at: tempFileURL)
-                self.tempFileURL = nil
+            let frameCount = max(self.masterFrameCount, self.totalChunkFrameCount)
+            self.masterRecordingFile = nil
+            self.chunkRecordingFile = nil
+            self.trimEmptyTrailingChunks()
+            let outputURL: URL?
+            if self.shouldUseMasterRecording() {
+                outputURL = self.tempFileURL
+                for chunk in self.recordingChunks {
+                    try? FileManager.default.removeItem(at: chunk.url)
+                }
+            } else {
+                do {
+                    outputURL = try self.assembleChunks()
+                } catch {
+                    os_log(.error, log: recordingLog, "failed to assemble chunks: %{public}@", error.localizedDescription)
+                    outputURL = nil
+                }
             }
+            self.tearDownCapture(cancelWriter: false)
+            let finishedURL = frameCount > 0 ? outputURL : nil
 
             DispatchQueue.main.async {
                 self.isRecording = false
@@ -725,40 +856,6 @@ final class AudioRecorder: NSObject, ObservableObject {
             self.smoothedLevel = 0.0
             self.tapLock.unlock()
             self.onRecordingReady = nil
-        }
-
-        let fileOutput = captureQueue.sync { () -> AVCaptureAudioFileOutput? in
-            audioFileOutput
-        }
-        guard let fileOutput else {
-            captureQueue.async { [weak self] in
-                self?.tearDownCapture(cancelWriter: true)
-                finish(nil)
-            }
-            return
-        }
-
-        if fileOutput.isRecording {
-            let semaphore = prepareForFileRecordingWait()
-            fileOutput.stopRecording()
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self else { return }
-                let finishedURL: URL?
-                do {
-                    finishedURL = try self.finishFileRecordingWait(semaphore)
-                } catch {
-                    os_log(.error, log: recordingLog, "audio file output failed to finish: %{public}@", error.localizedDescription)
-                    finishedURL = nil
-                }
-                self.captureQueue.sync { self.tearDownCapture(cancelWriter: false) }
-                finish(finishedURL)
-            }
-        } else {
-            let finishedURL = tempFileURL
-            captureQueue.async { [weak self] in
-                self?.tearDownCapture(cancelWriter: false)
-                finish(finishedURL)
-            }
         }
     }
 
@@ -910,29 +1007,5 @@ final class AudioRecorder: NSObject, ObservableObject {
 extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         processSampleBuffer(sampleBuffer)
-    }
-}
-
-extension AudioRecorder: AVCaptureFileOutputRecordingDelegate {
-    func fileOutput(
-        _ output: AVCaptureFileOutput,
-        didStartRecordingTo fileURL: URL,
-        from connections: [AVCaptureConnection]
-    ) {
-        if noteStartupFileRecordingStart() {
-            os_log(.info, log: recordingLog, "file output started and audio buffers are flowing — recording ready")
-            onRecordingReady?()
-        } else {
-            os_log(.info, log: recordingLog, "file output started writing to %{public}@", fileURL.lastPathComponent)
-        }
-    }
-
-    func fileOutput(
-        _ output: AVCaptureFileOutput,
-        didFinishRecordingTo outputFileURL: URL,
-        from connections: [AVCaptureConnection],
-        error: (any Error)?
-    ) {
-        resolveFileRecording(url: outputFileURL, error: error)
     }
 }
