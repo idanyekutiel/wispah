@@ -393,6 +393,16 @@ extension AppState {
                 var effectiveSavedAudioFileName = savedAudioFileName
                 do {
                     var temporaryUploadURLs: [URL] = []
+                    var temporarySourceURLs: [URL] = []
+
+                    defer {
+                        for temporaryUploadURL in temporaryUploadURLs {
+                            try? FileManager.default.removeItem(at: temporaryUploadURL)
+                        }
+                        for temporarySourceURL in temporarySourceURLs {
+                            try? FileManager.default.removeItem(at: temporarySourceURL)
+                        }
+                    }
 
                     func prepareUploadURL(from sourceURL: URL) async -> URL {
                         do {
@@ -447,6 +457,9 @@ extension AppState {
                         guard let recoveredSourceURL = self.audioRecorder.assembleFallbackRecordingIfAvailable() else {
                             return nil
                         }
+                        if recoveredSourceURL != fileURL {
+                            temporarySourceURLs.append(recoveredSourceURL)
+                        }
                         os_log(.info, log: recordingLog, "retrying transcription with recovered chunk audio after %{public}@", reason)
                         await MainActor.run { [weak self] in
                             self?.debugStatusMessage = "Recovering audio and retrying"
@@ -474,10 +487,6 @@ extension AppState {
                         }
                     }
                     let rawTranscript = rawResult
-
-                    for temporaryUploadURL in temporaryUploadURLs {
-                        try? FileManager.default.removeItem(at: temporaryUploadURL)
-                    }
                     let appContext: AppContext
                     if let sessionContext {
                         appContext = sessionContext

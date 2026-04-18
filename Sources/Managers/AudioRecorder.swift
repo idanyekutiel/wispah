@@ -274,6 +274,13 @@ final class AudioRecorder: NSObject, ObservableObject {
             .appendingPathExtension("part\(String(format: "%04d", index)).\(finalURL.pathExtension)")
     }
 
+    private func recoveredChunkURL(forFinalURL finalURL: URL) -> URL {
+        finalURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("recovered_\(UUID().uuidString)")
+            .appendingPathExtension(finalURL.pathExtension)
+    }
+
     private func createRecordingFormat() throws -> AVAudioFormat {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
@@ -353,13 +360,10 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func assembleChunks() throws -> URL? {
+    private func assembleChunks(outputURL finalURL: URL) throws -> URL? {
         trimEmptyTrailingChunks()
         let validChunks = recordingChunks.filter { $0.frameCount > 0 }
         guard !validChunks.isEmpty else { return nil }
-        guard let finalURL = tempFileURL else {
-            throw AudioRecorderError.captureSessionError("Final output URL is not available")
-        }
 
         if validChunks.count == 1 {
             let onlyChunk = validChunks[0].url
@@ -787,7 +791,10 @@ final class AudioRecorder: NSObject, ObservableObject {
                 }
             } else {
                 do {
-                    outputURL = try assembleChunks()
+                    guard let finalURL = tempFileURL else {
+                        throw AudioRecorderError.captureSessionError("Final output URL is not available")
+                    }
+                    outputURL = try assembleChunks(outputURL: finalURL)
                 } catch {
                     os_log(.error, log: recordingLog, "failed to assemble chunks: %{public}@", error.localizedDescription)
                     return nil
@@ -840,7 +847,10 @@ final class AudioRecorder: NSObject, ObservableObject {
                 }
             } else {
                 do {
-                    outputURL = try self.assembleChunks()
+                    guard let finalURL = self.tempFileURL else {
+                        throw AudioRecorderError.captureSessionError("Final output URL is not available")
+                    }
+                    outputURL = try self.assembleChunks(outputURL: finalURL)
                 } catch {
                     os_log(.error, log: recordingLog, "failed to assemble chunks: %{public}@", error.localizedDescription)
                     outputURL = nil
@@ -1016,9 +1026,11 @@ final class AudioRecorder: NSObject, ObservableObject {
     func assembleFallbackRecordingIfAvailable() -> URL? {
         captureQueue.sync {
             trimEmptyTrailingChunks()
-            guard !recordingChunks.isEmpty else { return nil }
+            guard !recordingChunks.isEmpty, let finalURL = tempFileURL else { return nil }
             do {
-                return try assembleChunks()
+                let recoveredURL = recoveredChunkURL(forFinalURL: finalURL)
+                try? FileManager.default.removeItem(at: recoveredURL)
+                return try assembleChunks(outputURL: recoveredURL)
             } catch {
                 os_log(.error, log: recordingLog, "failed to assemble fallback chunks: %{public}@", error.localizedDescription)
                 return nil
