@@ -6,6 +6,9 @@
 
 ## Changelog
 
+- **Rebuilt recording for fast start and fallback recovery** — Recording now enters its active state immediately after the mic session and writers are armed, instead of waiting for the first analyzed buffer before the UI can proceed.
+- **Added master recording plus rolling chunk checkpoints** — The recorder now writes one fast primary file and rolling `5s` checkpoint chunks from the same live PCM buffers, so normal stops stay fast while long recordings still have validated fallback audio if the primary file goes bad.
+- **Improved long-recording failure detection** — The app now validates actual written audio against wall-clock recording time and refuses to send obviously broken one-second files into transcription.
 - **Fixed intermittent near-empty recordings** — Recording startup now waits for both the first live audio buffer and AVFoundation's file-output start callback before the app considers the recorder ready, which closes the race that could occasionally produce `0:01` recordings.
 - **Tightened record-start timing on macOS** — The recorder now opts into AVFoundation's sample-accurate file-recording start path so stop events cannot beat the file writer as easily on short or fast interactions.
 - **Fixed stop-to-transcribe hangs on macOS** — Pressing the hotkey to stop recording now hands file finalization off asynchronously instead of blocking the app while AVFoundation finishes the recording file, so transcription can begin reliably after stop.

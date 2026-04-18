@@ -166,15 +166,12 @@ extension AppState {
             DispatchQueue.main.async {
                 guard let self else { return }
                 initTimer.cancel()
-                os_log(.info, log: recordingLog, "first real audio — transitioning to waveform")
+                os_log(.info, log: recordingLog, "first real audio — recorder fully live")
                 self.statusText = "Recording..."
-                if overlayShown {
-                    self.overlayManager.transitionToRecording()
-                } else {
+                if !overlayShown {
                     self.overlayManager.showRecording()
+                    overlayShown = true
                 }
-                overlayShown = true
-                if self.playSoundsEnabled { NSSound(named: "Purr")?.play() }
             }
         }
 
@@ -188,7 +185,16 @@ extension AppState {
                     os_log(.info, log: recordingLog, "recording fell back to system default mic (requested: %{public}@)", deviceUID)
                 }
                 DispatchQueue.main.async {
+                    initTimer.cancel()
                     self.isStartingRecording = false
+                    self.statusText = "Recording..."
+                    if overlayShown {
+                        self.overlayManager.transitionToRecording()
+                    } else {
+                        self.overlayManager.showRecording()
+                        overlayShown = true
+                    }
+                    if self.playSoundsEnabled { NSSound(named: "Purr")?.play() }
                     if self.pendingStop {
                         self.pendingStop = false
                         self.stopAndTranscribe()
@@ -278,6 +284,8 @@ extension AppState {
 
         let trimDuration = audioRecorder.lastNonSilentDuration
         let speechRange = audioRecorder.speechTimeRange
+        let writtenDuration = audioRecorder.writtenDuration
+        let wallClockDuration = audioRecorder.wallClockDuration
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."
@@ -308,6 +316,23 @@ extension AppState {
                 self.isTranscribing = false
                 self.statusText = "Error"
                 self.overlayManager.dismiss()
+                return
+            }
+
+            let hasSevereWriteMismatch = wallClockDuration > 5 && writtenDuration < (wallClockDuration * 0.5)
+            if hasSevereWriteMismatch {
+                self.transcribingIndicatorTask?.cancel()
+                self.transcribingIndicatorTask = nil
+                self.audioRecorder.cleanup()
+                try? FileManager.default.removeItem(at: fileURL)
+                self.errorMessage = String(
+                    format: "Recording failed: only %.1fs of audio was written during a %.1fs recording.",
+                    writtenDuration,
+                    wallClockDuration
+                )
+                self.isTranscribing = false
+                self.statusText = "Error"
+                self.overlayManager.showError(self.errorMessage ?? "Recording failed")
                 return
             }
 
