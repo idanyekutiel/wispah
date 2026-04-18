@@ -72,6 +72,7 @@ final class UpdateManager: ObservableObject {
     }
 
     private let releasesURL = URL(string: "https://api.github.com/repos/idanyekutiel/wispah/releases/latest")!
+    private let releasesPageURL = URL(string: "https://github.com/idanyekutiel/wispah/releases/latest")!
     private let stabilityBufferDays: TimeInterval = 3
     private let checkIntervalSeconds: TimeInterval = 7 * 24 * 60 * 60 // 7 days
     private var periodicTimer: Timer?
@@ -128,6 +129,8 @@ final class UpdateManager: ObservableObject {
         do {
             var request = URLRequest(url: releasesURL)
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
+            request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
             request.cachePolicy = .reloadIgnoringLocalCacheData
 
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -146,6 +149,11 @@ final class UpdateManager: ObservableObject {
                 return
             }
 
+            if httpResponse.statusCode == 403, let fallbackRelease = try await fetchLatestReleaseFromWeb() {
+                try handleReleaseResponse(fallbackRelease, currentBuildTag: currentBuildTag, userInitiated: userInitiated)
+                return
+            }
+
             guard (200..<300).contains(httpResponse.statusCode) else {
                 if userInitiated { showErrorAlert("GitHub returned status \(httpResponse.statusCode).") }
                 return
@@ -154,67 +162,7 @@ final class UpdateManager: ObservableObject {
             let decoder = JSONDecoder()
             let release = try decoder.decode(GitHubRelease.self, from: data)
             lastCheckDate = Date()
-
-            // Parse the published date
-            let iso8601 = ISO8601DateFormatter()
-            iso8601.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let iso8601Basic = ISO8601DateFormatter()
-            iso8601Basic.formatOptions = [.withInternetDateTime]
-
-            guard let publishedDate = iso8601.date(from: release.publishedAt)
-                    ?? iso8601Basic.date(from: release.publishedAt) else {
-                if userInitiated { showErrorAlert("Could not parse release date.") }
-                return
-            }
-
-            // Format the release date for display
-            let dateFormatter = DateFormatter()
-            dateFormatter.dateStyle = .medium
-            dateFormatter.timeStyle = .none
-            let releaseDateString = dateFormatter.string(from: publishedDate)
-
-            // Compare versions: strip 'v' prefix from tag, compare numerically
-            let remoteVersion = release.tagName.hasPrefix("v")
-                ? String(release.tagName.dropFirst())
-                : release.tagName
-
-            if let currentVersion = currentBuildTag,
-               Self.compareVersions(currentVersion, remoteVersion) >= 0 {
-                updateAvailable = false
-                latestRelease = nil
-                if userInitiated { showUpToDateAlert() }
-                return
-            }
-
-            // Check stability buffer (3 days since published)
-            let daysSincePublished = Date().timeIntervalSince(publishedDate) / (24 * 60 * 60)
-            if daysSincePublished < stabilityBufferDays {
-                if !userInitiated {
-                    // Auto-check: silently skip, too new
-                    updateAvailable = false
-                    return
-                }
-                // Manual check: let user know and offer the update anyway
-                latestRelease = release
-                latestReleaseDate = releaseDateString
-                updateAvailable = true
-                showRecentReleaseAlert(daysSincePublished: daysSincePublished)
-                return
-            }
-
-            // Check if user skipped this version (only for auto checks)
-            if !userInitiated && skippedVersion == release.tagName {
-                updateAvailable = false
-                return
-            }
-
-            latestRelease = release
-            latestReleaseDate = releaseDateString
-            updateAvailable = true
-
-            if userInitiated {
-                showUpdateAlert()
-            }
+            try handleReleaseResponse(release, currentBuildTag: currentBuildTag, userInitiated: userInitiated)
         } catch {
             if userInitiated {
                 showErrorAlert("Failed to check for updates: \(error.localizedDescription)")
@@ -266,6 +214,92 @@ final class UpdateManager: ObservableObject {
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
             downloadAndInstall(release: release)
+        }
+    }
+
+    private var userAgent: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        return "WispahFlow/\(version)"
+    }
+
+    private func fetchLatestReleaseFromWeb() async throws -> GitHubRelease? {
+        var request = URLRequest(url: releasesPageURL)
+        request.httpMethod = "GET"
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let resolvedURL = response.url else { return nil }
+
+        let components = resolvedURL.pathComponents
+        guard let tagIndex = components.firstIndex(of: "tag"), components.indices.contains(tagIndex + 1) else {
+            return nil
+        }
+
+        let tagName = components[tagIndex + 1]
+        return GitHubRelease(
+            tagName: tagName,
+            name: nil,
+            htmlUrl: resolvedURL.absoluteString,
+            publishedAt: "",
+            assets: []
+        )
+    }
+
+    private func parsedPublishedDate(from release: GitHubRelease) -> Date? {
+        guard !release.publishedAt.isEmpty else { return nil }
+
+        let iso8601 = ISO8601DateFormatter()
+        iso8601.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let iso8601Basic = ISO8601DateFormatter()
+        iso8601Basic.formatOptions = [.withInternetDateTime]
+        return iso8601.date(from: release.publishedAt) ?? iso8601Basic.date(from: release.publishedAt)
+    }
+
+    private func handleReleaseResponse(_ release: GitHubRelease, currentBuildTag: String?, userInitiated: Bool) throws {
+        let remoteVersion = release.tagName.hasPrefix("v")
+            ? String(release.tagName.dropFirst())
+            : release.tagName
+
+        if let currentVersion = currentBuildTag,
+           Self.compareVersions(currentVersion, remoteVersion) >= 0 {
+            updateAvailable = false
+            latestRelease = nil
+            if userInitiated { showUpToDateAlert() }
+            return
+        }
+
+        if let publishedDate = parsedPublishedDate(from: release) {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .medium
+            dateFormatter.timeStyle = .none
+            latestReleaseDate = dateFormatter.string(from: publishedDate)
+
+            let daysSincePublished = Date().timeIntervalSince(publishedDate) / (24 * 60 * 60)
+            if daysSincePublished < stabilityBufferDays {
+                if !userInitiated {
+                    updateAvailable = false
+                    return
+                }
+                latestRelease = release
+                updateAvailable = true
+                showRecentReleaseAlert(daysSincePublished: daysSincePublished)
+                return
+            }
+        } else {
+            latestReleaseDate = "recently"
+        }
+
+        if !userInitiated && skippedVersion == release.tagName {
+            updateAvailable = false
+            return
+        }
+
+        latestRelease = release
+        updateAvailable = true
+
+        if userInitiated {
+            showUpdateAlert()
         }
     }
 
