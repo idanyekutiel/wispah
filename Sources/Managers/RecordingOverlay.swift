@@ -17,11 +17,12 @@ enum OverlayPhase {
 
 class ErrorOverlayState: ObservableObject {
     @Published var message: String = ""
+    var onDismiss: (() -> Void)?
 }
 
 // MARK: - Panel Helpers
 
-private func makeOverlayPanel(width: CGFloat, height: CGFloat) -> NSPanel {
+private func makeOverlayPanel(width: CGFloat, height: CGFloat, ignoresMouseEvents: Bool = true) -> NSPanel {
     let panel = NSPanel(
         contentRect: NSRect(x: 0, y: 0, width: width, height: height),
         styleMask: [.borderless, .nonactivatingPanel],
@@ -32,7 +33,7 @@ private func makeOverlayPanel(width: CGFloat, height: CGFloat) -> NSPanel {
     panel.isOpaque = false
     panel.hasShadow = true
     panel.level = .screenSaver
-    panel.ignoresMouseEvents = true
+    panel.ignoresMouseEvents = ignoresMouseEvents
     panel.collectionBehavior = [.canJoinAllSpaces]
     panel.isReleasedWhenClosed = false
     panel.hidesOnDeactivate = false
@@ -71,6 +72,7 @@ class RecordingOverlayManager {
     private var overlayWindow: NSPanel?
     private var transcribingPanel: NSPanel?
     private var errorPanel: NSPanel?
+    private var errorDismissWorkItem: DispatchWorkItem?
     private var overlayState = RecordingOverlayState()
     private var errorState = ErrorOverlayState()
 
@@ -271,8 +273,12 @@ class RecordingOverlayManager {
     private func _showError(_ message: String) {
         // Dismiss any existing overlays
         _dismiss()
+        cancelScheduledErrorDismiss()
 
         errorState.message = message
+        errorState.onDismiss = { [weak self] in
+            self?._dismissError()
+        }
 
         guard let screen = NSScreen.main else { return }
         let hasNotch = screenHasNotch
@@ -282,7 +288,7 @@ class RecordingOverlayManager {
         let pillHeight: CGFloat = 32
         let notchInset: CGFloat = 4
 
-        let pillPanel = makeOverlayPanel(width: pillWidth, height: pillHeight)
+        let pillPanel = makeOverlayPanel(width: pillWidth, height: pillHeight, ignoresMouseEvents: false)
 
         let pillView = ErrorPillView()
         pillPanel.contentView = makeGlassContent(
@@ -326,10 +332,7 @@ class RecordingOverlayManager {
         })
 
         // Step 4: Auto-dismiss everything after 3s
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
-            guard let self else { return }
-            self._dismissError()
-        }
+        scheduleErrorDismiss()
     }
 
     private func _dropErrorLabel(_ message: String, screen: NSScreen, pillY: CGFloat) {
@@ -339,7 +342,7 @@ class RecordingOverlayManager {
         let panelHeight: CGFloat = 30
         let gap: CGFloat = 6
 
-        let panel = makeOverlayPanel(width: panelWidth, height: panelHeight)
+        let panel = makeOverlayPanel(width: panelWidth, height: panelHeight, ignoresMouseEvents: false)
 
         let view = ErrorOverlayView(state: errorState)
         panel.contentView = makeGlassContent(
@@ -368,6 +371,8 @@ class RecordingOverlayManager {
     }
 
     private func _dismissError() {
+        cancelScheduledErrorDismiss()
+
         let errorPanelRef = errorPanel
         let pillPanelRef = overlayWindow
 
@@ -408,6 +413,8 @@ class RecordingOverlayManager {
         } else {
             self.overlayWindow = nil
         }
+
+        errorState.onDismiss = nil
     }
 
     private func _shakePanel(_ panel: NSPanel) {
@@ -435,6 +442,8 @@ class RecordingOverlayManager {
     }
 
     private func _dismiss() {
+        cancelScheduledErrorDismiss()
+
         if let panel = overlayWindow {
             panel.orderOut(nil)
             overlayWindow = nil
@@ -447,6 +456,21 @@ class RecordingOverlayManager {
             panel.orderOut(nil)
             errorPanel = nil
         }
+
+        errorState.onDismiss = nil
+    }
+
+    private func scheduleErrorDismiss() {
+        let workItem = DispatchWorkItem { [weak self] in
+            self?._dismissError()
+        }
+        errorDismissWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: workItem)
+    }
+
+    private func cancelScheduledErrorDismiss() {
+        errorDismissWorkItem?.cancel()
+        errorDismissWorkItem = nil
     }
 
     private func panelX(_ screen: NSScreen, width: CGFloat) -> CGFloat {
@@ -657,19 +681,31 @@ struct ErrorOverlayView: View {
     @ObservedObject var state: ErrorOverlayState
 
     var body: some View {
-        Text(state.message)
-            .font(.system(size: 12, weight: .medium))
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .padding(.horizontal, 14)
-            .frame(width: 260, height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(white: 0.08))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.red.opacity(0.3), lineWidth: 0.75)
-            )
+        HStack(spacing: 8) {
+            Text(state.message)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: { state.onDismiss?() }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 12)
+        .frame(width: 260, height: 30)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(white: 0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.red.opacity(0.3), lineWidth: 0.75)
+        )
     }
 }
