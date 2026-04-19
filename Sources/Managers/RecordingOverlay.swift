@@ -72,6 +72,7 @@ class RecordingOverlayManager {
     private var overlayWindow: NSPanel?
     private var transcribingPanel: NSPanel?
     private var errorPanel: NSPanel?
+    private var errorDropWorkItem: DispatchWorkItem?
     private var errorDismissWorkItem: DispatchWorkItem?
     private var overlayState = RecordingOverlayState()
     private var errorState = ErrorOverlayState()
@@ -273,6 +274,7 @@ class RecordingOverlayManager {
     private func _showError(_ message: String) {
         // Dismiss any existing overlays
         _dismiss()
+        cancelScheduledErrorDrop()
         cancelScheduledErrorDismiss()
 
         errorState.message = message
@@ -326,9 +328,12 @@ class RecordingOverlayManager {
             self._shakePanel(pillPanel)
 
             // Step 3: Error drops out mid-shake — like it was shaken loose
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self else { return }
                 self._dropErrorLabel(message, screen: screen, pillY: visibleY)
             }
+            self.errorDropWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
         })
 
         // Step 4: Auto-dismiss everything after 3s
@@ -371,6 +376,7 @@ class RecordingOverlayManager {
     }
 
     private func _dismissError() {
+        cancelScheduledErrorDrop()
         cancelScheduledErrorDismiss()
 
         let errorPanelRef = errorPanel
@@ -442,6 +448,7 @@ class RecordingOverlayManager {
     }
 
     private func _dismiss() {
+        cancelScheduledErrorDrop()
         cancelScheduledErrorDismiss()
 
         if let panel = overlayWindow {
@@ -466,6 +473,11 @@ class RecordingOverlayManager {
         }
         errorDismissWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: workItem)
+    }
+
+    private func cancelScheduledErrorDrop() {
+        errorDropWorkItem?.cancel()
+        errorDropWorkItem = nil
     }
 
     private func cancelScheduledErrorDismiss() {
@@ -707,5 +719,9 @@ struct ErrorOverlayView: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.red.opacity(0.3), lineWidth: 0.75)
         )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            state.onDismiss?()
+        }
     }
 }
