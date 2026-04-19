@@ -6,6 +6,7 @@
 
 ## Changelog
 
+- **Preserves chunk files when the master recording is chosen** — The recorder no longer deletes chunk checkpoints as soon as the primary `.caf` file wins, so the automatic fallback retry still has real audio files left to assemble if the primary transcription comes back empty.
 - **Fixed updater checks when GitHub’s REST API is rate-limited** — Update checks now send proper GitHub API headers and fall back to the public latest-release page if the API returns a `403` rate-limit response, so the updater no longer dead-ends on that error.
 - **Moves recovered chunk audio into a separate retry file** — Automatic fallback transcription now assembles chunk recovery into its own temporary audio file instead of mutating the original capture path in place, which avoids the missing-file failure that could still abort recovery.
 - **Automatically retries transcription with recovered chunk audio** — If the fast primary recording returns an empty transcript or fails during transcription, the app now assembles the preserved fallback chunks and retries automatically instead of leaving recovery to manual retranscribe.
