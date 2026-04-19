@@ -394,6 +394,8 @@ extension AppState {
                 do {
                     var temporaryUploadURLs: [URL] = []
                     var temporarySourceURLs: [URL] = []
+                    var recoveredSourceURL: URL?
+                    var hasAttemptedRecoveredRetry = false
 
                     defer {
                         for temporaryUploadURL in temporaryUploadURLs {
@@ -454,10 +456,22 @@ extension AppState {
                     }
 
                     func retryWithRecoveredAudio(reason: String) async throws -> String? {
-                        guard let recoveredSourceURL = self.audioRecorder.assembleFallbackRecordingIfAvailable() else {
+                        guard !hasAttemptedRecoveredRetry else {
+                            os_log(.info, log: recordingLog, "skipping duplicate recovered-audio retry after %{public}@", reason)
                             return nil
                         }
-                        if recoveredSourceURL != fileURL {
+                        hasAttemptedRecoveredRetry = true
+
+                        if recoveredSourceURL == nil {
+                            recoveredSourceURL = self.audioRecorder.assembleFallbackRecordingIfAvailable()
+                        }
+
+                        guard let recoveredSourceURL else {
+                            os_log(.error, log: recordingLog, "no recovered chunk audio available for retry after %{public}@", reason)
+                            return nil
+                        }
+
+                        if recoveredSourceURL != fileURL && !temporarySourceURLs.contains(recoveredSourceURL) {
                             temporarySourceURLs.append(recoveredSourceURL)
                         }
                         os_log(.info, log: recordingLog, "retrying transcription with recovered chunk audio after %{public}@", reason)
