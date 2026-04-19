@@ -786,9 +786,6 @@ final class AudioRecorder: NSObject, ObservableObject {
             let outputURL: URL?
             if shouldUseMasterRecording() {
                 outputURL = tempFileURL
-                for chunk in recordingChunks {
-                    try? FileManager.default.removeItem(at: chunk.url)
-                }
             } else {
                 do {
                     guard let finalURL = tempFileURL else {
@@ -842,9 +839,6 @@ final class AudioRecorder: NSObject, ObservableObject {
             let outputURL: URL?
             if self.shouldUseMasterRecording() {
                 outputURL = self.tempFileURL
-                for chunk in self.recordingChunks {
-                    try? FileManager.default.removeItem(at: chunk.url)
-                }
             } else {
                 do {
                     guard let finalURL = self.tempFileURL else {
