@@ -6,6 +6,11 @@
 
 ## Changelog
 
+- **Rewrote recording error banners to one deterministic panel** — Recording errors now use a single top-of-screen banner with one dismiss path instead of the old pill-plus-drop animation flow that could leave stale UI stranded onscreen.
+- **Added reliable manual and timed error dismissal** — Error banners can now always be cleared with `x` or by tapping the banner, and they auto-dismiss after `12s`.
+- **Fixed automatic transcription mismatching manual retranscribe** — When the first automatic upload fails or comes back empty after speech-boundary trimming, the app now retries the full saved audio before falling back to recovered chunk audio.
+- **Treats `"Thank you for watching"` endings as a suspect transcript** — The recorder now mistrusts that known hallucinated outro and retries automatically instead of accepting a truncated transcript as final.
+- **Caps hallucination-triggered retries to one extra attempt** — Known suspicious outro detection can only trigger one automatic retry, so it cannot spin through repeated fallback loops.
 - **Prevents duplicate recovered-audio retries inside one transcription task** — The app now assembles fallback audio at most once per recording and reuses that recovery source instead of re-entering destructive chunk recovery with stale file paths.
 - **Fixed the stuck recording error-banner race** — Error overlays now cancel their delayed label-drop work item when dismissed, so they cannot reappear after dismissal and get stranded onscreen.
 - **Preserves chunk files when the master recording is chosen** — The recorder no longer deletes chunk checkpoints as soon as the primary `.caf` file wins, so the automatic fallback retry still has real audio files left to assemble if the primary transcription comes back empty.
