@@ -15,11 +15,6 @@ enum OverlayPhase {
     case done
 }
 
-class ErrorOverlayState: ObservableObject {
-    @Published var message: String = ""
-    var onDismiss: (() -> Void)?
-}
-
 // MARK: - Panel Helpers
 
 private func makeOverlayPanel(width: CGFloat, height: CGFloat, ignoresMouseEvents: Bool = true) -> NSPanel {
@@ -72,10 +67,9 @@ class RecordingOverlayManager {
     private var overlayWindow: NSPanel?
     private var transcribingPanel: NSPanel?
     private var errorPanel: NSPanel?
-    private var errorDropWorkItem: DispatchWorkItem?
     private var errorDismissWorkItem: DispatchWorkItem?
     private var overlayState = RecordingOverlayState()
-    private var errorState = ErrorOverlayState()
+    private let errorDisplayDuration: TimeInterval = 12
 
     /// Whether the main screen has a camera housing (notch).
     private var screenHasNotch: Bool {
@@ -272,183 +266,62 @@ class RecordingOverlayManager {
     }
 
     private func _showError(_ message: String) {
-        // Dismiss any existing overlays
         _dismiss()
-        cancelScheduledErrorDrop()
         cancelScheduledErrorDismiss()
 
-        errorState.message = message
-        errorState.onDismiss = { [weak self] in
+        guard let screen = NSScreen.main else { return }
+
+        let panelWidth: CGFloat = 420
+        let panelHeight: CGFloat = 38
+        let panel = makeOverlayPanel(width: panelWidth, height: panelHeight, ignoresMouseEvents: false)
+        let x = panelX(screen, width: panelWidth)
+        let finalY: CGFloat
+        if screenHasNotch {
+            finalY = screen.visibleFrame.maxY - panelHeight - 10
+        } else {
+            finalY = screen.frame.maxY - panelHeight - 12
+        }
+
+        let view = ErrorOverlayView(message: message) { [weak self] in
             self?._dismissError()
         }
-
-        guard let screen = NSScreen.main else { return }
-        let hasNotch = screenHasNotch
-
-        // Step 1: Show the pill dropping from the notch (same as recording start)
-        let pillWidth: CGFloat = 120
-        let pillHeight: CGFloat = 32
-        let notchInset: CGFloat = 4
-
-        let pillPanel = makeOverlayPanel(width: pillWidth, height: pillHeight, ignoresMouseEvents: false)
-
-        let pillView = ErrorPillView()
-        pillPanel.contentView = makeGlassContent(
-            width: pillWidth,
-            height: pillHeight,
-            cornerRadius: 12,
-            maskedCorners: [.layerMinXMinYCorner, .layerMaxXMinYCorner],
-            rootView: pillView
-        )
-
-        let pillX = panelX(screen, width: pillWidth)
-        let hiddenY: CGFloat
-        let visibleY: CGFloat
-        if hasNotch {
-            hiddenY = screen.visibleFrame.maxY
-            visibleY = screen.visibleFrame.maxY - pillHeight + notchInset
-        } else {
-            hiddenY = screen.frame.maxY
-            visibleY = screen.frame.maxY - pillHeight
-        }
-
-        pillPanel.setFrame(NSRect(x: pillX, y: hiddenY, width: pillWidth, height: pillHeight), display: true)
-        pillPanel.alphaValue = 1
-        pillPanel.orderFrontRegardless()
-        self.overlayWindow = pillPanel
-
-        // Animate pill drop
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.18
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.56, 0.64, 1.0)
-            pillPanel.animator().setFrame(NSRect(x: pillX, y: visibleY, width: pillWidth, height: pillHeight), display: true)
-        }, completionHandler: {
-            // Step 2: Shake the pill + play error sound
-            NSSound(named: "Funk")?.play()
-            self._shakePanel(pillPanel)
-
-            // Step 3: Error drops out mid-shake — like it was shaken loose
-            let workItem = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                self._dropErrorLabel(message, screen: screen, pillY: visibleY)
-            }
-            self.errorDropWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
-        })
-
-        // Step 4: Auto-dismiss everything after 3s
-        scheduleErrorDismiss()
-    }
-
-    private func _dropErrorLabel(_ message: String, screen: NSScreen, pillY: CGFloat) {
-        errorState.message = message
-
-        let panelWidth: CGFloat = 260
-        let panelHeight: CGFloat = 30
-        let gap: CGFloat = 6
-
-        let panel = makeOverlayPanel(width: panelWidth, height: panelHeight, ignoresMouseEvents: false)
-
-        let view = ErrorOverlayView(state: errorState)
         panel.contentView = makeGlassContent(
             width: panelWidth,
             height: panelHeight,
-            cornerRadius: 8,
+            cornerRadius: 10,
             rootView: view
         )
 
-        let x = panelX(screen, width: panelWidth)
-        let finalY = pillY - panelHeight - gap
-        let startY = finalY + 12 // starts tucked up behind the pill
-
-        panel.setFrame(NSRect(x: x, y: startY, width: panelWidth, height: panelHeight), display: true)
+        panel.setFrame(
+            NSRect(x: x, y: finalY + 8, width: panelWidth, height: panelHeight),
+            display: true
+        )
         panel.alphaValue = 0
         panel.orderFrontRegardless()
-        self.errorPanel = panel
+        errorPanel = panel
 
-        // Drop down + fade in — shaken loose from the pill
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
-            ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.34, 1.3, 0.64, 1.0)
-            panel.animator().setFrame(NSRect(x: x, y: finalY, width: panelWidth, height: panelHeight), display: true)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.14
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
+            panel.animator().setFrame(
+                NSRect(x: x, y: finalY, width: panelWidth, height: panelHeight),
+                display: true
+            )
         }
+
+        scheduleErrorDismiss()
     }
 
     private func _dismissError() {
-        cancelScheduledErrorDrop()
         cancelScheduledErrorDismiss()
-
-        let errorPanelRef = errorPanel
-        let pillPanelRef = overlayWindow
-
-        // Step 1: Error label fades out + slides up (back toward the pill)
-        if let errorPanelRef {
-            let frame = errorPanelRef.frame
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.2
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-                errorPanelRef.animator().alphaValue = 0
-                errorPanelRef.animator().setFrame(
-                    NSRect(x: frame.origin.x, y: frame.origin.y + 10, width: frame.width, height: frame.height),
-                    display: true
-                )
-            }, completionHandler: {
-                errorPanelRef.orderOut(nil)
-            })
-        }
-        self.errorPanel = nil
-
-        // Step 2: Pill slides back up into the notch (after a short delay)
-        if let pillPanelRef, let screen = NSScreen.main {
-            let hiddenY = screenHasNotch ? screen.visibleFrame.maxY : screen.frame.maxY
-            let frame = pillPanelRef.frame
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = 0.15
-                    ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0.0, 1.0, 1.0)
-                    pillPanelRef.animator().setFrame(
-                        NSRect(x: frame.origin.x, y: hiddenY, width: frame.width, height: frame.height),
-                        display: true
-                    )
-                }, completionHandler: {
-                    pillPanelRef.orderOut(nil)
-                    self?.overlayWindow = nil
-                })
-            }
-        } else {
-            self.overlayWindow = nil
-        }
-
-        errorState.onDismiss = nil
-    }
-
-    private func _shakePanel(_ panel: NSPanel) {
-        let frame = panel.frame
-        let shakeOffset: CGFloat = 8
-        let shakeDuration: TimeInterval = 0.06
-
-        // 4 rapid shakes: right, left, right, left, center
-        let offsets: [CGFloat] = [shakeOffset, -shakeOffset, shakeOffset * 0.6, -shakeOffset * 0.6, 0]
-        var delay: TimeInterval = 0
-
-        for offset in offsets {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                NSAnimationContext.runAnimationGroup { ctx in
-                    ctx.duration = shakeDuration
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    panel.animator().setFrame(
-                        NSRect(x: frame.origin.x + offset, y: frame.origin.y, width: frame.width, height: frame.height),
-                        display: true
-                    )
-                }
-            }
-            delay += shakeDuration
+        if let panel = errorPanel {
+            panel.orderOut(nil)
+            errorPanel = nil
         }
     }
 
     private func _dismiss() {
-        cancelScheduledErrorDrop()
         cancelScheduledErrorDismiss()
 
         if let panel = overlayWindow {
@@ -463,8 +336,6 @@ class RecordingOverlayManager {
             panel.orderOut(nil)
             errorPanel = nil
         }
-
-        errorState.onDismiss = nil
     }
 
     private func scheduleErrorDismiss() {
@@ -472,12 +343,7 @@ class RecordingOverlayManager {
             self?._dismissError()
         }
         errorDismissWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.5, execute: workItem)
-    }
-
-    private func cancelScheduledErrorDrop() {
-        errorDropWorkItem?.cancel()
-        errorDropWorkItem = nil
+        DispatchQueue.main.asyncAfter(deadline: .now() + errorDisplayDuration, execute: workItem)
     }
 
     private func cancelScheduledErrorDismiss() {
@@ -676,52 +542,38 @@ struct TranscribingIndicatorView: View {
 
 // MARK: - Error Overlay Views
 
-struct ErrorPillView: View {
-    var body: some View {
-        Image(systemName: "xmark")
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.red.opacity(0.7))
-            .frame(width: 120, height: 32)
-            .background(
-                UnevenRoundedRectangle(bottomLeadingRadius: 12, bottomTrailingRadius: 12)
-                    .fill(Color(white: 0.08))
-            )
-    }
-}
-
 struct ErrorOverlayView: View {
-    @ObservedObject var state: ErrorOverlayState
+    let message: String
+    let onDismiss: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(state.message)
+        HStack(spacing: 10) {
+            Text(message)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button(action: { state.onDismiss?() }) {
+            Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.8))
-                    .frame(width: 16, height: 16)
+                    .frame(width: 18, height: 18)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, 12)
-        .frame(width: 260, height: 30)
+        .frame(width: 420, height: 38)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 10)
                 .fill(Color(white: 0.08))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 10)
                 .strokeBorder(Color.red.opacity(0.3), lineWidth: 0.75)
         )
         .contentShape(Rectangle())
-        .onTapGesture {
-            state.onDismiss?()
-        }
+        .onTapGesture(perform: onDismiss)
     }
 }

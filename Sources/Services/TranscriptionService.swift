@@ -2,6 +2,11 @@ import Foundation
 import AVFoundation
 import os
 
+struct TranscriptionResult {
+    let transcript: String
+    let hadSuspiciousOutro: Bool
+}
+
 class TranscriptionService {
     private let apiKey: String
     private let baseURL: String
@@ -55,8 +60,12 @@ class TranscriptionService {
 
     // Upload audio file, submit for transcription, poll until done, return text
     func transcribe(fileURL: URL, prompt: String? = nil) async throws -> String {
+        try await transcribeDetailed(fileURL: fileURL, prompt: prompt).transcript
+    }
+
+    func transcribeDetailed(fileURL: URL, prompt: String? = nil) async throws -> TranscriptionResult {
         let timeout = await timeoutForFile(fileURL)
-        return try await withThrowingTaskGroup(of: String.self) { group in
+        return try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
             group.addTask { [weak self] in
                 guard let self else {
                     throw TranscriptionError.submissionFailed("Service deallocated")
@@ -78,7 +87,7 @@ class TranscriptionService {
     }
 
     // Send audio file for transcription and return text
-    private func transcribeAudio(fileURL: URL, prompt: String? = nil, timeout: TimeInterval) async throws -> String {
+    private func transcribeAudio(fileURL: URL, prompt: String? = nil, timeout: TimeInterval) async throws -> TranscriptionResult {
         let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -176,7 +185,7 @@ class TranscriptionService {
         return "audio/mp4"
     }
 
-    private func parseTranscript(from data: Data) throws -> String {
+    private func parseTranscript(from data: Data) throws -> TranscriptionResult {
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let text = json["text"] as? String ?? ""
 
@@ -190,7 +199,7 @@ class TranscriptionService {
                 os_log(.info, "Whisper segments=%d, avg no_speech_prob=%.3f", segments.count, avgNoSpeech)
                 if avgNoSpeech > 0.95 {
                     os_log(.info, "Very high no_speech_prob (%.3f) — treating as empty transcript", avgNoSpeech)
-                    return ""
+                    return TranscriptionResult(transcript: "", hadSuspiciousOutro: false)
                 }
             }
 
@@ -212,23 +221,23 @@ class TranscriptionService {
         return sanitizeTranscript(text)
     }
 
-    private func sanitizeTranscript(_ transcript: String) -> String {
+    private func sanitizeTranscript(_ transcript: String) -> TranscriptionResult {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return ""
+            return TranscriptionResult(transcript: "", hadSuspiciousOutro: false)
         }
 
         if isKnownHallucinatedOutro(trimmed) {
             os_log(.info, "Dropping known transcription hallucination: %{public}@", trimmed)
-            return ""
+            return TranscriptionResult(transcript: "", hadSuspiciousOutro: true)
         }
 
         if let stripped = strippingKnownHallucinatedOutroSuffix(from: trimmed), !stripped.isEmpty {
             os_log(.info, "Removed known hallucinated transcript suffix")
-            return stripped
+            return TranscriptionResult(transcript: stripped, hadSuspiciousOutro: true)
         }
 
-        return trimmed
+        return TranscriptionResult(transcript: trimmed, hadSuspiciousOutro: false)
     }
 
     private func isKnownHallucinatedOutro(_ transcript: String) -> Bool {
