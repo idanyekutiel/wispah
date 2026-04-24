@@ -6,6 +6,10 @@
 
 ## Changelog
 
+- **Fixed bare `Fn` firing before an `Fn + key` combo is complete** — Standalone modifier shortcuts now wait briefly before activating, so pressing `Fn` as part of another shortcut no longer starts recording immediately.
+- **Added long-recording segment transcription fallback** — Long recordings that fail or come back incomplete now assemble larger transcription segments from the checkpoint chunks and transcribe those before surfacing an error.
+- **Detects incomplete long transcripts by segment coverage** — If a long recording only transcribes the first portion of the audio, the app now treats that as incomplete and automatically switches to the segment fallback path.
+- **Added a final saved-audio retry that mirrors manual retranscribe** — Automatic transcription now makes one last no-trim/no-prompt attempt using the saved run-log audio before recording a failure, matching the path that previously only worked from the history view.
 - **Rewrote recording error banners to one deterministic panel** — Recording errors now use a single top-of-screen banner with one dismiss path instead of the old pill-plus-drop animation flow that could leave stale UI stranded onscreen.
 - **Added reliable manual and timed error dismissal** — Error banners can now always be cleared with `x` or by tapping the banner, and they auto-dismiss after `12s`.
 - **Fixed automatic transcription mismatching manual retranscribe** — When the first automatic upload fails or comes back empty after speech-boundary trimming, the app now retries the full saved audio before falling back to recovered chunk audio.

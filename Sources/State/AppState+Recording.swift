@@ -397,7 +397,9 @@ extension AppState {
                     var recoveredSourceURL: URL?
                     var hasAttemptedRecoveredRetry = false
                     var hasAttemptedSuspiciousTranscriptRetry = false
+                    var hasAttemptedSegmentRetry = false
                     let hasSpeechTrimBounds = (speechRange?.start ?? 0) > 0 || trimDuration > 0
+                    let shouldUseSegmentRetry = max(wallClockDuration, trimDuration) >= 60
 
                     defer {
                         for temporaryUploadURL in temporaryUploadURLs {
@@ -408,7 +410,11 @@ extension AppState {
                         }
                     }
 
-                    func prepareUploadURL(from sourceURL: URL, applySpeechTrimming: Bool) async -> URL {
+                    func prepareUploadURL(
+                        from sourceURL: URL,
+                        applySpeechTrimming: Bool,
+                        replaceSavedAudio: Bool = true
+                    ) async -> URL {
                         do {
                             let uploadURL = try await self.audioRecorder.preprocessAudio(
                                 inputURL: sourceURL,
@@ -418,11 +424,13 @@ extension AppState {
                             if uploadURL != sourceURL {
                                 temporaryUploadURLs.append(uploadURL)
                             }
-                            effectiveSavedAudioFileName = Self.replaceAudioFile(
-                                named: effectiveSavedAudioFileName,
-                                with: uploadURL,
-                                preferredExtension: uploadURL.pathExtension
-                            )
+                            if replaceSavedAudio {
+                                effectiveSavedAudioFileName = Self.replaceAudioFile(
+                                    named: effectiveSavedAudioFileName,
+                                    with: uploadURL,
+                                    preferredExtension: uploadURL.pathExtension
+                                )
+                            }
                             return uploadURL
                         } catch {
                             os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
@@ -473,6 +481,79 @@ extension AppState {
                         return try await transcribeWithRetry(uploadURL: uploadURL)
                     }
 
+                    func transcribeUploadWithoutPrompt(_ uploadURL: URL) async throws -> TranscriptionResult {
+                        do {
+                            return try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: nil)
+                        } catch let error where Self.isTransientNetworkError(error) {
+                            os_log(.info, log: recordingLog, "chunk transcription hit transient error — retrying once: %{public}@", error.localizedDescription)
+                            return try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: nil)
+                        }
+                    }
+
+                    func looksIncompleteForLongRecording(_ result: TranscriptionResult) -> Bool {
+                        guard shouldUseSegmentRetry, let coveredAudioDuration = result.coveredAudioDuration else {
+                            return false
+                        }
+
+                        let expectedDuration = max(trimDuration, wallClockDuration)
+                        guard expectedDuration >= 60 else { return false }
+                        let minimumExpectedCoverage = expectedDuration * 0.75
+                        let isIncomplete = coveredAudioDuration < minimumExpectedCoverage
+                        if isIncomplete {
+                            os_log(
+                                .info,
+                                log: recordingLog,
+                                "transcript coverage %.1fs below expected %.1fs — treating as incomplete",
+                                coveredAudioDuration,
+                                minimumExpectedCoverage
+                            )
+                        }
+                        return isIncomplete
+                    }
+
+                    func retryWithTranscriptionSegments(reason: String) async -> String? {
+                        guard shouldUseSegmentRetry else { return nil }
+                        guard !hasAttemptedSegmentRetry else {
+                            os_log(.info, log: recordingLog, "skipping duplicate segment retry after %{public}@", reason)
+                            return nil
+                        }
+                        hasAttemptedSegmentRetry = true
+
+                        let segmentURLs = self.audioRecorder.assembleTranscriptionSegmentsIfAvailable(targetDurationSeconds: 30)
+                        guard !segmentURLs.isEmpty else {
+                            os_log(.error, log: recordingLog, "no transcription segments available after %{public}@", reason)
+                            return nil
+                        }
+                        temporarySourceURLs.append(contentsOf: segmentURLs)
+
+                        os_log(.info, log: recordingLog, "retrying transcription as %d segments after %{public}@", segmentURLs.count, reason)
+                        var transcripts: [String] = []
+
+                        for (index, segmentURL) in segmentURLs.enumerated() {
+                            await MainActor.run { [weak self] in
+                                self?.debugStatusMessage = "Transcribing chunk \(index + 1)/\(segmentURLs.count)"
+                            }
+                            let uploadURL = await prepareUploadURL(
+                                from: segmentURL,
+                                applySpeechTrimming: false,
+                                replaceSavedAudio: false
+                            )
+                            do {
+                                let result = try await transcribeUploadWithoutPrompt(uploadURL)
+                                let transcript = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !transcript.isEmpty {
+                                    transcripts.append(transcript)
+                                }
+                            } catch {
+                                os_log(.error, log: recordingLog, "segment %d transcription failed: %{public}@", index + 1, error.localizedDescription)
+                            }
+                        }
+
+                        let joinedTranscript = transcripts.joined(separator: " ")
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        return joinedTranscript.isEmpty ? nil : joinedTranscript
+                    }
+
                     func retryWithRecoveredAudio(reason: String) async throws -> String? {
                         guard !hasAttemptedRecoveredRetry else {
                             os_log(.info, log: recordingLog, "skipping duplicate recovered-audio retry after %{public}@", reason)
@@ -504,6 +585,63 @@ extension AppState {
                         return recoveredResult.transcript
                     }
 
+                    func retryWithAutomaticFallbacks(reason: String) async throws -> String? {
+                        if let segmentedResult = await retryWithTranscriptionSegments(reason: reason) {
+                            return segmentedResult
+                        }
+                        if let recoveredResult = try await retryWithRecoveredAudio(reason: reason) {
+                            return recoveredResult
+                        }
+                        if let savedAudioResult = await retryWithSavedAudioLikeManualRetry(reason: reason) {
+                            return savedAudioResult
+                        }
+                        return nil
+                    }
+
+                    func retryWithSavedAudioLikeManualRetry(reason: String) async -> String? {
+                        let candidateNames = [effectiveSavedAudioFileName, savedAudioFileName]
+                            .compactMap { $0 }
+                            .reduce(into: [String]()) { names, name in
+                                if !names.contains(name) {
+                                    names.append(name)
+                                }
+                            }
+
+                        for audioFileName in candidateNames {
+                            let savedURL = Self.audioStorageDirectory().appendingPathComponent(audioFileName)
+                            guard FileManager.default.fileExists(atPath: savedURL.path) else { continue }
+
+                            os_log(.info, log: recordingLog, "last-chance saved-audio retry after %{public}@: %{public}@", reason, audioFileName)
+                            await MainActor.run { [weak self] in
+                                self?.debugStatusMessage = "Retrying saved audio"
+                            }
+
+                            let uploadURL = await prepareUploadURL(from: savedURL, applySpeechTrimming: false)
+                            do {
+                                let result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: nil)
+                                let transcript = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !transcript.isEmpty {
+                                    return result.transcript
+                                }
+                            } catch let error where Self.isTransientNetworkError(error) {
+                                os_log(.info, log: recordingLog, "saved-audio retry hit transient error — retrying once: %{public}@", error.localizedDescription)
+                                do {
+                                    let result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: nil)
+                                    let transcript = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    if !transcript.isEmpty {
+                                        return result.transcript
+                                    }
+                                } catch {
+                                    os_log(.error, log: recordingLog, "saved-audio retry failed after transient retry: %{public}@", error.localizedDescription)
+                                }
+                            } catch {
+                                os_log(.error, log: recordingLog, "saved-audio retry failed: %{public}@", error.localizedDescription)
+                            }
+                        }
+
+                        return nil
+                    }
+
                     let rawResult: String
                     var primaryFailure: Error?
 
@@ -517,7 +655,9 @@ extension AppState {
                         let shouldRetrySuspiciousPrimary = primaryTrimmedResult.hadSuspiciousOutro && !hasAttemptedSuspiciousTranscriptRetry
                         let shouldRetryPrimaryWithoutTrim = shouldRetrySuspiciousPrimary || hasSpeechTrimBounds
 
-                        if !primaryTrimmedTranscript.isEmpty && !primaryTrimmedResult.hadSuspiciousOutro {
+                        if !primaryTrimmedTranscript.isEmpty &&
+                            !primaryTrimmedResult.hadSuspiciousOutro &&
+                            !looksIncompleteForLongRecording(primaryTrimmedResult) {
                             rawResult = primaryTrimmedResult.transcript
                         } else if shouldRetryPrimaryWithoutTrim {
                             if primaryTrimmedResult.hadSuspiciousOutro {
@@ -531,26 +671,28 @@ extension AppState {
                                     applySpeechTrimming: false
                                 )
                                 let fullPrimaryTranscript = fullPrimaryResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if !fullPrimaryTranscript.isEmpty && !fullPrimaryResult.hadSuspiciousOutro {
+                                if !fullPrimaryTranscript.isEmpty &&
+                                    !fullPrimaryResult.hadSuspiciousOutro &&
+                                    !looksIncompleteForLongRecording(fullPrimaryResult) {
                                     rawResult = fullPrimaryResult.transcript
                                 } else if fullPrimaryResult.hadSuspiciousOutro {
                                     os_log(.info, log: recordingLog, "full saved audio retry also looked hallucinated — not retrying again")
                                     rawResult = fullPrimaryResult.transcript
-                                } else if let recoveredResult = try await retryWithRecoveredAudio(reason: "empty full saved audio fallback") {
-                                    rawResult = recoveredResult
+                                } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty full saved audio fallback") {
+                                    rawResult = fallbackResult
                                 } else {
                                     rawResult = fullPrimaryResult.transcript
                                 }
                             } catch {
                                 primaryFailure = error
-                                if let recoveredResult = try await retryWithRecoveredAudio(reason: error.localizedDescription) {
-                                    rawResult = recoveredResult
+                                if let fallbackResult = try await retryWithAutomaticFallbacks(reason: error.localizedDescription) {
+                                    rawResult = fallbackResult
                                 } else {
                                     throw error
                                 }
                             }
-                        } else if let recoveredResult = try await retryWithRecoveredAudio(reason: "empty primary transcript") {
-                            rawResult = recoveredResult
+                        } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty primary transcript") {
+                            rawResult = fallbackResult
                         } else {
                             rawResult = primaryTrimmedResult.transcript
                         }
@@ -565,27 +707,34 @@ extension AppState {
                                     applySpeechTrimming: false
                                 )
                                 let fullPrimaryTranscript = fullPrimaryResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if !fullPrimaryTranscript.isEmpty && !fullPrimaryResult.hadSuspiciousOutro {
+                                if !fullPrimaryTranscript.isEmpty &&
+                                    !fullPrimaryResult.hadSuspiciousOutro &&
+                                    !looksIncompleteForLongRecording(fullPrimaryResult) {
                                     rawResult = fullPrimaryResult.transcript
-                                } else if let recoveredResult = try await retryWithRecoveredAudio(reason: "empty full saved audio after primary failure") {
-                                    rawResult = recoveredResult
+                                } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty full saved audio after primary failure") {
+                                    rawResult = fallbackResult
                                 } else {
                                     rawResult = fullPrimaryResult.transcript
                                 }
                             } catch {
-                                if let recoveredResult = try await retryWithRecoveredAudio(reason: error.localizedDescription) {
-                                    rawResult = recoveredResult
+                                if let fallbackResult = try await retryWithAutomaticFallbacks(reason: error.localizedDescription) {
+                                    rawResult = fallbackResult
                                 } else {
                                     throw primaryFailure ?? error
                                 }
                             }
-                        } else if let recoveredResult = try await retryWithRecoveredAudio(reason: error.localizedDescription) {
-                            rawResult = recoveredResult
+                        } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: error.localizedDescription) {
+                            rawResult = fallbackResult
                         } else {
                             throw primaryFailure ?? error
                         }
                     }
-                    let rawTranscript = rawResult
+                    var rawTranscript = rawResult
+                    if rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty automatic transcript") {
+                        rawTranscript = fallbackResult
+                    }
+                    let resolvedRawTranscript = rawTranscript
                     let appContext: AppContext
                     if let sessionContext {
                         appContext = sessionContext
@@ -603,7 +752,7 @@ extension AppState {
                     if self.postProcessingEnabled {
                         do {
                             let postProcessingResult = try await postProcessingService.postProcess(
-                                transcript: rawTranscript,
+                                transcript: resolvedRawTranscript,
                                 context: appContext,
                                 customVocabulary: self.customVocabulary,
                                 smartFormatting: self.smartFormattingEnabled,
@@ -615,12 +764,12 @@ extension AppState {
                             processingStatus = "Post-processing succeeded"
                             postProcessingPrompt = postProcessingResult.prompt
                         } catch {
-                            finalTranscript = rawTranscript
+                            finalTranscript = resolvedRawTranscript
                             processingStatus = "Post-processing failed, using raw transcript"
                             postProcessingPrompt = ""
                         }
                     } else {
-                        finalTranscript = rawTranscript
+                        finalTranscript = resolvedRawTranscript
                         processingStatus = "Post-processing disabled"
                         postProcessingPrompt = ""
                     }
@@ -630,7 +779,7 @@ extension AppState {
                         self.lastContextScreenshotDataURL = appContext.screenshotDataURL
                         self.lastContextScreenshotStatus = appContext.screenshotError
                             ?? "available (\(appContext.screenshotMimeType ?? "image"))"
-                        let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let trimmedRawTranscript = resolvedRawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                         let trimmedFinalTranscript = finalTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                         self.lastPostProcessingPrompt = postProcessingPrompt
                         self.lastRawTranscript = trimmedRawTranscript
