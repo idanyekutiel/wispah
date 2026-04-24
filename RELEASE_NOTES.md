@@ -6,7 +6,7 @@
 
 ## Changelog
 
-- **Fixed bare `Fn` firing before an `Fn + key` combo is complete** — Standalone modifier shortcuts now wait briefly before activating, so pressing `Fn` as part of another shortcut no longer starts recording immediately.
+- **Fixed `Fn` shortcut behavior for both toggle and hold modes** — Bare `Fn` now fires on release only if it stayed solo, so `Fn + key` combos no longer trigger recording, while hold-to-record `Fn` still starts immediately on press like before.
 - **Added long-recording segment transcription fallback** — Long recordings that fail or come back incomplete now assemble larger transcription segments from the checkpoint chunks and transcribe those before surfacing an error.
 - **Detects incomplete long transcripts by segment coverage** — If a long recording only transcribes the first portion of the audio, the app now treats that as incomplete and automatically switches to the segment fallback path.
 - **Added a final saved-audio retry that mirrors manual retranscribe** — Automatic transcription now makes one last no-trim/no-prompt attempt using the saved run-log audio before recording a failure, matching the path that previously only worked from the history view.

@@ -5,6 +5,17 @@ import Combine
 import os.log
 
 extension AppState {
+    private func hotkeyModifierTriggerStyles() -> [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] {
+        var styles: [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] = [:]
+        if toggleHotkey.isModifier {
+            styles[toggleHotkey] = .onReleaseIfSolo
+        }
+        if holdHotkey.isModifier {
+            styles[holdHotkey] = .onPress
+        }
+        return styles
+    }
+
     func startHotkeyMonitoring() {
         hotkeyManager.onKeyDown = { [weak self] binding in
             DispatchQueue.main.async {
@@ -17,12 +28,12 @@ extension AppState {
             }
         }
         let uniqueBindings = Array(Set([toggleHotkey, holdHotkey]))
-        hotkeyManager.start(bindings: uniqueBindings)
+        hotkeyManager.start(bindings: uniqueBindings, modifierTriggerStyles: hotkeyModifierTriggerStyles())
     }
 
     func restartHotkeyMonitoring() {
         let uniqueBindings = Array(Set([toggleHotkey, holdHotkey]))
-        hotkeyManager.start(bindings: uniqueBindings)
+        hotkeyManager.start(bindings: uniqueBindings, modifierTriggerStyles: hotkeyModifierTriggerStyles())
     }
 
     func handleHotkeyDown(binding: HotkeyBinding) {
