@@ -360,12 +360,20 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func assembleChunks(outputURL finalURL: URL) throws -> URL? {
+    private func assembleChunks(outputURL finalURL: URL, removeSourceChunks: Bool = true) throws -> URL? {
         trimEmptyTrailingChunks()
         let validChunks = recordingChunks.filter { $0.frameCount > 0 }
+        return try assembleChunkGroup(validChunks, outputURL: finalURL, removeSourceChunks: removeSourceChunks)
+    }
+
+    private func assembleChunkGroup(
+        _ validChunks: [RecordingChunk],
+        outputURL finalURL: URL,
+        removeSourceChunks: Bool
+    ) throws -> URL? {
         guard !validChunks.isEmpty else { return nil }
 
-        if validChunks.count == 1 {
+        if validChunks.count == 1, removeSourceChunks {
             let onlyChunk = validChunks[0].url
             try? FileManager.default.removeItem(at: finalURL)
             try FileManager.default.moveItem(at: onlyChunk, to: finalURL)
@@ -399,8 +407,10 @@ final class AudioRecorder: NSObject, ObservableObject {
             }
         }
 
-        for chunk in validChunks {
-            try? FileManager.default.removeItem(at: chunk.url)
+        if removeSourceChunks {
+            for chunk in validChunks {
+                try? FileManager.default.removeItem(at: chunk.url)
+            }
         }
         return finalURL
     }
@@ -1029,6 +1039,61 @@ final class AudioRecorder: NSObject, ObservableObject {
                 os_log(.error, log: recordingLog, "failed to assemble fallback chunks: %{public}@", error.localizedDescription)
                 return nil
             }
+        }
+    }
+
+    func assembleTranscriptionSegmentsIfAvailable(targetDurationSeconds: Double = 30) -> [URL] {
+        captureQueue.sync {
+            trimEmptyTrailingChunks()
+            guard let recordingFormat else { return [] }
+            let validChunks = recordingChunks.filter {
+                $0.frameCount > 0 && FileManager.default.fileExists(atPath: $0.url.path)
+            }
+            guard !validChunks.isEmpty else { return [] }
+
+            let targetFrames = max(
+                AVAudioFramePosition(recordingFormat.sampleRate * targetDurationSeconds),
+                AVAudioFramePosition(recordingFormat.sampleRate)
+            )
+
+            var segmentURLs: [URL] = []
+            var segmentChunks: [RecordingChunk] = []
+            var segmentFrames: AVAudioFramePosition = 0
+            var segmentIndex = 1
+
+            func flushSegment() {
+                guard !segmentChunks.isEmpty else { return }
+                let segmentURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("transcription_segment_\(UUID().uuidString)_\(String(format: "%03d", segmentIndex))")
+                    .appendingPathExtension("caf")
+                do {
+                    try? FileManager.default.removeItem(at: segmentURL)
+                    if let outputURL = try assembleChunkGroup(
+                        segmentChunks,
+                        outputURL: segmentURL,
+                        removeSourceChunks: false
+                    ) {
+                        segmentURLs.append(outputURL)
+                    }
+                } catch {
+                    os_log(.error, log: recordingLog, "failed to assemble transcription segment: %{public}@", error.localizedDescription)
+                    try? FileManager.default.removeItem(at: segmentURL)
+                }
+                segmentChunks.removeAll()
+                segmentFrames = 0
+                segmentIndex += 1
+            }
+
+            for chunk in validChunks {
+                segmentChunks.append(chunk)
+                segmentFrames += chunk.frameCount
+                if segmentFrames >= targetFrames {
+                    flushSegment()
+                }
+            }
+            flushSegment()
+
+            return segmentURLs
         }
     }
 }

@@ -5,6 +5,7 @@ import os
 struct TranscriptionResult {
     let transcript: String
     let hadSuspiciousOutro: Bool
+    let coveredAudioDuration: Double?
 }
 
 class TranscriptionService {
@@ -188,24 +189,29 @@ class TranscriptionService {
     private func parseTranscript(from data: Data) throws -> TranscriptionResult {
         if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
             let text = json["text"] as? String ?? ""
+            var coveredAudioDuration: Double?
 
             // verbose_json returns segments with no_speech_prob — filter hallucinations
             // Client-side speech detection already filters truly silent recordings,
             // so this is a last-resort check with a high threshold (0.95)
             if let segments = json["segments"] as? [[String: Any]], !segments.isEmpty {
+                coveredAudioDuration = segments
+                    .compactMap { $0["end"] as? Double }
+                    .max()
+
                 let avgNoSpeech = segments
                     .compactMap { $0["no_speech_prob"] as? Double }
                     .reduce(0, +) / Double(segments.count)
                 os_log(.info, "Whisper segments=%d, avg no_speech_prob=%.3f", segments.count, avgNoSpeech)
                 if avgNoSpeech > 0.95 {
                     os_log(.info, "Very high no_speech_prob (%.3f) — treating as empty transcript", avgNoSpeech)
-                    return TranscriptionResult(transcript: "", hadSuspiciousOutro: false)
+                    return TranscriptionResult(transcript: "", hadSuspiciousOutro: false, coveredAudioDuration: coveredAudioDuration)
                 }
             }
 
             // Always return within the JSON block — don't fall through to plain text,
             // which would return the raw JSON string as the transcript
-            return sanitizeTranscript(text)
+            return sanitizeTranscript(text, coveredAudioDuration: coveredAudioDuration)
         }
 
         // Non-JSON fallback (plain text response)
@@ -221,23 +227,23 @@ class TranscriptionService {
         return sanitizeTranscript(text)
     }
 
-    private func sanitizeTranscript(_ transcript: String) -> TranscriptionResult {
+    private func sanitizeTranscript(_ transcript: String, coveredAudioDuration: Double? = nil) -> TranscriptionResult {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            return TranscriptionResult(transcript: "", hadSuspiciousOutro: false)
+            return TranscriptionResult(transcript: "", hadSuspiciousOutro: false, coveredAudioDuration: coveredAudioDuration)
         }
 
         if isKnownHallucinatedOutro(trimmed) {
             os_log(.info, "Dropping known transcription hallucination: %{public}@", trimmed)
-            return TranscriptionResult(transcript: "", hadSuspiciousOutro: true)
+            return TranscriptionResult(transcript: "", hadSuspiciousOutro: true, coveredAudioDuration: coveredAudioDuration)
         }
 
         if let stripped = strippingKnownHallucinatedOutroSuffix(from: trimmed), !stripped.isEmpty {
             os_log(.info, "Removed known hallucinated transcript suffix")
-            return TranscriptionResult(transcript: stripped, hadSuspiciousOutro: true)
+            return TranscriptionResult(transcript: stripped, hadSuspiciousOutro: true, coveredAudioDuration: coveredAudioDuration)
         }
 
-        return TranscriptionResult(transcript: trimmed, hadSuspiciousOutro: false)
+        return TranscriptionResult(transcript: trimmed, hadSuspiciousOutro: false, coveredAudioDuration: coveredAudioDuration)
     }
 
     private func isKnownHallucinatedOutro(_ transcript: String) -> Bool {

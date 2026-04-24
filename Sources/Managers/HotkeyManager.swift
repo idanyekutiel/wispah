@@ -112,7 +112,11 @@ class HotkeyManager {
     private var localKeyDownMonitor: Any?
     private var localKeyUpMonitor: Any?
     private var keyDownStates: [UInt16: Bool] = [:]
+    private var modifierPhysicalDownStates: [UInt16: Bool] = [:]
+    private var modifierChordCancelled: [UInt16: Bool] = [:]
+    private var pendingModifierWorkItems: [UInt16: DispatchWorkItem] = [:]
     private var monitoredBindings: [HotkeyBinding] = []
+    private let standaloneModifierActivationDelay: TimeInterval = 0.12
 
     var onKeyDown: ((HotkeyBinding) -> Void)?
     var onKeyUp: ((HotkeyBinding) -> Void)?
@@ -122,6 +126,10 @@ class HotkeyManager {
         monitoredBindings = bindings.filter { !$0.isDisabled }
         for binding in monitoredBindings {
             keyDownStates[binding.keyCode] = false
+            if binding.isModifier {
+                modifierPhysicalDownStates[binding.keyCode] = false
+                modifierChordCancelled[binding.keyCode] = false
+            }
         }
 
         let hasModifier = monitoredBindings.contains(where: { $0.isModifier })
@@ -137,7 +145,7 @@ class HotkeyManager {
             }
         }
 
-        if hasRegularKey {
+        if hasRegularKey || hasModifier {
             globalKeyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 self?.handleKeyDown(event: event)
             }
@@ -177,18 +185,58 @@ class HotkeyManager {
             guard let flag = binding.modifierFlag else { continue }
             let flagIsSet = event.modifierFlags.contains(flag)
 
-            let wasDown = keyDownStates[binding.keyCode] ?? false
-            if flagIsSet && !wasDown {
-                keyDownStates[binding.keyCode] = true
-                onKeyDown?(binding)
-            } else if !flagIsSet && wasDown {
+            let wasPhysicallyDown = modifierPhysicalDownStates[binding.keyCode] ?? false
+            if flagIsSet && !wasPhysicallyDown {
+                modifierPhysicalDownStates[binding.keyCode] = true
+                modifierChordCancelled[binding.keyCode] = false
+                scheduleStandaloneModifierActivation(binding)
+            } else if !flagIsSet && wasPhysicallyDown {
+                modifierPhysicalDownStates[binding.keyCode] = false
+                modifierChordCancelled[binding.keyCode] = false
+                cancelPendingModifierActivation(for: binding.keyCode)
+
+                let wasDown = keyDownStates[binding.keyCode] ?? false
                 keyDownStates[binding.keyCode] = false
-                onKeyUp?(binding)
+                if wasDown {
+                    onKeyUp?(binding)
+                }
             }
         }
     }
 
+    private func scheduleStandaloneModifierActivation(_ binding: HotkeyBinding) {
+        cancelPendingModifierActivation(for: binding.keyCode)
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.modifierPhysicalDownStates[binding.keyCode] == true else { return }
+            guard self.modifierChordCancelled[binding.keyCode] != true else { return }
+            guard self.keyDownStates[binding.keyCode] != true else { return }
+
+            self.keyDownStates[binding.keyCode] = true
+            self.onKeyDown?(binding)
+        }
+        pendingModifierWorkItems[binding.keyCode] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + standaloneModifierActivationDelay, execute: workItem)
+    }
+
+    private func cancelPendingModifierActivation(for keyCode: UInt16) {
+        pendingModifierWorkItems[keyCode]?.cancel()
+        pendingModifierWorkItems[keyCode] = nil
+    }
+
+    private func cancelStandaloneModifierActivationsForChord() {
+        for binding in monitoredBindings where binding.isModifier {
+            guard modifierPhysicalDownStates[binding.keyCode] == true else { continue }
+            modifierChordCancelled[binding.keyCode] = true
+            cancelPendingModifierActivation(for: binding.keyCode)
+        }
+    }
+
     private func handleKeyDown(event: NSEvent) {
+        if !isModifierKeyCode(event.keyCode) {
+            cancelStandaloneModifierActivationsForChord()
+        }
+
         // Match by keyCode AND modifier flags (so ⌘K won't fire on bare K)
         guard let binding = matchingBinding(for: event.keyCode, modifiers: event.modifierFlags),
               !binding.isModifier else { return }
@@ -223,7 +271,13 @@ class HotkeyManager {
         globalKeyUpMonitor = nil
         localKeyDownMonitor = nil
         localKeyUpMonitor = nil
+        for workItem in pendingModifierWorkItems.values {
+            workItem.cancel()
+        }
+        pendingModifierWorkItems.removeAll()
         keyDownStates.removeAll()
+        modifierPhysicalDownStates.removeAll()
+        modifierChordCancelled.removeAll()
         monitoredBindings.removeAll()
     }
 
