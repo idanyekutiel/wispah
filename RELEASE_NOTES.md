@@ -6,6 +6,10 @@
 
 ## Changelog
 
+- **Defers recorder errors until automatic recovery actually gives up** — Stop-time recorder teardown no longer flashes an error banner while the chunk/saved-audio retry path is still running, so successful automatic recovery stays silent.
+- **Treats bogus `thank you` transcripts as suspicious too** — Gratitude-only hallucinations like `thank you`, `thanks`, and the old `thank you for watching` variants are now rejected and retried instead of being accepted as final dictation.
+- **Stops accepting a suspicious second retry as final** — If the full-audio retry still looks hallucinated, the app now falls through to chunk or saved-audio recovery instead of pasting that bad result.
+- **Checks for new updates daily** — Automatic update checks now re-run every day instead of every week, which better matches the current release cadence.
 - **Fixed `Fn` shortcut behavior for both toggle and hold modes** — Bare `Fn` now fires on release only if it stayed solo, so `Fn + key` combos no longer trigger recording, while hold-to-record `Fn` still starts immediately on press like before.
 - **Added long-recording segment transcription fallback** — Long recordings that fail or come back incomplete now assemble larger transcription segments from the checkpoint chunks and transcribe those before surfacing an error.
 - **Detects incomplete long transcripts by segment coverage** — If a long recording only transcribes the first portion of the audio, the app now treats that as incomplete and automatically switches to the segment fallback path.

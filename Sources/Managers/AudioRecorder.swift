@@ -48,6 +48,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var runtimeErrorObserver: NSObjectProtocol?
     private var deviceDisconnectObserver: NSObjectProtocol?
     private let startupLock = NSLock()
+    private let lifecycleLock = NSLock()
     private var startupError: Error?
     private var startupResolved = false
     private var startupTimeoutWorkItem: DispatchWorkItem?
@@ -56,6 +57,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     private var recordingChunks: [RecordingChunk] = []
     private let chunkDurationSeconds: Double = 5.0
     private var masterRecordingHealthy = true
+    private var suppressRecordingErrors = false
 
     // MARK: - Thread-safe audio state
 
@@ -136,6 +138,19 @@ final class AudioRecorder: NSObject, ObservableObject {
         startupTimeoutWorkItem = workItem
         startupLock.unlock()
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + startupTimeout, execute: workItem)
+    }
+
+    private func setSuppressRecordingErrors(_ suppress: Bool) {
+        lifecycleLock.lock()
+        suppressRecordingErrors = suppress
+        lifecycleLock.unlock()
+    }
+
+    private func shouldSuppressRecordingErrors() -> Bool {
+        lifecycleLock.lock()
+        let suppress = suppressRecordingErrors
+        lifecycleLock.unlock()
+        return suppress
     }
 
     // MARK: - Capture lifecycle
@@ -220,7 +235,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         os_log(.error, log: recordingLog, "audio capture failure: %{public}@", error.localizedDescription)
         resolveStartup(error: error)
 
-        if isRecording {
+        if isRecording && !shouldSuppressRecordingErrors() {
             DispatchQueue.main.async { [weak self] in
                 self?.onRecordingError?(error.localizedDescription)
             }
@@ -717,6 +732,7 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     func startRecording(deviceUID: String? = nil) throws -> RecordingStartResult {
         recordingStartTime = CFAbsoluteTimeGetCurrent()
+        setSuppressRecordingErrors(false)
         os_log(.info, log: recordingLog, "startRecording() entered, deviceUID=%{public}@", deviceUID ?? "nil")
 
         let normalizedSelection = AudioDevice.normalizedSelectionUID(deviceUID)
@@ -774,6 +790,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     func stopRecording() -> URL? {
+        setSuppressRecordingErrors(true)
         tapLock.lock()
         let recordedBuffers = bufferCount
         let recordedSpeechBuffers = speechBufferCount
@@ -826,6 +843,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     func stopRecordingAsync(completion: @escaping (URL?) -> Void) {
+        setSuppressRecordingErrors(true)
         tapLock.lock()
         let recordedBuffers = bufferCount
         let recordedSpeechBuffers = speechBufferCount
@@ -1014,6 +1032,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     }
 
     func cleanup() {
+        setSuppressRecordingErrors(false)
         if let url = tempFileURL {
             try? FileManager.default.removeItem(at: url)
             tempFileURL = nil

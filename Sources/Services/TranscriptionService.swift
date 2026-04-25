@@ -248,21 +248,20 @@ class TranscriptionService {
 
     private func isKnownHallucinatedOutro(_ transcript: String) -> Bool {
         let normalized = normalizeHallucinationCandidate(transcript)
-        return normalized == "thanks for watching" || normalized == "thank you for watching"
+        return suspiciousHallucinationPhrases.contains(normalized)
     }
 
     private func strippingKnownHallucinatedOutroSuffix(from transcript: String) -> String? {
         let coreEnd = trimmedHallucinationBoundary(in: transcript)
         let coreTranscript = transcript[..<coreEnd]
         let lowercased = coreTranscript.lowercased()
-        let phrases = ["thanks for watching", "thank you for watching"]
 
-        for phrase in phrases {
+        for phrase in suffixHallucinationPhrases {
             guard lowercased.hasSuffix(phrase) else { continue }
 
             let suffixStart = coreTranscript.index(coreTranscript.endIndex, offsetBy: -phrase.count)
             let prefix = coreTranscript[..<suffixStart]
-            guard shouldRemoveHallucinatedSuffix(in: prefix) else { continue }
+            guard shouldRemoveHallucinatedSuffix(in: prefix, phrase: phrase) else { continue }
 
             return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -286,7 +285,7 @@ class TranscriptionService {
         return end
     }
 
-    private func shouldRemoveHallucinatedSuffix(in prefix: Substring) -> Bool {
+    private func shouldRemoveHallucinatedSuffix(in prefix: Substring, phrase: String) -> Bool {
         guard !prefix.isEmpty else { return false }
 
         var sawLineBreak = false
@@ -312,8 +311,32 @@ class TranscriptionService {
             return false
         }
 
+        if shortHallucinationSuffixPhrases.contains(phrase) {
+            let trimmedPrefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmedPrefix.count >= 24 else { return false }
+        }
+
         return ".!?:;)]}\"'".contains(lastSignificantCharacter)
     }
+
+    private let suspiciousHallucinationPhrases: Set<String> = [
+        "thanks",
+        "thank you",
+        "thanks for watching",
+        "thank you for watching",
+    ]
+
+    private let suffixHallucinationPhrases: [String] = [
+        "thank you for watching",
+        "thanks for watching",
+        "thank you",
+        "thanks",
+    ]
+
+    private let shortHallucinationSuffixPhrases: Set<String> = [
+        "thank you",
+        "thanks",
+    ]
 
     private func normalizeHallucinationCandidate(_ transcript: String) -> String {
         transcript

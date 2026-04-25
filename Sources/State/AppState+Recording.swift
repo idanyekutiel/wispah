@@ -687,8 +687,12 @@ extension AppState {
                                     !looksIncompleteForLongRecording(fullPrimaryResult) {
                                     rawResult = fullPrimaryResult.transcript
                                 } else if fullPrimaryResult.hadSuspiciousOutro {
-                                    os_log(.info, log: recordingLog, "full saved audio retry also looked hallucinated — not retrying again")
-                                    rawResult = fullPrimaryResult.transcript
+                                    os_log(.info, log: recordingLog, "full saved audio retry also looked hallucinated — switching to fallback recovery")
+                                    if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "suspicious full saved audio fallback") {
+                                        rawResult = fallbackResult
+                                    } else {
+                                        rawResult = ""
+                                    }
                                 } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty full saved audio fallback") {
                                     rawResult = fallbackResult
                                 } else {
@@ -722,6 +726,12 @@ extension AppState {
                                     !fullPrimaryResult.hadSuspiciousOutro &&
                                     !looksIncompleteForLongRecording(fullPrimaryResult) {
                                     rawResult = fullPrimaryResult.transcript
+                                } else if fullPrimaryResult.hadSuspiciousOutro {
+                                    if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "suspicious full saved audio after primary failure") {
+                                        rawResult = fallbackResult
+                                    } else {
+                                        rawResult = ""
+                                    }
                                 } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty full saved audio after primary failure") {
                                     rawResult = fallbackResult
                                 } else {
