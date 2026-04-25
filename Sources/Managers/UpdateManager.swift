@@ -74,7 +74,7 @@ final class UpdateManager: ObservableObject {
     private let releasesURL = URL(string: "https://api.github.com/repos/idanyekutiel/wispah/releases/latest")!
     private let releasesPageURL = URL(string: "https://github.com/idanyekutiel/wispah/releases/latest")!
     private let stabilityBufferDays: TimeInterval = 3
-    private let checkIntervalSeconds: TimeInterval = 7 * 24 * 60 * 60 // 7 days
+    private let checkIntervalSeconds: TimeInterval = 24 * 60 * 60 // 1 day
     private var periodicTimer: Timer?
     private var activeDownloadTask: Task<Void, Never>?
 
