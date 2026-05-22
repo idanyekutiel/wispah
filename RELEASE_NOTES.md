@@ -6,6 +6,8 @@
 
 ## Changelog
 
+- **Restores your chosen microphone automatically after reconnect** — If you explicitly picked a mic like Studio Display or AirPods, the app now falls back to `System Default` only while that device is unavailable, then restores your chosen mic when it reconnects.
+- **Sends suspicious `Thanks for watching` transcripts straight to chunk recovery** — Known corrupted-audio hallucinations now jump directly into the chunk-based fallback path instead of first trusting the normal full-audio retry.
 - **Defers recorder errors until automatic recovery actually gives up** — Stop-time recorder teardown no longer flashes an error banner while the chunk/saved-audio retry path is still running, so successful automatic recovery stays silent.
 - **Treats bogus `thank you` transcripts as suspicious too** — Gratitude-only hallucinations like `thank you`, `thanks`, and the old `thank you for watching` variants are now rejected and retried instead of being accepted as final dictation.
 - **Stops accepting a suspicious second retry as final** — If the full-audio retry still looks hallucinated, the app now falls through to chunk or saved-audio recovery instead of pasting that bad result.

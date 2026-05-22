@@ -664,12 +664,27 @@ extension AppState {
                         )
                         let primaryTrimmedTranscript = primaryTrimmedResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                         let shouldRetrySuspiciousPrimary = primaryTrimmedResult.hadSuspiciousOutro && !hasAttemptedSuspiciousTranscriptRetry
-                        let shouldRetryPrimaryWithoutTrim = shouldRetrySuspiciousPrimary || hasSpeechTrimBounds
+                        let shouldRetryPrimaryWithoutTrim = hasSpeechTrimBounds
 
                         if !primaryTrimmedTranscript.isEmpty &&
                             !primaryTrimmedResult.hadSuspiciousOutro &&
                             !looksIncompleteForLongRecording(primaryTrimmedResult) {
                             rawResult = primaryTrimmedResult.transcript
+                        } else if shouldRetrySuspiciousPrimary {
+                            hasAttemptedSuspiciousTranscriptRetry = true
+                            os_log(.info, log: recordingLog, "suspicious primary transcript detected — switching directly to chunk-based fallback recovery")
+                            if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "suspicious primary transcript") {
+                                rawResult = fallbackResult
+                            } else if hasSpeechTrimBounds {
+                                let fullPrimaryResult = try await attemptTranscription(
+                                    sourceURL: fileURL,
+                                    reason: "full saved audio after suspicious primary fallback",
+                                    applySpeechTrimming: false
+                                )
+                                rawResult = fullPrimaryResult.transcript
+                            } else {
+                                rawResult = ""
+                            }
                         } else if shouldRetryPrimaryWithoutTrim {
                             if primaryTrimmedResult.hadSuspiciousOutro {
                                 hasAttemptedSuspiciousTranscriptRetry = true

@@ -20,6 +20,7 @@ final class AppState: ObservableObject, @unchecked Sendable {
     let apiKeyStorageKey = "groq_api_key"
     private let customVocabularyStorageKey = "custom_vocabulary"
     private let selectedMicrophoneStorageKey = "selected_microphone_id"
+    private let unavailablePreferredMicrophoneStorageKey = "unavailable_preferred_microphone_id"
     private let screenRecordingEnabledStorageKey = "screen_recording_enabled"
     private let recordingModeStorageKey = "recording_mode"
     let transcribingIndicatorDelay: TimeInterval = 1.0
@@ -264,6 +265,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var selectedMicrophoneID: String {
         didSet {
             UserDefaults.standard.set(selectedMicrophoneID, forKey: selectedMicrophoneStorageKey)
+            guard !isApplyingAutomaticMicrophoneSelection else { return }
+            temporarilyUnavailablePreferredMicrophoneID = nil
         }
     }
     @Published var availableMicrophones: [AudioDevice] = []
@@ -286,6 +289,20 @@ final class AppState: ObservableObject, @unchecked Sendable {
     let statsStore = StatsStore()
     var wasMediaPlayingBeforeRecording = false
     var wasSystemMutedBeforeRecording = false
+    var temporarilyUnavailablePreferredMicrophoneID: String? {
+        didSet {
+            if let temporarilyUnavailablePreferredMicrophoneID,
+               !temporarilyUnavailablePreferredMicrophoneID.isEmpty {
+                UserDefaults.standard.set(
+                    temporarilyUnavailablePreferredMicrophoneID,
+                    forKey: unavailablePreferredMicrophoneStorageKey
+                )
+            } else {
+                UserDefaults.standard.removeObject(forKey: unavailablePreferredMicrophoneStorageKey)
+            }
+        }
+    }
+    private var isApplyingAutomaticMicrophoneSelection = false
 
     init() {
         let hasCompletedSetup = UserDefaults.standard.bool(forKey: "hasCompletedSetup")
@@ -445,10 +462,19 @@ final class AppState: ObservableObject, @unchecked Sendable {
             self.selectedSettingsTab = collectStats ? .stats : .runLog
         }
         self.settingsWindowWasOpen = UserDefaults.standard.bool(forKey: "settings_window_was_open")
+        self.temporarilyUnavailablePreferredMicrophoneID = UserDefaults.standard.string(
+            forKey: unavailablePreferredMicrophoneStorageKey
+        )
 
         refreshAvailableMicrophones()
         installAudioDeviceListener()
         wireRecordingErrorHandler()
+    }
+
+    func applyAutomaticMicrophoneSelection(_ microphoneID: String) {
+        isApplyingAutomaticMicrophoneSelection = true
+        selectedMicrophoneID = microphoneID
+        isApplyingAutomaticMicrophoneSelection = false
     }
 
     /// Load a HotkeyBinding from UserDefaults, migrating from legacy string format if needed
