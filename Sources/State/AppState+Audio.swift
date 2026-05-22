@@ -9,17 +9,32 @@ extension AppState {
         validateSelectedMicrophone()
     }
 
-    /// Verify the selected mic still exists after a device change. Falls back to "default" silently.
+    /// Verify the selected mic still exists after a device change.
+    /// Explicit mic choices fall back to system default temporarily and restore automatically if they return.
     func validateSelectedMicrophone() {
         let micID = AudioDevice.normalizedSelectionUID(selectedMicrophoneID) ?? AudioDevice.systemDefaultSelectionUID
         if micID != selectedMicrophoneID {
-            selectedMicrophoneID = micID
+            applyAutomaticMicrophoneSelection(micID)
         }
-        guard micID != "default" else { return }
+
+        if micID == AudioDevice.systemDefaultSelectionUID {
+            if let rememberedMicID = AudioDevice.normalizedSelectionUID(temporarilyUnavailablePreferredMicrophoneID),
+               rememberedMicID != AudioDevice.systemDefaultSelectionUID,
+               availableMicrophones.contains(where: { $0.uid == rememberedMicID }) {
+                os_log(.info, log: recordingLog, "restoring previously selected mic %{public}@ after reconnect", rememberedMicID)
+                temporarilyUnavailablePreferredMicrophoneID = nil
+                applyAutomaticMicrophoneSelection(rememberedMicID)
+            }
+            return
+        }
+
         let exists = availableMicrophones.contains(where: { $0.uid == micID })
         if !exists {
-            os_log(.info, log: recordingLog, "selected mic %{public}@ no longer available — falling back to default", micID)
-            selectedMicrophoneID = AudioDevice.systemDefaultSelectionUID
+            os_log(.info, log: recordingLog, "selected mic %{public}@ no longer available — temporarily falling back to default", micID)
+            temporarilyUnavailablePreferredMicrophoneID = micID
+            applyAutomaticMicrophoneSelection(AudioDevice.systemDefaultSelectionUID)
+        } else if temporarilyUnavailablePreferredMicrophoneID == micID {
+            temporarilyUnavailablePreferredMicrophoneID = nil
         }
     }
 
