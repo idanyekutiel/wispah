@@ -520,7 +520,7 @@ struct GeneralSettingsView: View {
                 )
             }
 
-            if appState.toggleHotkey.keyCode == 63 {
+            if appState.toggleHotkey.usesFunctionModifier || appState.holdHotkey.usesFunctionModifier {
                 Text("Tip: If Fn opens Emoji picker, go to System Settings > Keyboard and change \"Press fn key to\" to \"Do Nothing\".")
                     .font(.caption)
                     .foregroundStyle(.orange)

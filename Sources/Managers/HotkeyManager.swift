@@ -1,6 +1,8 @@
 import Cocoa
 import Carbon
 
+private let hotkeyModifierMask: NSEvent.ModifierFlags = [.control, .option, .shift, .command, .function]
+
 // MARK: - HotkeyBinding
 
 struct HotkeyBinding: Codable, Equatable, Hashable {
@@ -13,6 +15,10 @@ struct HotkeyBinding: Codable, Equatable, Hashable {
     static let fnKey = HotkeyBinding(keyCode: 63, modifierFlags: 0, displayName: "Fn (Globe)", isModifier: true)
 
     var isDisabled: Bool { self == .disabled }
+
+    var usesFunctionModifier: Bool {
+        modifierBindingFlags.contains(.function)
+    }
 
     /// Migrate old HotkeyOption rawValue strings to HotkeyBinding
     static func fromLegacy(_ rawValue: String) -> HotkeyBinding? {
@@ -37,6 +43,14 @@ struct HotkeyBinding: Codable, Equatable, Hashable {
         default: return nil
         }
     }
+
+    var modifierBindingFlags: NSEvent.ModifierFlags {
+        let storedFlags = NSEvent.ModifierFlags(rawValue: modifierFlags)
+            .intersection(hotkeyModifierMask)
+        guard isModifier else { return storedFlags }
+        guard let ownFlag = modifierFlag else { return storedFlags }
+        return storedFlags.union(ownFlag)
+    }
 }
 
 // MARK: - Display Name Generation
@@ -44,26 +58,24 @@ struct HotkeyBinding: Codable, Equatable, Hashable {
 func displayNameForKey(keyCode: UInt16, modifiers: NSEvent.ModifierFlags, characters: String? = nil) -> String {
     // Build modifier prefix
     var prefix = ""
-    let deviceIndependent = modifiers.intersection(.deviceIndependentFlagsMask)
-    // Only add modifier symbols if they're combined with a non-modifier key
-    if !isModifierKeyCode(keyCode) {
-        if deviceIndependent.contains(.control) { prefix += "⌃" }
-        if deviceIndependent.contains(.option) { prefix += "⌥" }
-        if deviceIndependent.contains(.shift) { prefix += "⇧" }
-        if deviceIndependent.contains(.command) { prefix += "⌘" }
-    }
+    let relevantModifiers = modifiers.intersection(hotkeyModifierMask)
+    if relevantModifiers.contains(.function) { prefix += "Fn " }
+    if relevantModifiers.contains(.control) { prefix += "⌃" }
+    if relevantModifiers.contains(.option) { prefix += "⌥" }
+    if relevantModifiers.contains(.shift) { prefix += "⇧" }
+    if relevantModifiers.contains(.command) { prefix += "⌘" }
 
     // Known modifier keyCodes (standalone)
     switch keyCode {
-    case 63: return "Fn (Globe)"
-    case 58: return "Left Option"
-    case 61: return "Right Option"
-    case 55: return "Left Command"
-    case 54: return "Right Command"
-    case 56: return "Left Shift"
-    case 60: return "Right Shift"
-    case 59: return "Left Control"
-    case 62: return "Right Control"
+    case 63: return prefix + "Fn (Globe)"
+    case 58: return prefix + "Left Option"
+    case 61: return prefix + "Right Option"
+    case 55: return prefix + "Left Command"
+    case 54: return prefix + "Right Command"
+    case 56: return prefix + "Left Shift"
+    case 60: return prefix + "Right Shift"
+    case 59: return prefix + "Left Control"
+    case 62: return prefix + "Right Control"
     default: break
     }
 
@@ -112,13 +124,16 @@ class HotkeyManager {
 
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
+    private var globalSystemDefinedMonitor: Any?
+    private var localSystemDefinedMonitor: Any?
     private var globalKeyDownMonitor: Any?
     private var globalKeyUpMonitor: Any?
     private var localKeyDownMonitor: Any?
     private var localKeyUpMonitor: Any?
-    private var keyDownStates: [UInt16: Bool] = [:]
+    private var keyDownStates: [HotkeyBinding: Bool] = [:]
     private var modifierPhysicalDownStates: [UInt16: Bool] = [:]
-    private var modifierChordCancelled: [UInt16: Bool] = [:]
+    private var modifierReleaseArmed: [HotkeyBinding: Bool] = [:]
+    private var modifierChordCancelled: [HotkeyBinding: Bool] = [:]
     private var monitoredBindings: [HotkeyBinding] = []
     private var modifierTriggerStyles: [HotkeyBinding: ModifierTriggerStyle] = [:]
 
@@ -133,10 +148,11 @@ class HotkeyManager {
         monitoredBindings = bindings.filter { !$0.isDisabled }
         self.modifierTriggerStyles = modifierTriggerStyles
         for binding in monitoredBindings {
-            keyDownStates[binding.keyCode] = false
+            keyDownStates[binding] = false
             if binding.isModifier {
                 modifierPhysicalDownStates[binding.keyCode] = false
-                modifierChordCancelled[binding.keyCode] = false
+                modifierReleaseArmed[binding] = false
+                modifierChordCancelled[binding] = false
             }
         }
 
@@ -149,6 +165,13 @@ class HotkeyManager {
             }
             localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 self?.handleFlagsChanged(event: event)
+                return event
+            }
+            globalSystemDefinedMonitor = NSEvent.addGlobalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+                self?.handleSystemDefined(event: event)
+            }
+            localSystemDefinedMonitor = NSEvent.addLocalMonitorForEvents(matching: .systemDefined) { [weak self] event in
+                self?.handleSystemDefined(event: event)
                 return event
             }
         }
@@ -171,8 +194,8 @@ class HotkeyManager {
         }
     }
 
-    /// Modifiers we compare when matching combo bindings (⌃⌥⇧⌘)
-    private static let relevantModifierMask: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+    /// Modifiers we compare when matching combo bindings (Fn⌃⌥⇧⌘)
+    private static let relevantModifierMask = hotkeyModifierMask
 
     /// Match a non-modifier binding by keyCode + modifier flags
     private func matchingBinding(for keyCode: UInt16, modifiers: NSEvent.ModifierFlags? = nil) -> HotkeyBinding? {
@@ -188,7 +211,14 @@ class HotkeyManager {
         })
     }
 
+    private func activeBinding(for keyCode: UInt16) -> HotkeyBinding? {
+        monitoredBindings.first(where: { binding in
+            binding.keyCode == keyCode && (keyDownStates[binding] ?? false)
+        })
+    }
+
     private func handleFlagsChanged(event: NSEvent) {
+        let currentFlags = event.modifierFlags.intersection(Self.relevantModifierMask)
         for binding in monitoredBindings where binding.isModifier {
             guard let flag = binding.modifierFlag else { continue }
             let flagIsSet = event.modifierFlags.contains(flag)
@@ -196,22 +226,36 @@ class HotkeyManager {
             let wasPhysicallyDown = modifierPhysicalDownStates[binding.keyCode] ?? false
             if flagIsSet && !wasPhysicallyDown {
                 modifierPhysicalDownStates[binding.keyCode] = true
-                modifierChordCancelled[binding.keyCode] = false
-                if modifierTriggerStyle(for: binding) == .onPress {
-                    keyDownStates[binding.keyCode] = true
-                    onKeyDown?(binding)
-                }
             } else if !flagIsSet && wasPhysicallyDown {
                 modifierPhysicalDownStates[binding.keyCode] = false
-                let chordCancelled = modifierChordCancelled[binding.keyCode] ?? false
-                modifierChordCancelled[binding.keyCode] = false
+            }
 
-                let wasDown = keyDownStates[binding.keyCode] ?? false
-                keyDownStates[binding.keyCode] = false
-                if wasDown {
-                    onKeyUp?(binding)
-                } else if modifierTriggerStyle(for: binding) == .onReleaseIfSolo && !chordCancelled {
+            let requiredFlags = binding.modifierBindingFlags
+            let isActive = currentFlags == requiredFlags
+            let wasDown = keyDownStates[binding] ?? false
+
+            switch modifierTriggerStyle(for: binding) {
+            case .onPress:
+                if isActive && !wasDown {
+                    keyDownStates[binding] = true
                     onKeyDown?(binding)
+                } else if !isActive && wasDown {
+                    keyDownStates[binding] = false
+                    onKeyUp?(binding)
+                }
+            case .onReleaseIfSolo:
+                if isActive {
+                    modifierReleaseArmed[binding] = true
+                } else if modifierReleaseArmed[binding] == true && !currentFlags.isEmpty {
+                    if !currentFlags.subtracting(requiredFlags).isEmpty {
+                        modifierChordCancelled[binding] = true
+                    }
+                } else if modifierReleaseArmed[binding] == true && currentFlags.isEmpty {
+                    if modifierChordCancelled[binding] != true {
+                        onKeyDown?(binding)
+                    }
+                    modifierReleaseArmed[binding] = false
+                    modifierChordCancelled[binding] = false
                 }
             }
         }
@@ -221,39 +265,42 @@ class HotkeyManager {
         modifierTriggerStyles[binding] ?? .onReleaseIfSolo
     }
 
-    private func cancelStandaloneModifierActivationsForChord() {
+    private func cancelModifierOnlyBindingsForChord() {
         for binding in monitoredBindings where binding.isModifier {
-            guard modifierPhysicalDownStates[binding.keyCode] == true else { continue }
-            modifierChordCancelled[binding.keyCode] = true
-            if keyDownStates[binding.keyCode] == true {
-                keyDownStates[binding.keyCode] = false
+            modifierChordCancelled[binding] = true
+            if keyDownStates[binding] == true {
+                keyDownStates[binding] = false
                 onKeyUp?(binding)
             }
         }
     }
 
+    private func handleSystemDefined(event: NSEvent) {
+        guard !event.modifierFlags.intersection(Self.relevantModifierMask).isEmpty else { return }
+        cancelModifierOnlyBindingsForChord()
+    }
+
     private func handleKeyDown(event: NSEvent) {
         if !isModifierKeyCode(event.keyCode) {
-            cancelStandaloneModifierActivationsForChord()
+            cancelModifierOnlyBindingsForChord()
         }
 
         // Match by keyCode AND modifier flags (so ⌘K won't fire on bare K)
         guard let binding = matchingBinding(for: event.keyCode, modifiers: event.modifierFlags),
               !binding.isModifier else { return }
         guard !event.isARepeat else { return }
-        let wasDown = keyDownStates[binding.keyCode] ?? false
+        let wasDown = keyDownStates[binding] ?? false
         if !wasDown {
-            keyDownStates[binding.keyCode] = true
+            keyDownStates[binding] = true
             onKeyDown?(binding)
         }
     }
 
     private func handleKeyUp(event: NSEvent) {
-        // On key up, match by keyCode only — modifiers may already be released
-        guard let binding = matchingBinding(for: event.keyCode), !binding.isModifier else { return }
-        let wasDown = keyDownStates[binding.keyCode] ?? false
+        guard let binding = activeBinding(for: event.keyCode), !binding.isModifier else { return }
+        let wasDown = keyDownStates[binding] ?? false
         if wasDown {
-            keyDownStates[binding.keyCode] = false
+            keyDownStates[binding] = false
             onKeyUp?(binding)
         }
     }
@@ -261,18 +308,23 @@ class HotkeyManager {
     func stop() {
         if let m = globalFlagsMonitor { NSEvent.removeMonitor(m) }
         if let m = localFlagsMonitor { NSEvent.removeMonitor(m) }
+        if let m = globalSystemDefinedMonitor { NSEvent.removeMonitor(m) }
+        if let m = localSystemDefinedMonitor { NSEvent.removeMonitor(m) }
         if let m = globalKeyDownMonitor { NSEvent.removeMonitor(m) }
         if let m = globalKeyUpMonitor { NSEvent.removeMonitor(m) }
         if let m = localKeyDownMonitor { NSEvent.removeMonitor(m) }
         if let m = localKeyUpMonitor { NSEvent.removeMonitor(m) }
         globalFlagsMonitor = nil
         localFlagsMonitor = nil
+        globalSystemDefinedMonitor = nil
+        localSystemDefinedMonitor = nil
         globalKeyDownMonitor = nil
         globalKeyUpMonitor = nil
         localKeyDownMonitor = nil
         localKeyUpMonitor = nil
         keyDownStates.removeAll()
         modifierPhysicalDownStates.removeAll()
+        modifierReleaseArmed.removeAll()
         modifierChordCancelled.removeAll()
         modifierTriggerStyles.removeAll()
         monitoredBindings.removeAll()
