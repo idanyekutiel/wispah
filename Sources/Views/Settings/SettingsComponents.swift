@@ -43,21 +43,20 @@ struct HotkeyRecorderButton: View {
     @State private var localFlagsMonitor: Any?
 
     // Chord accumulation state
-    @State private var heldComboModifiers: NSEvent.ModifierFlags = []
-    @State private var fnKeyHeld = false
+    @State private var heldModifierFlags: NSEvent.ModifierFlags = []
     @State private var lastModifierKeyCode: UInt16 = 0
 
-    /// Modifiers that participate in key combos (not Fn — that's standalone only)
-    private static let comboModifierMask: NSEvent.ModifierFlags = [.control, .option, .shift, .command]
+    /// Modifiers that can participate in key combos, including Fn.
+    private static let comboModifierMask: NSEvent.ModifierFlags = [.control, .option, .shift, .command, .function]
 
     /// Live preview of the chord being built
     private var chordPreview: String {
         var parts: [String] = []
-        if heldComboModifiers.contains(.control) { parts.append("⌃") }
-        if heldComboModifiers.contains(.option) { parts.append("⌥") }
-        if heldComboModifiers.contains(.shift) { parts.append("⇧") }
-        if heldComboModifiers.contains(.command) { parts.append("⌘") }
-        if fnKeyHeld { parts.append("Fn ") }
+        if heldModifierFlags.contains(.function) { parts.append("Fn ") }
+        if heldModifierFlags.contains(.control) { parts.append("⌃") }
+        if heldModifierFlags.contains(.option) { parts.append("⌥") }
+        if heldModifierFlags.contains(.shift) { parts.append("⇧") }
+        if heldModifierFlags.contains(.command) { parts.append("⌘") }
         if parts.isEmpty { return "Press a key..." }
         return parts.joined() + "…"
     }
@@ -131,8 +130,7 @@ struct HotkeyRecorderButton: View {
     private func startRecording() {
         isRecording = true
         pulseOpacity = true
-        heldComboModifiers = []
-        fnKeyHeld = false
+        heldModifierFlags = []
         lastModifierKeyCode = 0
 
         // Pause hotkey monitoring so the recorded key doesn't trigger actions
@@ -157,8 +155,7 @@ struct HotkeyRecorderButton: View {
     private func stopRecording() {
         isRecording = false
         pulseOpacity = false
-        heldComboModifiers = []
-        fnKeyHeld = false
+        heldModifierFlags = []
         lastModifierKeyCode = 0
         if let m = globalKeyMonitor { NSEvent.removeMonitor(m); globalKeyMonitor = nil }
         if let m = localKeyMonitor { NSEvent.removeMonitor(m); localKeyMonitor = nil }
@@ -175,49 +172,33 @@ struct HotkeyRecorderButton: View {
         let keyCode = event.keyCode
         guard isModifierKeyCode(keyCode) else { return }
 
-        // --- Fn / Globe (standalone only, not part of combos) ---
-        if keyCode == 63 {
-            let down = event.modifierFlags.contains(.function)
-            if down {
-                fnKeyHeld = true
-                lastModifierKeyCode = 63
-            } else {
-                fnKeyHeld = false
-                // If no combo modifiers are held → standalone Fn
-                if heldComboModifiers.isEmpty {
-                    finalizeStandaloneModifier(keyCode: 63)
-                }
-            }
+        let newMods = event.modifierFlags.intersection(Self.comboModifierMask)
+        let addedMods = newMods.subtracting(heldModifierFlags)
+
+        if !addedMods.isEmpty {
+            lastModifierKeyCode = keyCode
+        }
+
+        if newMods.isEmpty && !heldModifierFlags.isEmpty && lastModifierKeyCode != 0 {
+            finalizeModifierOnlyBinding(keyCode: lastModifierKeyCode, modifiers: heldModifierFlags)
             return
         }
 
-        // --- Standard combo modifiers (⌃⌥⇧⌘) ---
-        let newMods = event.modifierFlags.intersection(Self.comboModifierMask)
-
-        // Track the last modifier that was *added*
-        if newMods.rawValue > heldComboModifiers.rawValue {
-            lastModifierKeyCode = keyCode
-        }
-        heldComboModifiers = newMods
-
-        // All combo modifiers released (and Fn not held) → standalone modifier
-        if newMods.isEmpty && !fnKeyHeld && lastModifierKeyCode != 0 {
-            finalizeStandaloneModifier(keyCode: lastModifierKeyCode)
-        }
+        heldModifierFlags = newMods
     }
 
     private func handleKeyDown(_ event: NSEvent) {
         guard isRecording else { return }
 
         // Escape with no modifiers held → cancel
-        if event.keyCode == 53 && heldComboModifiers.isEmpty && !fnKeyHeld {
+        if event.keyCode == 53 && heldModifierFlags.isEmpty {
             stopRecording()
             return
         }
 
         // Regular key pressed → finalize as combo (modifiers + key) or plain key
         let keyCode = event.keyCode
-        let modifiers = heldComboModifiers // use our tracked modifiers, not event flags
+        let modifiers = heldModifierFlags
         let chars = event.charactersIgnoringModifiers
         let name = displayNameForKey(keyCode: keyCode, modifiers: modifiers, characters: chars)
 
@@ -231,11 +212,13 @@ struct HotkeyRecorderButton: View {
         stopRecording()
     }
 
-    private func finalizeStandaloneModifier(keyCode: UInt16) {
-        let name = displayNameForKey(keyCode: keyCode, modifiers: [], characters: nil)
+    private func finalizeModifierOnlyBinding(keyCode: UInt16, modifiers: NSEvent.ModifierFlags) {
+        let ownFlag = modifierFlag(for: keyCode)
+        let storedModifiers = ownFlag.map { modifiers.subtracting($0) } ?? modifiers
+        let name = displayNameForKey(keyCode: keyCode, modifiers: storedModifiers, characters: nil)
         let newBinding = HotkeyBinding(
             keyCode: keyCode,
-            modifierFlags: 0,
+            modifierFlags: storedModifiers.rawValue,
             displayName: name,
             isModifier: true
         )
@@ -247,5 +230,16 @@ struct HotkeyRecorderButton: View {
 
     private func isModifierKeyCode(_ keyCode: UInt16) -> Bool {
         [55, 54, 56, 60, 58, 61, 59, 62, 63].contains(keyCode)
+    }
+
+    private func modifierFlag(for keyCode: UInt16) -> NSEvent.ModifierFlags? {
+        switch keyCode {
+        case 63: return .function
+        case 58, 61: return .option
+        case 55, 54: return .command
+        case 56, 60: return .shift
+        case 59, 62: return .control
+        default: return nil
+        }
     }
 }

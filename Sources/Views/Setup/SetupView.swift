@@ -51,6 +51,10 @@ struct SetupView: View {
 
     private let totalSteps: [SetupStep] = SetupStep.allCases
 
+    private var hasAnyConfiguredHotkey: Bool {
+        !appState.holdHotkey.isDisabled || !appState.toggleHotkey.isDisabled
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Group {
@@ -426,7 +430,7 @@ struct SetupView: View {
                     Text("Granted")
                         .foregroundStyle(.green)
                 } else {
-                    Button("Grant Access") {
+                    Button(microphonePermissionButtonTitle) {
                         requestMicPermission()
                     }
                 }
@@ -436,6 +440,14 @@ struct SetupView: View {
             .cornerRadius(8)
 
             stepIndicator
+        }
+        .onAppear {
+            checkMicPermission()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if currentStep == .micPermission {
+                checkMicPermission()
+            }
         }
     }
 
@@ -602,7 +614,7 @@ struct SetupView: View {
                 .cornerRadius(8)
             }
 
-            if appState.toggleHotkey.keyCode == 63 {
+            if appState.toggleHotkey.usesFunctionModifier || appState.holdHotkey.usesFunctionModifier {
                 if fnEmojiPickerEnabled {
                     VStack(spacing: 8) {
                         Label("Fn key opens the Emoji picker by default", systemImage: "exclamationmark.triangle.fill")
@@ -862,15 +874,23 @@ struct SetupView: View {
         }
     }
 
-    /// Microphones shown in onboarding: built-in mic + system default only.
+    /// Microphones shown in onboarding: built-in mic, remembered selected device, and system default.
     /// Full list is available in Settings.
     private var onboardingMicOptions: [(uid: String, name: String)] {
         var options: [(uid: String, name: String)] = []
         if let builtIn = appState.availableMicrophones.first(where: { $0.isBuiltIn }) {
             options.append((uid: builtIn.uid, name: builtIn.name))
         }
+        if let selectedDevice = appState.availableMicrophones.first(where: { $0.uid == appState.selectedMicrophoneID }),
+           !selectedDevice.isBuiltIn {
+            options.append((uid: selectedDevice.uid, name: selectedDevice.name))
+        }
         options.append((uid: "default", name: "System Default"))
-        return options
+        return options.reduce(into: [(uid: String, name: String)]()) { result, option in
+            if !result.contains(where: { $0.uid == option.uid }) {
+                result.append(option)
+            }
+        }
     }
 
     var testTranscriptionStep: some View {
@@ -1013,6 +1033,10 @@ struct SetupView: View {
             stepIndicator
         }
         .onAppear {
+            guard hasAnyConfiguredHotkey else {
+                currentStep = .hotkey
+                return
+            }
             appState.refreshAvailableMicrophones()
             testMicPulsing = true
             startTestHotkeyMonitoring()
@@ -1037,8 +1061,12 @@ struct SetupView: View {
                 .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 12) {
-                HowToRow(icon: "keyboard", text: "Hold \(appState.holdHotkey.displayName) to record, release to stop")
-                HowToRow(icon: "keyboard", text: "Press \(appState.toggleHotkey.displayName) to toggle recording")
+                if !appState.holdHotkey.isDisabled {
+                    HowToRow(icon: "keyboard", text: "Hold \(appState.holdHotkey.displayName) to record, release to stop")
+                }
+                if !appState.toggleHotkey.isDisabled {
+                    HowToRow(icon: "keyboard", text: "Press \(appState.toggleHotkey.displayName) to toggle recording")
+                }
                 HowToRow(icon: "doc.on.clipboard", text: "Text is typed at your cursor & copied")
             }
             .padding(.top, 10)
@@ -1066,6 +1094,8 @@ struct SetupView: View {
             return accessibilityGranted
         case .screenRecording:
             return appState.hasScreenRecordingPermission || !appState.screenRecordingEnabled
+        case .hotkey:
+            return hasAnyConfiguredHotkey
         case .testTranscription:
             return testPhase == .done && !testTranscript.isEmpty && testError == nil
         default:
@@ -1137,15 +1167,33 @@ struct SetupView: View {
         case .authorized:
             micPermissionGranted = true
         default:
-            break
+            micPermissionGranted = false
+        }
+    }
+
+    private var microphonePermissionButtonTitle: String {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .denied, .restricted:
+            return "Open Settings"
+        default:
+            return "Grant Access"
         }
     }
 
     func requestMicPermission() {
-        AVCaptureDevice.requestAccess(for: .audio) { granted in
-            DispatchQueue.main.async {
-                micPermissionGranted = granted
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            micPermissionGranted = true
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                DispatchQueue.main.async {
+                    micPermissionGranted = granted
+                }
             }
+        case .denied, .restricted:
+            appState.showMicrophonePermissionAlert()
+        @unknown default:
+            appState.showMicrophonePermissionAlert()
         }
     }
 
@@ -1263,6 +1311,8 @@ struct SetupView: View {
     }
 
     private func startTestHotkeyMonitoring() {
+        guard hasAnyConfiguredHotkey else { return }
+
         appState.hotkeyManager.onKeyDown = { [self] binding in
             DispatchQueue.main.async {
                 if binding == appState.holdHotkey && binding != appState.toggleHotkey {
@@ -1307,7 +1357,14 @@ struct SetupView: View {
         }
 
         let uniqueBindings = Array(Set([appState.toggleHotkey, appState.holdHotkey]))
-        appState.hotkeyManager.start(bindings: uniqueBindings)
+        var modifierTriggerStyles: [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] = [:]
+        if appState.toggleHotkey.isModifier {
+            modifierTriggerStyles[appState.toggleHotkey] = .onReleaseIfSolo
+        }
+        if appState.holdHotkey.isModifier {
+            modifierTriggerStyles[appState.holdHotkey] = .onPress
+        }
+        appState.hotkeyManager.start(bindings: uniqueBindings, modifierTriggerStyles: modifierTriggerStyles)
     }
 
     private func stopTestHotkeyMonitoring() {

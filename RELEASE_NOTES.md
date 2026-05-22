@@ -6,6 +6,13 @@
 
 ## Changelog
 
+- **Makes `Fn` behave like a real combo modifier** — Hotkeys now treat `Fn` as part of actual chord matching, so `Fn + J`, `Fn + Command`, `Fn + Option`, and similar combos no longer leak through and trigger bare-`Fn` recording.
+- **Allows modifier-only combo bindings** — You can now record and use modifier combinations like `Fn + Command` or `Fn + Option`, not just standalone modifier keys or modifier-plus-letter bindings.
+- **Cancels bare modifier hotkeys on system keyboard actions** — If `Fn` is being used for keyboard backlight, media, brightness, or similar system-defined actions, the app now cancels the standalone hotkey instead of recording anyway.
+- **Aligns onboarding hotkey behavior with the real app** — The setup wizard now uses the same modifier trigger semantics as the main recorder, so `Fn` and other modifier hotkeys behave consistently during onboarding and after setup.
+- **Blocks onboarding from continuing with unusable hotkeys** — Setup now requires at least one real recording shortcut before proceeding, and the test step routes back to hotkey setup if none are configured.
+- **Refreshes microphone permission state after returning from Settings** — Onboarding now re-checks mic access when the app becomes active again and sends denied users to Settings instead of repeating the broken request path.
+- **Keeps onboarding microphone selection coherent with remembered devices** — If setup is using a selected external mic, the onboarding picker now includes that device instead of silently hiding it.
 - **Restores your chosen microphone automatically after reconnect** — If you explicitly picked a mic like Studio Display or AirPods, the app now falls back to `System Default` only while that device is unavailable, then restores your chosen mic when it reconnects.
 - **Sends suspicious `Thanks for watching` transcripts straight to chunk recovery** — Known corrupted-audio hallucinations now jump directly into the chunk-based fallback path instead of first trusting the normal full-audio retry.
 - **Defers recorder errors until automatic recovery actually gives up** — Stop-time recorder teardown no longer flashes an error banner while the chunk/saved-audio retry path is still running, so successful automatic recovery stays silent.
