@@ -232,6 +232,14 @@ final class AppState: ObservableObject, @unchecked Sendable {
     var pendingPermissionRecordingTrigger: RecordingTrigger?
     /// Set when user releases hold key during engine startup — deferred stop fires once engine is ready
     var pendingStop = false
+    /// Bare modifier toggle key pressed and recording is being armed invisibly until solo release confirms it.
+    var speculativeModifierToggleBinding: HotkeyBinding?
+    /// Modifier-only toggle stop requested on key down; actual stop waits for solo release.
+    var pendingModifierToggleStopBinding: HotkeyBinding?
+    /// User released a speculative modifier toggle before the recorder finished starting, so commit once startup completes.
+    var pendingSpeculativeToggleCommit = false
+    /// User turned a speculative modifier toggle into a chord/system action, so discard once startup completes.
+    var pendingSpeculativeToggleCancel = false
     @Published var isTranscribing = false
     @Published var lastTranscript: String = ""
     @Published var errorMessage: String?
