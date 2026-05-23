@@ -6,10 +6,10 @@
 
 ## Changelog
 
-- **Makes bare `Fn` toggle feel immediate again** — Modifier-only toggle shortcuts now speculatively acquire the mic on key down, so solo `Fn` taps no longer feel release-delayed before recording starts.
-- **Silently cancels speculative `Fn` starts when they turn into real combos** — If that initial `Fn` press becomes `Fn + J`, `Fn + Option`, keyboard backlight, media, brightness, or another system action, the hidden recording is discarded and never surfaces.
-- **Keeps hold and toggle modifier hotkeys on separate paths** — Hold-to-record modifier shortcuts still start on press and stop on release, while toggle-to-record modifiers use a press-first speculative path with solo-release confirmation.
-- **Aligns onboarding test-recording hotkeys with the shipped `Fn` behavior** — The setup wizard’s transcription test now uses the same speculative modifier-toggle flow as the main app instead of behaving like a separate hotkey system.
+- **Replaces the crashy speculative `Fn` toggle path with a safer manager-level debounce** — Bare modifier toggles no longer spin up the recorder invisibly on key down, avoiding the stop-time crash introduced in `v2026.05.23` while keeping the hotkey logic simple and stable.
+- **Keeps solo `Fn` toggle responsive without the old release-only lag** — Modifier-only toggle recognition now uses a very short solo-tap debounce in the hotkey manager, which is faster than the previous release-only behavior without reintroducing the speculative recorder path.
+- **Preserves combo and system-action cancellation for bare modifiers** — `Fn + J`, `Fn + Option`, keyboard backlight, media, brightness, and other system-defined actions still cancel bare modifier triggers instead of leaking into recording.
+- **Keeps onboarding aligned with the corrected hotkey behavior** — The setup wizard now matches the shipped bare-modifier debounce path instead of a separate speculative toggle flow.
 - **Makes `Fn` behave like a real combo modifier** — Hotkeys now treat `Fn` as part of actual chord matching, so `Fn + J`, `Fn + Command`, `Fn + Option`, and similar combos no longer leak through and trigger bare-`Fn` recording.
 - **Allows modifier-only combo bindings** — You can now record and use modifier combinations like `Fn + Command` or `Fn + Option`, not just standalone modifier keys or modifier-plus-letter bindings.
 - **Cancels bare modifier hotkeys on system keyboard actions** — If `Fn` is being used for keyboard backlight, media, brightness, or similar system-defined actions, the app now cancels the standalone hotkey instead of recording anyway.

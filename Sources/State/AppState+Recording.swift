@@ -5,14 +5,10 @@ import Combine
 import os.log
 
 extension AppState {
-    private func isImmediateModifierToggleBinding(_ binding: HotkeyBinding) -> Bool {
-        binding == toggleHotkey && binding != holdHotkey && binding.isModifier
-    }
-
     private func hotkeyModifierTriggerStyles() -> [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] {
         var styles: [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] = [:]
         if toggleHotkey.isModifier {
-            styles[toggleHotkey] = .onPress
+            styles[toggleHotkey] = .onReleaseIfSolo
         }
         if holdHotkey.isModifier {
             styles[holdHotkey] = .onPress
@@ -42,15 +38,6 @@ extension AppState {
 
     func handleHotkeyDown(binding: HotkeyBinding) {
         os_log(.info, log: recordingLog, "handleHotkeyDown() fired, key=%{public}@, isRecording=%{public}d, isTranscribing=%{public}d", binding.displayName, isRecording, isTranscribing)
-        if isImmediateModifierToggleBinding(binding) {
-            guard !isTranscribing else { return }
-            if isRecording || speculativeModifierToggleBinding != nil {
-                pendingModifierToggleStopBinding = binding
-            } else {
-                startSpeculativeModifierToggleRecording(binding: binding)
-            }
-            return
-        }
         if binding == holdHotkey && binding != toggleHotkey {
             guard !isRecording && !isTranscribing else { return }
             startRecording(trigger: .hold)
@@ -70,27 +57,6 @@ extension AppState {
     }
 
     func handleHotkeyUp(binding: HotkeyBinding) {
-        if isImmediateModifierToggleBinding(binding) {
-            let modifierStillDown = hotkeyManager.isModifierPhysicallyDown(binding)
-
-            if speculativeModifierToggleBinding == binding {
-                if modifierStillDown {
-                    cancelSpeculativeModifierToggleRecording()
-                } else {
-                    commitSpeculativeModifierToggleRecording()
-                }
-                return
-            }
-
-            if pendingModifierToggleStopBinding == binding {
-                pendingModifierToggleStopBinding = nil
-                guard !modifierStillDown else { return }
-                guard isRecording else { return }
-                stopAndTranscribe()
-                return
-            }
-        }
-
         if binding == holdHotkey && binding != toggleHotkey {
             if !isRecording && isAwaitingMicrophonePermission && pendingPermissionRecordingTrigger == .hold {
                 pendingPermissionRecordingTrigger = nil
@@ -124,32 +90,7 @@ extension AppState {
         }
     }
 
-    private func startSpeculativeModifierToggleRecording(binding: HotkeyBinding) {
-        speculativeModifierToggleBinding = binding
-        pendingModifierToggleStopBinding = nil
-        pendingSpeculativeToggleCommit = false
-        pendingSpeculativeToggleCancel = false
-        startRecording(trigger: .toggle, speculative: true)
-    }
-
-    private func commitSpeculativeModifierToggleRecording() {
-        guard speculativeModifierToggleBinding != nil else { return }
-        pendingSpeculativeToggleCommit = true
-        if !isStartingRecording {
-            finalizeSpeculativeModifierToggleIfPossible()
-        }
-    }
-
-    private func cancelSpeculativeModifierToggleRecording() {
-        guard speculativeModifierToggleBinding != nil else { return }
-        pendingSpeculativeToggleCancel = true
-        pendingSpeculativeToggleCommit = false
-        if !isStartingRecording {
-            discardSpeculativeModifierToggleRecording()
-        }
-    }
-
-    func startRecording(trigger: RecordingTrigger = .direct, speculative: Bool = false) {
+    func startRecording(trigger: RecordingTrigger = .direct) {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
         guard !activeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -166,7 +107,7 @@ extension AppState {
         os_log(.info, log: recordingLog, "accessibility check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         guard ensureMicrophoneAccess(trigger: trigger) else { return }
         os_log(.info, log: recordingLog, "mic access check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
-        beginRecording(speculative: speculative)
+        beginRecording()
         os_log(.info, log: recordingLog, "startRecording() finished: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
 
@@ -208,34 +149,28 @@ extension AppState {
         }
     }
 
-    func beginRecording(speculative: Bool = false) {
+    func beginRecording() {
         guard !isStartingRecording else { return }
         os_log(.info, log: recordingLog, "beginRecording() entered")
         errorMessage = nil
 
+        isRecording = true
         isStartingRecording = true
         pendingStop = false
         hasShownScreenshotPermissionAlert = false
-        if speculative {
-            statusText = "Ready"
-        } else {
-            isRecording = true
-            statusText = "Starting..."
-            handleAudioOnRecordingStart()
-        }
+        statusText = "Starting..."
+        handleAudioOnRecordingStart()
 
         var overlayShown = false
         let initTimer = DispatchSource.makeTimerSource(queue: .main)
-        if !speculative {
-            initTimer.schedule(deadline: .now() + 0.5)
-            initTimer.setEventHandler { [weak self] in
-                guard let self, !overlayShown else { return }
-                overlayShown = true
-                os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
-                self.overlayManager.showInitializing()
-            }
-            initTimer.resume()
+        initTimer.schedule(deadline: .now() + 0.5)
+        initTimer.setEventHandler { [weak self] in
+            guard let self, !overlayShown else { return }
+            overlayShown = true
+            os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
+            self.overlayManager.showInitializing()
         }
+        initTimer.resume()
 
         let deviceUID = selectedMicrophoneID
         audioRecorder.onRecordingReady = { [weak self] in
@@ -243,7 +178,6 @@ extension AppState {
                 guard let self else { return }
                 initTimer.cancel()
                 os_log(.info, log: recordingLog, "first real audio — recorder fully live")
-                guard !speculative else { return }
                 self.statusText = "Recording..."
                 if !overlayShown {
                     self.overlayManager.showRecording()
@@ -264,92 +198,39 @@ extension AppState {
                 DispatchQueue.main.async {
                     initTimer.cancel()
                     self.isStartingRecording = false
-                    if speculative {
-                        self.finalizeSpeculativeModifierToggleIfPossible()
+                    self.statusText = "Recording..."
+                    if overlayShown {
+                        self.overlayManager.transitionToRecording()
+                    } else {
+                        self.overlayManager.showRecording()
+                        overlayShown = true
+                    }
+                    if self.playSoundsEnabled { NSSound(named: "Purr")?.play() }
+                    if self.pendingStop {
+                        self.pendingStop = false
+                        self.stopAndTranscribe()
                         return
                     }
-                    self.activateVisibleRecordingSession(showExistingOverlay: overlayShown, activateAudioPolicy: false)
+                    self.startContextCapture()
+                    self.audioLevelCancellable = self.audioRecorder.$audioLevel
+                        .receive(on: DispatchQueue.main)
+                        .sink { [weak self] level in
+                            self?.overlayManager.updateAudioLevel(level)
+                        }
                 }
             } catch {
                 DispatchQueue.main.async {
                     initTimer.cancel()
-                    if !speculative {
-                        self.handleAudioOnRecordingStop()
-                    }
+                    self.handleAudioOnRecordingStop()
                     self.isStartingRecording = false
                     self.pendingStop = false
                     self.isRecording = false
-                    if speculative, self.pendingSpeculativeToggleCancel {
-                        self.resetSpeculativeModifierToggleState()
-                        self.audioRecorder.cleanup()
-                        self.overlayManager.dismiss()
-                        self.statusText = "Ready"
-                        return
-                    }
                     self.errorMessage = self.formattedRecordingStartError(error)
                     self.statusText = "Error"
                     self.overlayManager.dismiss()
                 }
             }
         }
-    }
-
-    private func activateVisibleRecordingSession(showExistingOverlay: Bool, activateAudioPolicy: Bool) {
-        isRecording = true
-        statusText = "Recording..."
-        if activateAudioPolicy {
-            handleAudioOnRecordingStart()
-        }
-        if showExistingOverlay {
-            overlayManager.transitionToRecording()
-        } else {
-            overlayManager.showRecording()
-        }
-        if playSoundsEnabled { NSSound(named: "Purr")?.play() }
-        if pendingStop {
-            pendingStop = false
-            stopAndTranscribe()
-            return
-        }
-        startContextCapture()
-        audioLevelCancellable = audioRecorder.$audioLevel
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] level in
-                self?.overlayManager.updateAudioLevel(level)
-            }
-    }
-
-    private func finalizeSpeculativeModifierToggleIfPossible() {
-        guard speculativeModifierToggleBinding != nil else { return }
-
-        if pendingSpeculativeToggleCancel {
-            discardSpeculativeModifierToggleRecording()
-            return
-        }
-
-        guard pendingSpeculativeToggleCommit else { return }
-
-        resetSpeculativeModifierToggleState()
-        activateVisibleRecordingSession(showExistingOverlay: false, activateAudioPolicy: true)
-    }
-
-    private func discardSpeculativeModifierToggleRecording() {
-        resetSpeculativeModifierToggleState()
-        isRecording = false
-        statusText = "Ready"
-        errorMessage = nil
-        overlayManager.dismiss()
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.audioRecorder.releaseAudio()
-        }
-    }
-
-    private func resetSpeculativeModifierToggleState() {
-        speculativeModifierToggleBinding = nil
-        pendingModifierToggleStopBinding = nil
-        pendingSpeculativeToggleCommit = false
-        pendingSpeculativeToggleCancel = false
     }
 
     func formattedRecordingStartError(_ error: Error) -> String {
@@ -373,7 +254,6 @@ extension AppState {
     /// Cleanly reset all recording state after a mid-recording failure (e.g. audio config change recovery failed).
     func handleMidRecordingError(message: String) {
         os_log(.error, log: recordingLog, "handleMidRecordingError: %{public}@", message)
-        resetSpeculativeModifierToggleState()
         handleAudioOnRecordingStop()
         audioLevelCancellable?.cancel()
         audioLevelCancellable = nil
@@ -391,7 +271,6 @@ extension AppState {
     }
 
     func stopAndTranscribe() {
-        resetSpeculativeModifierToggleState()
         // Don't try to stop if the audio engine hasn't finished starting — defer it
         guard !isStartingRecording else {
             os_log(.info, log: recordingLog, "stopAndTranscribe() deferred — still starting")
