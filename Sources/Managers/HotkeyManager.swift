@@ -122,6 +122,8 @@ class HotkeyManager {
         case onReleaseIfSolo
     }
 
+    private let soloModifierDebounce: TimeInterval = 0.025
+
     private var globalFlagsMonitor: Any?
     private var localFlagsMonitor: Any?
     private var globalSystemDefinedMonitor: Any?
@@ -134,6 +136,8 @@ class HotkeyManager {
     private var modifierPhysicalDownStates: [UInt16: Bool] = [:]
     private var modifierReleaseArmed: [HotkeyBinding: Bool] = [:]
     private var modifierChordCancelled: [HotkeyBinding: Bool] = [:]
+    private var modifierSoloTriggered: [HotkeyBinding: Bool] = [:]
+    private var modifierSoloWorkItems: [HotkeyBinding: DispatchWorkItem] = [:]
     private var monitoredBindings: [HotkeyBinding] = []
     private var modifierTriggerStyles: [HotkeyBinding: ModifierTriggerStyle] = [:]
 
@@ -153,6 +157,7 @@ class HotkeyManager {
                 modifierPhysicalDownStates[binding.keyCode] = false
                 modifierReleaseArmed[binding] = false
                 modifierChordCancelled[binding] = false
+                modifierSoloTriggered[binding] = false
             }
         }
 
@@ -217,6 +222,28 @@ class HotkeyManager {
         })
     }
 
+    private func scheduleSoloModifierFire(for binding: HotkeyBinding) {
+        modifierSoloWorkItems[binding]?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.modifierReleaseArmed[binding] == true else { return }
+            guard self.modifierChordCancelled[binding] != true else { return }
+            guard self.modifierSoloTriggered[binding] != true else { return }
+            self.modifierSoloTriggered[binding] = true
+            self.onKeyDown?(binding)
+        }
+        modifierSoloWorkItems[binding] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + soloModifierDebounce, execute: workItem)
+    }
+
+    private func clearSoloModifierState(for binding: HotkeyBinding) {
+        modifierSoloWorkItems[binding]?.cancel()
+        modifierSoloWorkItems[binding] = nil
+        modifierReleaseArmed[binding] = false
+        modifierChordCancelled[binding] = false
+        modifierSoloTriggered[binding] = false
+    }
+
     private func handleFlagsChanged(event: NSEvent) {
         let currentFlags = event.modifierFlags.intersection(Self.relevantModifierMask)
         for binding in monitoredBindings where binding.isModifier {
@@ -244,18 +271,22 @@ class HotkeyManager {
                     onKeyUp?(binding)
                 }
             case .onReleaseIfSolo:
-                if isActive {
+                if isActive && modifierReleaseArmed[binding] != true {
                     modifierReleaseArmed[binding] = true
+                    modifierChordCancelled[binding] = false
+                    modifierSoloTriggered[binding] = false
+                    scheduleSoloModifierFire(for: binding)
                 } else if modifierReleaseArmed[binding] == true && !currentFlags.isEmpty {
                     if !currentFlags.subtracting(requiredFlags).isEmpty {
                         modifierChordCancelled[binding] = true
+                        modifierSoloWorkItems[binding]?.cancel()
+                        modifierSoloWorkItems[binding] = nil
                     }
                 } else if modifierReleaseArmed[binding] == true && currentFlags.isEmpty {
-                    if modifierChordCancelled[binding] != true {
+                    if modifierChordCancelled[binding] != true && modifierSoloTriggered[binding] != true {
                         onKeyDown?(binding)
                     }
-                    modifierReleaseArmed[binding] = false
-                    modifierChordCancelled[binding] = false
+                    clearSoloModifierState(for: binding)
                 }
             }
         }
@@ -265,14 +296,11 @@ class HotkeyManager {
         modifierTriggerStyles[binding] ?? .onReleaseIfSolo
     }
 
-    func isModifierPhysicallyDown(_ binding: HotkeyBinding) -> Bool {
-        guard binding.isModifier else { return false }
-        return modifierPhysicalDownStates[binding.keyCode] ?? false
-    }
-
     private func cancelModifierOnlyBindingsForChord() {
         for binding in monitoredBindings where binding.isModifier {
             modifierChordCancelled[binding] = true
+            modifierSoloWorkItems[binding]?.cancel()
+            modifierSoloWorkItems[binding] = nil
             if keyDownStates[binding] == true {
                 keyDownStates[binding] = false
                 onKeyUp?(binding)
@@ -331,6 +359,9 @@ class HotkeyManager {
         modifierPhysicalDownStates.removeAll()
         modifierReleaseArmed.removeAll()
         modifierChordCancelled.removeAll()
+        modifierSoloTriggered.removeAll()
+        modifierSoloWorkItems.values.forEach { $0.cancel() }
+        modifierSoloWorkItems.removeAll()
         modifierTriggerStyles.removeAll()
         monitoredBindings.removeAll()
     }
