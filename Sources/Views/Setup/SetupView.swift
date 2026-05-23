@@ -48,11 +48,17 @@ struct SetupView: View {
     @State private var testAudioLevelCancellable: AnyCancellable? = nil
     @State private var testMicPulsing = false
     @State private var testRecordingStartTime: Date? = nil
+    @State private var testSpeculativeToggleBinding: HotkeyBinding? = nil
+    @State private var pendingTestToggleStopBinding: HotkeyBinding? = nil
 
     private let totalSteps: [SetupStep] = SetupStep.allCases
 
     private var hasAnyConfiguredHotkey: Bool {
         !appState.holdHotkey.isDisabled || !appState.toggleHotkey.isDisabled
+    }
+
+    private func isImmediateModifierToggleBinding(_ binding: HotkeyBinding) -> Bool {
+        binding == appState.toggleHotkey && binding != appState.holdHotkey && binding.isModifier
     }
 
     var body: some View {
@@ -1254,6 +1260,27 @@ struct SetupView: View {
         }
     }
 
+    private func commitSpeculativeTestToggle() {
+        testSpeculativeToggleBinding = nil
+    }
+
+    private func cancelSpeculativeTestToggle() {
+        testSpeculativeToggleBinding = nil
+        pendingTestToggleStopBinding = nil
+        guard let recorder = testAudioRecorder else {
+            resetTest()
+            return
+        }
+        _ = recorder.stopRecording()
+        recorder.cleanup()
+        testAudioLevelCancellable?.cancel()
+        testAudioLevelCancellable = nil
+        testAudioLevel = 0.0
+        testRecordingStartTime = nil
+        testAudioRecorder = nil
+        resetTest()
+    }
+
     private func stopTestRecordingAndTranscribe() {
         guard testPhase == .recording, let recorder = testAudioRecorder else { return }
 
@@ -1315,6 +1342,16 @@ struct SetupView: View {
 
         appState.hotkeyManager.onKeyDown = { [self] binding in
             DispatchQueue.main.async {
+                if isImmediateModifierToggleBinding(binding) {
+                    if testPhase == .recording || testSpeculativeToggleBinding != nil {
+                        pendingTestToggleStopBinding = binding
+                    } else {
+                        testSpeculativeToggleBinding = binding
+                        startTestRecording()
+                    }
+                    return
+                }
+
                 if binding == appState.holdHotkey && binding != appState.toggleHotkey {
                     startTestRecording()
                 } else if binding == appState.toggleHotkey && binding != appState.holdHotkey {
@@ -1341,6 +1378,24 @@ struct SetupView: View {
 
         appState.hotkeyManager.onKeyUp = { [self] binding in
             DispatchQueue.main.async {
+                if isImmediateModifierToggleBinding(binding) {
+                    let modifierStillDown = appState.hotkeyManager.isModifierPhysicallyDown(binding)
+                    if testSpeculativeToggleBinding == binding {
+                        if modifierStillDown {
+                            cancelSpeculativeTestToggle()
+                        } else {
+                            commitSpeculativeTestToggle()
+                        }
+                        return
+                    }
+                    if pendingTestToggleStopBinding == binding {
+                        pendingTestToggleStopBinding = nil
+                        guard !modifierStillDown else { return }
+                        stopTestRecordingAndTranscribe()
+                        return
+                    }
+                }
+
                 if binding == appState.holdHotkey && binding != appState.toggleHotkey {
                     stopTestRecordingAndTranscribe()
                 } else if binding == appState.toggleHotkey && binding != appState.holdHotkey {
@@ -1359,7 +1414,7 @@ struct SetupView: View {
         let uniqueBindings = Array(Set([appState.toggleHotkey, appState.holdHotkey]))
         var modifierTriggerStyles: [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] = [:]
         if appState.toggleHotkey.isModifier {
-            modifierTriggerStyles[appState.toggleHotkey] = .onReleaseIfSolo
+            modifierTriggerStyles[appState.toggleHotkey] = .onPress
         }
         if appState.holdHotkey.isModifier {
             modifierTriggerStyles[appState.holdHotkey] = .onPress
@@ -1368,6 +1423,8 @@ struct SetupView: View {
     }
 
     private func stopTestHotkeyMonitoring() {
+        testSpeculativeToggleBinding = nil
+        pendingTestToggleStopBinding = nil
         appState.hotkeyManager.stop()
         appState.hotkeyManager.onKeyDown = nil
         appState.hotkeyManager.onKeyUp = nil
@@ -1381,6 +1438,8 @@ struct SetupView: View {
     }
 
     private func resetTest() {
+        testSpeculativeToggleBinding = nil
+        pendingTestToggleStopBinding = nil
         testPhase = .idle
         testTranscript = ""
         testError = nil

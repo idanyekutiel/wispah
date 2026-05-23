@@ -265,6 +265,11 @@ class HotkeyManager {
         modifierTriggerStyles[binding] ?? .onReleaseIfSolo
     }
 
+    func isModifierPhysicallyDown(_ binding: HotkeyBinding) -> Bool {
+        guard binding.isModifier else { return false }
+        return modifierPhysicalDownStates[binding.keyCode] ?? false
+    }
+
     private func cancelModifierOnlyBindingsForChord() {
         for binding in monitoredBindings where binding.isModifier {
             modifierChordCancelled[binding] = true
