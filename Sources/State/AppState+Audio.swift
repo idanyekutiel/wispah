@@ -50,24 +50,41 @@ extension AppState {
     // MARK: - Media Playback Detection & Control
     //
     // macOS 15.4+ blocks direct MediaRemote access for third-party apps.
-    // Detection: mediaremote-adapter (Perl trick — /usr/bin/perl has com.apple.perl bundle ID)
-    // Pause/Resume: CGEvent media key simulation (works universally)
+    // Detection + explicit play/pause commands: mediaremote-adapter
+    // Fallback: CGEvent media key simulation (works universally)
 
     func handleAudioOnRecordingStart() {
+        let controlSessionID = UUID()
+        mediaPlaybackControlSessionID = controlSessionID
+        wasMediaPlayingBeforeRecording = false
+        didPauseMediaForRecording = false
+
         switch audioWhileRecording {
         case .doNothing:
             break
         case .pauseMedia:
             isMediaCurrentlyPlaying { [weak self] isPlaying in
-                guard let self, self.isRecording else { return } // Ignore if recording already stopped
+                guard let self, self.isRecording, self.mediaPlaybackControlSessionID == controlSessionID else { return }
                 if let isPlaying {
                     os_log(.info, log: recordingLog, "pauseMedia: detected isPlaying=%{public}@", isPlaying ? "yes" : "no")
                     self.wasMediaPlayingBeforeRecording = isPlaying
-                    if isPlaying { self.sendMediaKeyEvent() }
+                    guard isPlaying else { return }
+                    self.sendMediaRemoteCommand(1) { success in
+                        guard self.isRecording, self.mediaPlaybackControlSessionID == controlSessionID else { return }
+                        if success {
+                            os_log(.info, log: recordingLog, "pauseMedia: paused via MediaRemote command")
+                            self.didPauseMediaForRecording = true
+                        } else {
+                            os_log(.info, log: recordingLog, "pauseMedia: MediaRemote pause failed, falling back to media key toggle")
+                            self.sendMediaKeyEvent()
+                            self.didPauseMediaForRecording = true
+                        }
+                    }
                 } else {
                     // Detection failed — do nothing (don't risk starting/stopping music blindly)
                     os_log(.info, log: recordingLog, "pauseMedia: detection failed, skipping")
                     self.wasMediaPlayingBeforeRecording = false
+                    self.didPauseMediaForRecording = false
                 }
             }
         case .muteSystem:
@@ -79,14 +96,36 @@ extension AppState {
     }
 
     func handleAudioOnRecordingStop() {
+        mediaPlaybackControlSessionID = UUID()
+
         switch audioWhileRecording {
         case .doNothing:
             break
         case .pauseMedia:
-            if wasMediaPlayingBeforeRecording {
+            let shouldResume = didPauseMediaForRecording
+            wasMediaPlayingBeforeRecording = false
+            didPauseMediaForRecording = false
+            guard shouldResume else { return }
+
+            isMediaCurrentlyPlaying { [weak self] isPlaying in
+                guard let self, !self.isRecording else { return }
+                if isPlaying == true {
+                    os_log(.info, log: recordingLog, "pauseMedia: playback already active on stop, skipping resume")
+                    return
+                }
+                if isPlaying == nil {
+                    os_log(.info, log: recordingLog, "pauseMedia: stop-time detection failed, skipping resume")
+                    return
+                }
+
                 os_log(.info, log: recordingLog, "pauseMedia: resuming playback")
-                sendMediaKeyEvent()
-                wasMediaPlayingBeforeRecording = false
+                self.sendMediaRemoteCommand(0) { success in
+                    guard !self.isRecording else { return }
+                    if !success {
+                        os_log(.info, log: recordingLog, "pauseMedia: MediaRemote play failed, falling back to media key toggle")
+                        self.sendMediaKeyEvent()
+                    }
+                }
             }
         case .muteSystem:
             if !wasSystemMutedBeforeRecording {
@@ -100,26 +139,14 @@ extension AppState {
     /// Uses /usr/bin/perl which has com.apple.perl bundle ID — allowed to use MediaRemote.
     /// Returns Bool? — true/false if detection worked, nil if it failed.
     private func isMediaCurrentlyPlaying(completion: @escaping (Bool?) -> Void) {
-        guard let bundleResources = Bundle.main.resourcePath else {
-            os_log(.error, log: recordingLog, "mediaremote-adapter: no bundle resource path")
-            completion(nil); return
-        }
-        let scriptPath = (bundleResources as NSString).appendingPathComponent("mediaremote-adapter.pl")
-        let frameworkPath = (bundleResources as NSString).appendingPathComponent("MediaRemoteAdapter.framework")
-
-        // Verify files exist
-        guard FileManager.default.fileExists(atPath: scriptPath) else {
-            os_log(.error, log: recordingLog, "mediaremote-adapter: script not found at %{public}@", scriptPath)
-            completion(nil); return
-        }
-        guard FileManager.default.fileExists(atPath: frameworkPath) else {
-            os_log(.error, log: recordingLog, "mediaremote-adapter: framework not found at %{public}@", frameworkPath)
-            completion(nil); return
+        guard let adapterPaths = mediaRemoteAdapterPaths() else {
+            completion(nil)
+            return
         }
 
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
-        task.arguments = [scriptPath, frameworkPath, "get"]
+        task.arguments = [adapterPaths.scriptPath, adapterPaths.frameworkPath, "get"]
 
         let pipe = Pipe()
         task.standardOutput = pipe
@@ -160,6 +187,56 @@ extension AppState {
                 }
             }
         }
+    }
+
+    private func sendMediaRemoteCommand(_ commandID: Int, completion: @escaping (Bool) -> Void) {
+        guard let adapterPaths = mediaRemoteAdapterPaths() else {
+            completion(false)
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+            task.arguments = [adapterPaths.scriptPath, adapterPaths.frameworkPath, "send", "\(commandID)"]
+            task.standardOutput = FileHandle.nullDevice
+            task.standardError = FileHandle.nullDevice
+
+            do {
+                try task.run()
+                task.waitUntilExit()
+                let success = task.terminationStatus == 0
+                DispatchQueue.main.async {
+                    completion(success)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    os_log(.error, log: recordingLog, "mediaremote-adapter send(%d) error: %{public}@", commandID, error.localizedDescription)
+                    completion(false)
+                }
+            }
+        }
+    }
+
+    private func mediaRemoteAdapterPaths() -> (scriptPath: String, frameworkPath: String)? {
+        guard let bundleResources = Bundle.main.resourcePath else {
+            os_log(.error, log: recordingLog, "mediaremote-adapter: no bundle resource path")
+            return nil
+        }
+
+        let scriptPath = (bundleResources as NSString).appendingPathComponent("mediaremote-adapter.pl")
+        let frameworkPath = (bundleResources as NSString).appendingPathComponent("MediaRemoteAdapter.framework")
+
+        guard FileManager.default.fileExists(atPath: scriptPath) else {
+            os_log(.error, log: recordingLog, "mediaremote-adapter: script not found at %{public}@", scriptPath)
+            return nil
+        }
+        guard FileManager.default.fileExists(atPath: frameworkPath) else {
+            os_log(.error, log: recordingLog, "mediaremote-adapter: framework not found at %{public}@", frameworkPath)
+            return nil
+        }
+
+        return (scriptPath, frameworkPath)
     }
 
     /// Simulate media play/pause key event (works on all macOS versions)

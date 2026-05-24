@@ -16,6 +16,17 @@ enum RecordingTrigger {
     case toggle
 }
 
+enum RecordingStartPresentation {
+    case normal
+    case speculativeHiddenUntilCommit
+}
+
+enum SpeculativeToggleState {
+    case none
+    case startingHidden
+    case recordingHidden
+}
+
 final class AppState: ObservableObject, @unchecked Sendable {
     let apiKeyStorageKey = "groq_api_key"
     private let customVocabularyStorageKey = "custom_vocabulary"
@@ -232,6 +243,10 @@ final class AppState: ObservableObject, @unchecked Sendable {
     var pendingPermissionRecordingTrigger: RecordingTrigger?
     /// Set when user releases hold key during engine startup — deferred stop fires once engine is ready
     var pendingStop = false
+    var recordingStartPresentation: RecordingStartPresentation = .normal
+    var speculativeToggleState: SpeculativeToggleState = .none
+    var speculativeToggleCommitted = false
+    var speculativeToggleCancellationRequested = false
     @Published var isTranscribing = false
     @Published var lastTranscript: String = ""
     @Published var errorMessage: String?
@@ -288,6 +303,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     let pipelineHistoryStore = PipelineHistoryStore()
     let statsStore = StatsStore()
     var wasMediaPlayingBeforeRecording = false
+    var didPauseMediaForRecording = false
+    var mediaPlaybackControlSessionID = UUID()
     var wasSystemMutedBeforeRecording = false
     var temporarilyUnavailablePreferredMicrophoneID: String? {
         didSet {
