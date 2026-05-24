@@ -48,6 +48,7 @@ struct SetupView: View {
     @State private var testAudioLevelCancellable: AnyCancellable? = nil
     @State private var testMicPulsing = false
     @State private var testRecordingStartTime: Date? = nil
+    @State private var testSpeculativeToggleRecording = false
 
     private let totalSteps: [SetupStep] = SetupStep.allCases
 
@@ -1247,6 +1248,7 @@ struct SetupView: View {
                 testPhase = .recording
             }
         } catch {
+            testSpeculativeToggleRecording = false
             testError = error.localizedDescription
             withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
                 testPhase = .done
@@ -1318,6 +1320,10 @@ struct SetupView: View {
                 if binding == appState.holdHotkey && binding != appState.toggleHotkey {
                     startTestRecording()
                 } else if binding == appState.toggleHotkey && binding != appState.holdHotkey {
+                    if testSpeculativeToggleRecording {
+                        testSpeculativeToggleRecording = false
+                        return
+                    }
                     if testPhase == .recording {
                         stopTestRecordingAndTranscribe()
                     } else {
@@ -1329,6 +1335,10 @@ struct SetupView: View {
                     case .holdToRecord:
                         startTestRecording()
                     case .toggleToRecord:
+                        if testSpeculativeToggleRecording {
+                            testSpeculativeToggleRecording = false
+                            return
+                        }
                         if testPhase == .recording {
                             stopTestRecordingAndTranscribe()
                         } else {
@@ -1355,11 +1365,40 @@ struct SetupView: View {
                 }
             }
         }
+        appState.hotkeyManager.onSpeculativeKeyDown = { [self] binding in
+            DispatchQueue.main.async {
+                guard appState.recordingMode == .toggleToRecord else { return }
+                let bindingIsToggle = binding == appState.toggleHotkey || (binding == appState.holdHotkey && appState.holdHotkey == appState.toggleHotkey)
+                guard bindingIsToggle else { return }
+                guard testPhase != .recording && testPhase != .transcribing else { return }
+                testSpeculativeToggleRecording = true
+                startTestRecording()
+            }
+        }
+        appState.hotkeyManager.onSpeculativeCancel = { [self] binding in
+            DispatchQueue.main.async {
+                let bindingIsToggle = binding == appState.toggleHotkey || (binding == appState.holdHotkey && appState.holdHotkey == appState.toggleHotkey)
+                guard bindingIsToggle, testSpeculativeToggleRecording else { return }
+                testSpeculativeToggleRecording = false
+                if let recorder = testAudioRecorder, recorder.isRecording {
+                    _ = recorder.stopRecording()
+                    recorder.cleanup()
+                }
+                testAudioRecorder = nil
+                testAudioLevelCancellable?.cancel()
+                testAudioLevelCancellable = nil
+                testAudioLevel = 0.0
+                testRecordingStartTime = nil
+                resetTest()
+            }
+        }
 
         let uniqueBindings = Array(Set([appState.toggleHotkey, appState.holdHotkey]))
         var modifierTriggerStyles: [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] = [:]
-        if appState.toggleHotkey.isModifier {
-            modifierTriggerStyles[appState.toggleHotkey] = .onReleaseIfSolo
+        if appState.toggleHotkey == appState.holdHotkey, appState.toggleHotkey.isModifier {
+            modifierTriggerStyles[appState.toggleHotkey] = appState.recordingMode == .holdToRecord ? .onPress : .speculativePressIfSolo
+        } else if appState.toggleHotkey.isModifier {
+            modifierTriggerStyles[appState.toggleHotkey] = .speculativePressIfSolo
         }
         if appState.holdHotkey.isModifier {
             modifierTriggerStyles[appState.holdHotkey] = .onPress
@@ -1371,6 +1410,8 @@ struct SetupView: View {
         appState.hotkeyManager.stop()
         appState.hotkeyManager.onKeyDown = nil
         appState.hotkeyManager.onKeyUp = nil
+        appState.hotkeyManager.onSpeculativeKeyDown = nil
+        appState.hotkeyManager.onSpeculativeCancel = nil
         testAudioLevelCancellable?.cancel()
         testAudioLevelCancellable = nil
         if let recorder = testAudioRecorder, recorder.isRecording {
@@ -1386,6 +1427,7 @@ struct SetupView: View {
         testError = nil
         testAudioLevel = 0.0
         testMicPulsing = true
+        testSpeculativeToggleRecording = false
         if let recorder = testAudioRecorder {
             if recorder.isRecording {
                 _ = recorder.stopRecording()

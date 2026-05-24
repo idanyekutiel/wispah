@@ -7,8 +7,12 @@ import os.log
 extension AppState {
     private func hotkeyModifierTriggerStyles() -> [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] {
         var styles: [HotkeyBinding: HotkeyManager.ModifierTriggerStyle] = [:]
+        if toggleHotkey == holdHotkey, toggleHotkey.isModifier {
+            styles[toggleHotkey] = recordingMode == .holdToRecord ? .onPress : .speculativePressIfSolo
+            return styles
+        }
         if toggleHotkey.isModifier {
-            styles[toggleHotkey] = .onReleaseIfSolo
+            styles[toggleHotkey] = .speculativePressIfSolo
         }
         if holdHotkey.isModifier {
             styles[holdHotkey] = .onPress
@@ -27,6 +31,16 @@ extension AppState {
                 self?.handleHotkeyUp(binding: binding)
             }
         }
+        hotkeyManager.onSpeculativeKeyDown = { [weak self] binding in
+            DispatchQueue.main.async {
+                self?.handleHotkeySpeculativePress(binding: binding)
+            }
+        }
+        hotkeyManager.onSpeculativeCancel = { [weak self] binding in
+            DispatchQueue.main.async {
+                self?.handleHotkeySpeculativeCancel(binding: binding)
+            }
+        }
         let uniqueBindings = Array(Set([toggleHotkey, holdHotkey]))
         hotkeyManager.start(bindings: uniqueBindings, modifierTriggerStyles: hotkeyModifierTriggerStyles())
     }
@@ -42,6 +56,9 @@ extension AppState {
             guard !isRecording && !isTranscribing else { return }
             startRecording(trigger: .hold)
         } else if binding == toggleHotkey && binding != holdHotkey {
+            if commitSpeculativeToggleStartIfNeeded(for: binding) {
+                return
+            }
             guard !isTranscribing else { return }
             toggleRecording()
         } else {
@@ -50,10 +67,34 @@ extension AppState {
                 guard !isRecording && !isTranscribing else { return }
                 startRecording(trigger: .hold)
             case .toggleToRecord:
+                if commitSpeculativeToggleStartIfNeeded(for: binding) {
+                    return
+                }
                 guard !isTranscribing else { return }
                 toggleRecording()
             }
         }
+    }
+
+    func handleHotkeySpeculativePress(binding: HotkeyBinding) {
+        guard binding.isModifier else { return }
+        guard recordingMode == .toggleToRecord else { return }
+        let bindingIsToggle = binding == toggleHotkey || (binding == holdHotkey && holdHotkey == toggleHotkey)
+        guard bindingIsToggle else { return }
+        guard !isRecording && !isStartingRecording && !isTranscribing else { return }
+        guard speculativeToggleState == .none else { return }
+
+        speculativeToggleState = .startingHidden
+        speculativeToggleCommitted = false
+        speculativeToggleCancellationRequested = false
+        startRecording(trigger: .toggle, presentation: .speculativeHiddenUntilCommit)
+    }
+
+    func handleHotkeySpeculativeCancel(binding: HotkeyBinding) {
+        guard binding.isModifier else { return }
+        let bindingIsToggle = binding == toggleHotkey || (binding == holdHotkey && holdHotkey == toggleHotkey)
+        guard bindingIsToggle else { return }
+        cancelSpeculativeToggleStart()
     }
 
     func handleHotkeyUp(binding: HotkeyBinding) {
@@ -90,7 +131,55 @@ extension AppState {
         }
     }
 
-    func startRecording(trigger: RecordingTrigger = .direct) {
+    private func commitSpeculativeToggleStartIfNeeded(for binding: HotkeyBinding) -> Bool {
+        guard binding.isModifier else { return false }
+        guard speculativeToggleState != .none else { return false }
+        speculativeToggleCommitted = true
+
+        switch speculativeToggleState {
+        case .startingHidden:
+            statusText = "Starting..."
+            overlayManager.showInitializing()
+            if playSoundsEnabled { NSSound(named: "Purr")?.play() }
+        case .recordingHidden:
+            statusText = "Recording..."
+            overlayManager.showRecording()
+            if playSoundsEnabled { NSSound(named: "Purr")?.play() }
+            speculativeToggleState = .none
+            speculativeToggleCommitted = false
+            speculativeToggleCancellationRequested = false
+        case .none:
+            return false
+        }
+        return true
+    }
+
+    private func cancelSpeculativeToggleStart() {
+        guard speculativeToggleState != .none else { return }
+        speculativeToggleCancellationRequested = true
+        errorMessage = nil
+        statusText = "Ready"
+        overlayManager.dismiss()
+
+        guard !isStartingRecording else { return }
+
+        handleAudioOnRecordingStop()
+        audioLevelCancellable?.cancel()
+        audioLevelCancellable = nil
+        contextCaptureTask?.cancel()
+        contextCaptureTask = nil
+        capturedContext = nil
+        isRecording = false
+        pendingStop = false
+        _ = audioRecorder.stopRecording()
+        audioRecorder.cleanup()
+        speculativeToggleState = .none
+        speculativeToggleCommitted = false
+        speculativeToggleCancellationRequested = false
+        recordingStartPresentation = .normal
+    }
+
+    func startRecording(trigger: RecordingTrigger = .direct, presentation: RecordingStartPresentation = .normal) {
         let t0 = CFAbsoluteTimeGetCurrent()
         os_log(.info, log: recordingLog, "startRecording() entered")
         guard !activeAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -107,6 +196,7 @@ extension AppState {
         os_log(.info, log: recordingLog, "accessibility check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
         guard ensureMicrophoneAccess(trigger: trigger) else { return }
         os_log(.info, log: recordingLog, "mic access check passed: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        recordingStartPresentation = presentation
         beginRecording()
         os_log(.info, log: recordingLog, "startRecording() finished: %.3fms", (CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
@@ -153,12 +243,15 @@ extension AppState {
         guard !isStartingRecording else { return }
         os_log(.info, log: recordingLog, "beginRecording() entered")
         errorMessage = nil
+        let hiddenUntilCommit = recordingStartPresentation == .speculativeHiddenUntilCommit
 
         isRecording = true
         isStartingRecording = true
         pendingStop = false
         hasShownScreenshotPermissionAlert = false
-        statusText = "Starting..."
+        if !hiddenUntilCommit {
+            statusText = "Starting..."
+        }
         handleAudioOnRecordingStart()
 
         var overlayShown = false
@@ -166,6 +259,7 @@ extension AppState {
         initTimer.schedule(deadline: .now() + 0.5)
         initTimer.setEventHandler { [weak self] in
             guard let self, !overlayShown else { return }
+            guard !hiddenUntilCommit || self.speculativeToggleCommitted else { return }
             overlayShown = true
             os_log(.info, log: recordingLog, "engine slow — showing initializing overlay")
             self.overlayManager.showInitializing()
@@ -178,10 +272,12 @@ extension AppState {
                 guard let self else { return }
                 initTimer.cancel()
                 os_log(.info, log: recordingLog, "first real audio — recorder fully live")
-                self.statusText = "Recording..."
-                if !overlayShown {
-                    self.overlayManager.showRecording()
-                    overlayShown = true
+                if !hiddenUntilCommit || self.speculativeToggleCommitted {
+                    self.statusText = "Recording..."
+                    if !overlayShown {
+                        self.overlayManager.showRecording()
+                        overlayShown = true
+                    }
                 }
             }
         }
@@ -197,36 +293,69 @@ extension AppState {
                 }
                 DispatchQueue.main.async {
                     initTimer.cancel()
-                    self.isStartingRecording = false
-                    self.statusText = "Recording..."
-                    if overlayShown {
-                        self.overlayManager.transitionToRecording()
-                    } else {
-                        self.overlayManager.showRecording()
-                        overlayShown = true
-                    }
-                    if self.playSoundsEnabled { NSSound(named: "Purr")?.play() }
-                    if self.pendingStop {
-                        self.pendingStop = false
-                        self.stopAndTranscribe()
+                    if hiddenUntilCommit && self.speculativeToggleCancellationRequested && !self.speculativeToggleCommitted {
+                        self.isStartingRecording = false
+                        self.cancelSpeculativeToggleStart()
                         return
                     }
+                    self.isStartingRecording = false
                     self.startContextCapture()
                     self.audioLevelCancellable = self.audioRecorder.$audioLevel
                         .receive(on: DispatchQueue.main)
                         .sink { [weak self] level in
                             self?.overlayManager.updateAudioLevel(level)
                         }
+
+                    if hiddenUntilCommit {
+                        self.speculativeToggleState = .recordingHidden
+                        if self.speculativeToggleCommitted {
+                            self.statusText = "Recording..."
+                            if overlayShown {
+                                self.overlayManager.transitionToRecording()
+                            } else {
+                                self.overlayManager.showRecording()
+                                overlayShown = true
+                            }
+                            self.speculativeToggleState = .none
+                            self.speculativeToggleCommitted = false
+                            self.speculativeToggleCancellationRequested = false
+                        }
+                    } else {
+                        self.statusText = "Recording..."
+                        if overlayShown {
+                            self.overlayManager.transitionToRecording()
+                        } else {
+                            self.overlayManager.showRecording()
+                            overlayShown = true
+                        }
+                        if self.playSoundsEnabled { NSSound(named: "Purr")?.play() }
+                    }
+                    self.recordingStartPresentation = .normal
+                    if self.pendingStop {
+                        self.pendingStop = false
+                        self.stopAndTranscribe()
+                        return
+                    }
                 }
             } catch {
                 DispatchQueue.main.async {
                     initTimer.cancel()
+                    let shouldSurfaceError = !hiddenUntilCommit || self.speculativeToggleCommitted
                     self.handleAudioOnRecordingStop()
                     self.isStartingRecording = false
                     self.pendingStop = false
                     self.isRecording = false
-                    self.errorMessage = self.formattedRecordingStartError(error)
-                    self.statusText = "Error"
+                    self.speculativeToggleState = .none
+                    self.speculativeToggleCommitted = false
+                    self.speculativeToggleCancellationRequested = false
+                    self.recordingStartPresentation = .normal
+                    if shouldSurfaceError {
+                        self.errorMessage = self.formattedRecordingStartError(error)
+                        self.statusText = "Error"
+                    } else {
+                        self.errorMessage = nil
+                        self.statusText = "Ready"
+                    }
                     self.overlayManager.dismiss()
                 }
             }
@@ -263,6 +392,10 @@ extension AppState {
         isStartingRecording = false
         pendingStop = false
         isRecording = false
+        recordingStartPresentation = .normal
+        speculativeToggleState = .none
+        speculativeToggleCommitted = false
+        speculativeToggleCancellationRequested = false
         _ = audioRecorder.stopRecording()
         audioRecorder.cleanup()
         errorMessage = message
@@ -297,6 +430,10 @@ extension AppState {
         let speechRange = audioRecorder.speechTimeRange
         let writtenDuration = audioRecorder.writtenDuration
         let wallClockDuration = audioRecorder.wallClockDuration
+        recordingStartPresentation = .normal
+        speculativeToggleState = .none
+        speculativeToggleCommitted = false
+        speculativeToggleCancellationRequested = false
         isRecording = false
         isTranscribing = true
         statusText = "Transcribing..."

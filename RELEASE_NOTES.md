@@ -6,6 +6,11 @@
 
 ## Changelog
 
+- **Makes bare `Fn` toggle feel instant again without reintroducing combo leaks** — Solo modifier toggles now speculatively acquire recording on key down and only commit on solo release, so bare `Fn` feels immediate again while `Fn + G/H`, `Fn + Option`, and system keyboard actions still cancel cleanly.
+- **Keeps speculative `Fn` logic out of the crash path** — The speculative behavior now lives in the hotkey manager and recording state machine instead of the old crashy stop-time path, so the recorder no longer trips over hidden-toggle cleanup on stop.
+- **Resumes media only if this recording actually paused it** — Pause/resume now tracks whether Wispah explicitly paused playback for the current recording session instead of blindly toggling on stop.
+- **Uses explicit MediaRemote play/pause commands before falling back to media-key toggles** — Media control now prefers direct pause/play commands through the bundled adapter, which avoids restarting already-paused music as often as the old toggle-only flow.
+- **Keeps onboarding hotkey tests aligned with the new bare-modifier behavior** — The setup wizard now follows the same speculative modifier-toggle semantics as the main app, including silent chord cancellation.
 - **Replaces the crashy speculative `Fn` toggle path with a safer manager-level debounce** — Bare modifier toggles no longer spin up the recorder invisibly on key down, avoiding the stop-time crash introduced in `v2026.05.23` while keeping the hotkey logic simple and stable.
 - **Keeps solo `Fn` toggle responsive without the old release-only lag** — Modifier-only toggle recognition now uses a very short solo-tap debounce in the hotkey manager, which is faster than the previous release-only behavior without reintroducing the speculative recorder path.
 - **Preserves combo and system-action cancellation for bare modifiers** — `Fn + J`, `Fn + Option`, keyboard backlight, media, brightness, and other system-defined actions still cancel bare modifier triggers instead of leaking into recording.

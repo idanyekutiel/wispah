@@ -120,6 +120,7 @@ class HotkeyManager {
     enum ModifierTriggerStyle {
         case onPress
         case onReleaseIfSolo
+        case speculativePressIfSolo
     }
 
     private let soloModifierDebounce: TimeInterval = 0.025
@@ -143,6 +144,8 @@ class HotkeyManager {
 
     var onKeyDown: ((HotkeyBinding) -> Void)?
     var onKeyUp: ((HotkeyBinding) -> Void)?
+    var onSpeculativeKeyDown: ((HotkeyBinding) -> Void)?
+    var onSpeculativeCancel: ((HotkeyBinding) -> Void)?
 
     func start(
         bindings: [HotkeyBinding],
@@ -288,6 +291,23 @@ class HotkeyManager {
                     }
                     clearSoloModifierState(for: binding)
                 }
+            case .speculativePressIfSolo:
+                if isActive && modifierReleaseArmed[binding] != true {
+                    modifierReleaseArmed[binding] = true
+                    modifierChordCancelled[binding] = false
+                    modifierSoloTriggered[binding] = false
+                    onSpeculativeKeyDown?(binding)
+                } else if modifierReleaseArmed[binding] == true && !currentFlags.isEmpty {
+                    if !currentFlags.subtracting(requiredFlags).isEmpty {
+                        modifierChordCancelled[binding] = true
+                        onSpeculativeCancel?(binding)
+                    }
+                } else if modifierReleaseArmed[binding] == true && currentFlags.isEmpty {
+                    if modifierChordCancelled[binding] != true {
+                        onKeyDown?(binding)
+                    }
+                    clearSoloModifierState(for: binding)
+                }
             }
         }
     }
@@ -301,6 +321,11 @@ class HotkeyManager {
             modifierChordCancelled[binding] = true
             modifierSoloWorkItems[binding]?.cancel()
             modifierSoloWorkItems[binding] = nil
+            if modifierTriggerStyle(for: binding) == .speculativePressIfSolo,
+               modifierReleaseArmed[binding] == true,
+               modifierSoloTriggered[binding] != true {
+                onSpeculativeCancel?(binding)
+            }
             if keyDownStates[binding] == true {
                 keyDownStates[binding] = false
                 onKeyUp?(binding)
