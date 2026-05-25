@@ -6,6 +6,10 @@
 
 ## Changelog
 
+- **Makes onboarding a real gate** — If setup is incomplete, Wispah now reopens onboarding instead of letting the app drift into a half-configured state where hotkeys and dictation appear broken.
+- **Prevents the setup window from being dismissed as a bypass** — The onboarding window is now non-closable until setup completes, so users cannot accidentally skip the wizard and land in the app with no working shortcuts.
+- **Restricts the menu bar while setup is incomplete** — Until onboarding finishes, the menu bar now only offers `Continue Onboarding` and `Quit`, instead of exposing the normal dictation/settings surface.
+
 - **Aligns automatic transcription with manual retranscribe** — The primary STT path now starts with full saved audio instead of the older trim-first path, so automatic transcription is much closer to the retranscribe flow that was already proving more reliable.
 - **Moves developer-mode bias out of STT and keeps only vocabulary bias** — Speech-to-text no longer sends synthetic developer filler text; the initial STT pass now keeps only the custom vocabulary prompt so jargon help remains without over-biasing recognition.
 - **Shares one STT preprocessing/retry pipeline across auto and manual paths** — Automatic transcription, manual retranscribe, and history retry now use the same helper for preprocessing, transient retry, and upload handling, which removes the drift that had built up between them.
