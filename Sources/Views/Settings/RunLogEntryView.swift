@@ -427,32 +427,33 @@ struct RunLogEntryView: View {
 
         retryTask = Task {
             do {
-                let uploadURL: URL
-                do {
-                    uploadURL = try await appState.audioRecorder.preprocessAudio(inputURL: audioURL)
-                } catch {
-                    uploadURL = audioURL
-                }
-                defer {
-                    if uploadURL != audioURL {
-                        try? FileManager.default.removeItem(at: uploadURL)
-                    }
-                }
-
-                await MainActor.run { retryStep = "Transcribing audio..." }
                 let transcriptionService = TranscriptionService(
                     apiKey: appState.activeAPIKey,
                     baseURL: appState.activeBaseURL,
                     model: appState.whisperModelId,
                     language: appState.transcriptionLanguage
                 )
-                let rawTranscript = try await transcriptionService.transcribe(fileURL: uploadURL)
-                let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                let updatedAudioFileName = AppState.replaceAudioFile(
-                    named: item.audioFileName,
-                    with: uploadURL,
-                    preferredExtension: uploadURL.pathExtension
+                let retryAttempt = try await appState.transcribeSavedAudioAttempt(
+                    sourceURL: audioURL,
+                    savedAudioFileName: item.audioFileName,
+                    transcriptionService: transcriptionService,
+                    customVocabulary: item.customVocabulary,
+                    applySpeechTrimming: false,
+                    trimDuration: item.recordingDurationSeconds ?? 0,
+                    speechStart: 0,
+                    replaceSavedAudio: true,
+                    useVocabularyPrompt: true,
+                    debugStatusMessage: "Transcribing audio..."
                 )
+                defer {
+                    if let temporaryUploadURL = retryAttempt.temporaryUploadURL {
+                        try? FileManager.default.removeItem(at: temporaryUploadURL)
+                    }
+                }
+
+                let rawTranscript = retryAttempt.transcriptionResult.transcript
+                let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let updatedAudioFileName = retryAttempt.effectiveAudioFileName ?? item.audioFileName
 
                 let finalTranscript: String
                 let processingStatus: String
@@ -508,7 +509,7 @@ struct RunLogEntryView: View {
                             contextScreenshotDataURL: item.contextScreenshotDataURL,
                             contextScreenshotStatus: item.contextScreenshotStatus,
                             postProcessingStatus: processingStatus,
-                            debugStatus: "Retranscribe",
+                            debugStatus: "Retranscribe · STT: full_saved_audio",
                             customVocabulary: item.customVocabulary,
                             audioFileName: updatedAudioFileName,
                             recordingDurationSeconds: item.recordingDurationSeconds

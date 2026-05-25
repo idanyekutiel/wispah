@@ -6,6 +6,11 @@
 
 ## Changelog
 
+- **Aligns automatic transcription with manual retranscribe** — The primary STT path now starts with full saved audio instead of the older trim-first path, so automatic transcription is much closer to the retranscribe flow that was already proving more reliable.
+- **Moves developer-mode bias out of STT and keeps only vocabulary bias** — Speech-to-text no longer sends synthetic developer filler text; the initial STT pass now keeps only the custom vocabulary prompt so jargon help remains without over-biasing recognition.
+- **Shares one STT preprocessing/retry pipeline across auto and manual paths** — Automatic transcription, manual retranscribe, and history retry now use the same helper for preprocessing, transient retry, and upload handling, which removes the drift that had built up between them.
+- **Stops accepting incomplete long transcripts when fallback produced nothing better** — If a long recording looks incomplete and fallback recovery can’t improve it, the app now treats that as a real failure instead of silently accepting the partial transcript.
+- **Adds STT path provenance to debug/run history status** — Completed runs now preserve which STT path actually won, making it much easier to tell whether full audio, segment chunks, recovered chunk audio, or last-chance saved audio saved the transcription.
 - **Makes bare `Fn` toggle feel instant again without reintroducing combo leaks** — Solo modifier toggles now speculatively acquire recording on key down and only commit on solo release, so bare `Fn` feels immediate again while `Fn + G/H`, `Fn + Option`, and system keyboard actions still cancel cleanly.
 - **Keeps speculative `Fn` logic out of the crash path** — The speculative behavior now lives in the hotkey manager and recording state machine instead of the old crashy stop-time path, so the recorder no longer trips over hidden-toggle cleanup on stop.
 - **Resumes media only if this recording actually paused it** — Pause/resume now tracks whether Wispah explicitly paused playback for the current recording session instead of blindly toggling on stop.
