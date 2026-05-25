@@ -27,26 +27,27 @@ extension AppState {
 
         Task {
             do {
-                let uploadURL: URL
-                do {
-                    uploadURL = try await audioRecorder.preprocessAudio(inputURL: audioURL)
-                } catch {
-                    uploadURL = audioURL
-                }
+                let service = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
+                let retryAttempt = try await transcribeSavedAudioAttempt(
+                    sourceURL: audioURL,
+                    savedAudioFileName: item.audioFileName,
+                    transcriptionService: service,
+                    customVocabulary: item.customVocabulary,
+                    applySpeechTrimming: false,
+                    trimDuration: item.recordingDurationSeconds ?? 0,
+                    speechStart: 0,
+                    replaceSavedAudio: true,
+                    useVocabularyPrompt: true
+                )
                 defer {
-                    if uploadURL != audioURL {
-                        try? FileManager.default.removeItem(at: uploadURL)
+                    if let temporaryUploadURL = retryAttempt.temporaryUploadURL {
+                        try? FileManager.default.removeItem(at: temporaryUploadURL)
                     }
                 }
 
-                let service = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
-                let transcript = try await service.transcribe(fileURL: uploadURL)
+                let transcript = retryAttempt.transcriptionResult.transcript
                 let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                let updatedAudioFileName = Self.replaceAudioFile(
-                    named: item.audioFileName,
-                    with: uploadURL,
-                    preferredExtension: uploadURL.pathExtension
-                )
+                let updatedAudioFileName = retryAttempt.effectiveAudioFileName ?? item.audioFileName
 
                 await MainActor.run {
                     NSPasteboard.general.clearContents()
@@ -64,7 +65,7 @@ extension AppState {
                             contextScreenshotDataURL: item.contextScreenshotDataURL,
                             contextScreenshotStatus: item.contextScreenshotStatus,
                             postProcessingStatus: "Retried successfully",
-                            debugStatus: "Retry",
+                            debugStatus: "Retry · STT: full_saved_audio",
                             customVocabulary: item.customVocabulary,
                             audioFileName: updatedAudioFileName,
                             recordingDurationSeconds: item.recordingDurationSeconds

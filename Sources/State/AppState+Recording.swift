@@ -511,31 +511,6 @@ extension AppState {
             let transcriptionService = TranscriptionService(apiKey: self.activeAPIKey, baseURL: self.activeBaseURL, model: self.whisperModelId, language: self.transcriptionLanguage)
             let postProcessingService = PostProcessingService(apiKey: self.activeAPIKey, baseURL: self.activeBaseURL, model: self.llmModelId)
 
-            // Build Whisper prompt as a fictitious preceding transcript.
-            // Whisper treats the prompt as prior transcript text and matches its style —
-            // it does NOT follow instructions. Longer prompts are more reliable.
-            // Terms embedded in natural sentences work better than glossary lists.
-            // Max 224 tokens (only the final 224 are considered). See:
-            // https://developers.openai.com/cookbook/examples/whisper_prompting_guide
-            let whisperPrompt: String? = {
-                var sentences: [String] = []
-                if self.developerModeEnabled {
-                    sentences.append("So I pushed the commit to the repo and opened a PR for the API changes. The CI pipeline ran the tests and everything passed. I need to refactor the config and update the env variables before deploying.")
-                }
-                let vocab = self.customVocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !vocab.isEmpty {
-                    let terms = vocab
-                        .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                        .filter { !$0.isEmpty }
-                    if !terms.isEmpty {
-                        let joined = terms.joined(separator: ", ")
-                        sentences.append("Some of the key terms we've been discussing include \(joined). These come up frequently in conversation.")
-                    }
-                }
-                return sentences.isEmpty ? nil : sentences.joined(separator: " ")
-            }()
-
             self.transcriptionTask?.cancel()
             self.transcriptionTask = Task {
                 var effectiveSavedAudioFileName = savedAudioFileName
@@ -546,8 +521,9 @@ extension AppState {
                     var hasAttemptedRecoveredRetry = false
                     var hasAttemptedSuspiciousTranscriptRetry = false
                     var hasAttemptedSegmentRetry = false
-                    let hasSpeechTrimBounds = (speechRange?.start ?? 0) > 0 || trimDuration > 0
                     let shouldUseSegmentRetry = max(wallClockDuration, trimDuration) >= 60
+                    var successfulTranscriptionPath = "full_saved_audio"
+                    var fallbackReason: String?
 
                     defer {
                         for temporaryUploadURL in temporaryUploadURLs {
@@ -556,77 +532,6 @@ extension AppState {
                         for temporarySourceURL in temporarySourceURLs {
                             try? FileManager.default.removeItem(at: temporarySourceURL)
                         }
-                    }
-
-                    func prepareUploadURL(
-                        from sourceURL: URL,
-                        applySpeechTrimming: Bool,
-                        replaceSavedAudio: Bool = true
-                    ) async -> URL {
-                        do {
-                            let uploadURL = try await self.audioRecorder.preprocessAudio(
-                                inputURL: sourceURL,
-                                trimToSeconds: applySpeechTrimming && trimDuration > 0 ? trimDuration : nil,
-                                skipLeadingSeconds: applySpeechTrimming ? (speechRange?.start ?? 0) : 0
-                            )
-                            if uploadURL != sourceURL {
-                                temporaryUploadURLs.append(uploadURL)
-                            }
-                            if replaceSavedAudio {
-                                effectiveSavedAudioFileName = Self.replaceAudioFile(
-                                    named: effectiveSavedAudioFileName,
-                                    with: uploadURL,
-                                    preferredExtension: uploadURL.pathExtension
-                                )
-                            }
-                            return uploadURL
-                        } catch {
-                            os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
-                            await MainActor.run { [weak self] in
-                                self?.debugStatusMessage = "Audio preprocessing failed, using original"
-                            }
-                            return sourceURL
-                        }
-                    }
-
-                    func transcribeWithRetry(uploadURL: URL) async throws -> TranscriptionResult {
-                        await MainActor.run { [weak self] in
-                            self?.debugStatusMessage = "Transcribing audio"
-                        }
-
-                        var result: TranscriptionResult
-                        do {
-                            result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: whisperPrompt)
-                        } catch let error where Self.isTransientNetworkError(error) {
-                            os_log(.info, log: recordingLog, "transcription failed with transient error — retrying once: %{public}@", error.localizedDescription)
-                            await MainActor.run { [weak self] in
-                                self?.debugStatusMessage = "Connection issue, retrying…"
-                            }
-                            result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: whisperPrompt)
-                        }
-
-                        if result.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimDuration > 1.5 {
-                            os_log(.info, log: recordingLog, "empty transcript on %.1fs recording — retrying once", trimDuration)
-                            result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: whisperPrompt)
-                        }
-
-                        return result
-                    }
-
-                    func attemptTranscription(
-                        sourceURL: URL,
-                        reason: String,
-                        applySpeechTrimming: Bool
-                    ) async throws -> TranscriptionResult {
-                        let uploadURL = await prepareUploadURL(from: sourceURL, applySpeechTrimming: applySpeechTrimming)
-                        os_log(
-                            .info,
-                            log: recordingLog,
-                            "transcription attempt: %{public}@ (%{public}@ trimming)",
-                            reason,
-                            applySpeechTrimming ? "with" : "without"
-                        )
-                        return try await transcribeWithRetry(uploadURL: uploadURL)
                     }
 
                     func transcribeUploadWithoutPrompt(_ uploadURL: URL) async throws -> TranscriptionResult {
@@ -681,13 +586,19 @@ extension AppState {
                             await MainActor.run { [weak self] in
                                 self?.debugStatusMessage = "Transcribing chunk \(index + 1)/\(segmentURLs.count)"
                             }
-                            let uploadURL = await prepareUploadURL(
+                            let prepared = await self.prepareTranscriptionUpload(
                                 from: segmentURL,
+                                savedAudioFileName: nil,
                                 applySpeechTrimming: false,
+                                trimDuration: trimDuration,
+                                speechStart: speechRange?.start ?? 0,
                                 replaceSavedAudio: false
                             )
+                            if let temporaryUploadURL = prepared.temporaryUploadURL {
+                                temporaryUploadURLs.append(temporaryUploadURL)
+                            }
                             do {
-                                let result = try await transcribeUploadWithoutPrompt(uploadURL)
+                                let result = try await transcribeUploadWithoutPrompt(prepared.uploadURL)
                                 let transcript = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                                 if !transcript.isEmpty {
                                     transcripts.append(transcript)
@@ -699,6 +610,10 @@ extension AppState {
 
                         let joinedTranscript = transcripts.joined(separator: " ")
                             .trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !joinedTranscript.isEmpty {
+                            successfulTranscriptionPath = "segment_chunks"
+                            fallbackReason = reason
+                        }
                         return joinedTranscript.isEmpty ? nil : joinedTranscript
                     }
 
@@ -725,11 +640,28 @@ extension AppState {
                         await MainActor.run { [weak self] in
                             self?.debugStatusMessage = "Recovering audio and retrying"
                         }
-                        let recoveredResult = try await attemptTranscription(
+                        let recoveredAttempt = try await self.transcribeSavedAudioAttempt(
                             sourceURL: recoveredSourceURL,
-                            reason: "recovered audio after \(reason)",
-                            applySpeechTrimming: false
+                            savedAudioFileName: effectiveSavedAudioFileName,
+                            transcriptionService: transcriptionService,
+                            customVocabulary: self.customVocabulary,
+                            applySpeechTrimming: false,
+                            trimDuration: trimDuration,
+                            speechStart: speechRange?.start ?? 0,
+                            replaceSavedAudio: true,
+                            useVocabularyPrompt: true,
+                            debugStatusMessage: "Recovering audio and retrying"
                         )
+                        if let temporaryUploadURL = recoveredAttempt.temporaryUploadURL {
+                            temporaryUploadURLs.append(temporaryUploadURL)
+                        }
+                        effectiveSavedAudioFileName = recoveredAttempt.effectiveAudioFileName
+                            ?? effectiveSavedAudioFileName
+                        let recoveredResult = recoveredAttempt.transcriptionResult
+                        if !recoveredResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            successfulTranscriptionPath = "recovered_chunk_audio"
+                            fallbackReason = reason
+                        }
                         return recoveredResult.transcript
                     }
 
@@ -764,19 +696,56 @@ extension AppState {
                                 self?.debugStatusMessage = "Retrying saved audio"
                             }
 
-                            let uploadURL = await prepareUploadURL(from: savedURL, applySpeechTrimming: false)
                             do {
-                                let result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: nil)
+                                let retryAttempt = try await self.transcribeSavedAudioAttempt(
+                                    sourceURL: savedURL,
+                                    savedAudioFileName: effectiveSavedAudioFileName,
+                                    transcriptionService: transcriptionService,
+                                    customVocabulary: self.customVocabulary,
+                                    applySpeechTrimming: false,
+                                    trimDuration: trimDuration,
+                                    speechStart: speechRange?.start ?? 0,
+                                    replaceSavedAudio: true,
+                                    useVocabularyPrompt: true,
+                                    debugStatusMessage: "Retrying saved audio"
+                                )
+                                if let temporaryUploadURL = retryAttempt.temporaryUploadURL {
+                                    temporaryUploadURLs.append(temporaryUploadURL)
+                                }
+                                effectiveSavedAudioFileName = retryAttempt.effectiveAudioFileName
+                                    ?? effectiveSavedAudioFileName
+                                let result = retryAttempt.transcriptionResult
                                 let transcript = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                                 if !transcript.isEmpty {
+                                    successfulTranscriptionPath = "saved_audio_last_chance"
+                                    fallbackReason = reason
                                     return result.transcript
                                 }
                             } catch let error where Self.isTransientNetworkError(error) {
                                 os_log(.info, log: recordingLog, "saved-audio retry hit transient error — retrying once: %{public}@", error.localizedDescription)
                                 do {
-                                    let result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: nil)
+                                    let retryAttempt = try await self.transcribeSavedAudioAttempt(
+                                        sourceURL: savedURL,
+                                        savedAudioFileName: effectiveSavedAudioFileName,
+                                        transcriptionService: transcriptionService,
+                                        customVocabulary: self.customVocabulary,
+                                        applySpeechTrimming: false,
+                                        trimDuration: trimDuration,
+                                        speechStart: speechRange?.start ?? 0,
+                                        replaceSavedAudio: true,
+                                        useVocabularyPrompt: true,
+                                        debugStatusMessage: "Retrying saved audio"
+                                    )
+                                    if let temporaryUploadURL = retryAttempt.temporaryUploadURL {
+                                        temporaryUploadURLs.append(temporaryUploadURL)
+                                    }
+                                    effectiveSavedAudioFileName = retryAttempt.effectiveAudioFileName
+                                        ?? effectiveSavedAudioFileName
+                                    let result = retryAttempt.transcriptionResult
                                     let transcript = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                                     if !transcript.isEmpty {
+                                        successfulTranscriptionPath = "saved_audio_last_chance"
+                                        fallbackReason = reason
                                         return result.transcript
                                     }
                                 } catch {
@@ -790,113 +759,65 @@ extension AppState {
                         return nil
                     }
 
+                    func incompleteTranscriptError(path: String) -> NSError {
+                        NSError(
+                            domain: "WispahTranscription",
+                            code: 1,
+                            userInfo: [NSLocalizedDescriptionKey: "Transcription was incomplete after \(path)"]
+                        )
+                    }
+
                     let rawResult: String
                     var primaryFailure: Error?
 
                     do {
-                        let primaryTrimmedResult = try await attemptTranscription(
+                        let primaryAttempt = try await self.transcribeSavedAudioAttempt(
                             sourceURL: fileURL,
-                            reason: "primary recording",
-                            applySpeechTrimming: true
+                            savedAudioFileName: effectiveSavedAudioFileName,
+                            transcriptionService: transcriptionService,
+                            customVocabulary: self.customVocabulary,
+                            applySpeechTrimming: false,
+                            trimDuration: trimDuration,
+                            speechStart: speechRange?.start ?? 0,
+                            replaceSavedAudio: true,
+                            useVocabularyPrompt: true
                         )
-                        let primaryTrimmedTranscript = primaryTrimmedResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let shouldRetrySuspiciousPrimary = primaryTrimmedResult.hadSuspiciousOutro && !hasAttemptedSuspiciousTranscriptRetry
-                        let shouldRetryPrimaryWithoutTrim = hasSpeechTrimBounds
+                        if let temporaryUploadURL = primaryAttempt.temporaryUploadURL {
+                            temporaryUploadURLs.append(temporaryUploadURL)
+                        }
+                        effectiveSavedAudioFileName = primaryAttempt.effectiveAudioFileName
+                            ?? effectiveSavedAudioFileName
+                        let primaryFullResult = primaryAttempt.transcriptionResult
+                        let primaryFullTranscript = primaryFullResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let shouldRetrySuspiciousPrimary = primaryFullResult.hadSuspiciousOutro && !hasAttemptedSuspiciousTranscriptRetry
 
-                        if !primaryTrimmedTranscript.isEmpty &&
-                            !primaryTrimmedResult.hadSuspiciousOutro &&
-                            !looksIncompleteForLongRecording(primaryTrimmedResult) {
-                            rawResult = primaryTrimmedResult.transcript
+                        if !primaryFullTranscript.isEmpty &&
+                            !primaryFullResult.hadSuspiciousOutro &&
+                            !looksIncompleteForLongRecording(primaryFullResult) {
+                            successfulTranscriptionPath = "full_saved_audio"
+                            rawResult = primaryFullResult.transcript
                         } else if shouldRetrySuspiciousPrimary {
                             hasAttemptedSuspiciousTranscriptRetry = true
                             os_log(.info, log: recordingLog, "suspicious primary transcript detected — switching directly to chunk-based fallback recovery")
                             if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "suspicious primary transcript") {
                                 rawResult = fallbackResult
-                            } else if hasSpeechTrimBounds {
-                                let fullPrimaryResult = try await attemptTranscription(
-                                    sourceURL: fileURL,
-                                    reason: "full saved audio after suspicious primary fallback",
-                                    applySpeechTrimming: false
-                                )
-                                rawResult = fullPrimaryResult.transcript
                             } else {
                                 rawResult = ""
                             }
-                        } else if shouldRetryPrimaryWithoutTrim {
-                            if primaryTrimmedResult.hadSuspiciousOutro {
-                                hasAttemptedSuspiciousTranscriptRetry = true
-                            }
-                            os_log(.info, log: recordingLog, "retrying full saved audio after suspicious trimmed primary result")
-                            do {
-                                let fullPrimaryResult = try await attemptTranscription(
-                                    sourceURL: fileURL,
-                                    reason: "full saved audio fallback",
-                                    applySpeechTrimming: false
-                                )
-                                let fullPrimaryTranscript = fullPrimaryResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if !fullPrimaryTranscript.isEmpty &&
-                                    !fullPrimaryResult.hadSuspiciousOutro &&
-                                    !looksIncompleteForLongRecording(fullPrimaryResult) {
-                                    rawResult = fullPrimaryResult.transcript
-                                } else if fullPrimaryResult.hadSuspiciousOutro {
-                                    os_log(.info, log: recordingLog, "full saved audio retry also looked hallucinated — switching to fallback recovery")
-                                    if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "suspicious full saved audio fallback") {
-                                        rawResult = fallbackResult
-                                    } else {
-                                        rawResult = ""
-                                    }
-                                } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty full saved audio fallback") {
-                                    rawResult = fallbackResult
-                                } else {
-                                    rawResult = fullPrimaryResult.transcript
-                                }
-                            } catch {
-                                primaryFailure = error
-                                if let fallbackResult = try await retryWithAutomaticFallbacks(reason: error.localizedDescription) {
-                                    rawResult = fallbackResult
-                                } else {
-                                    throw error
-                                }
-                            }
-                        } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty primary transcript") {
+                        } else if let fallbackResult = try await retryWithAutomaticFallbacks(
+                            reason: primaryFullTranscript.isEmpty ? "empty primary transcript" : "incomplete primary transcript"
+                        ) {
                             rawResult = fallbackResult
                         } else {
-                            rawResult = primaryTrimmedResult.transcript
+                            if primaryFullTranscript.isEmpty {
+                                rawResult = primaryFullResult.transcript
+                            } else {
+                                throw incompleteTranscriptError(path: "primary full saved audio")
+                            }
                         }
                     } catch {
                         primaryFailure = error
-                        if hasSpeechTrimBounds {
-                            os_log(.info, log: recordingLog, "primary transcription failed after trimmed attempt — retrying full saved audio: %{public}@", error.localizedDescription)
-                            do {
-                                let fullPrimaryResult = try await attemptTranscription(
-                                    sourceURL: fileURL,
-                                    reason: "full saved audio after primary failure",
-                                    applySpeechTrimming: false
-                                )
-                                let fullPrimaryTranscript = fullPrimaryResult.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if !fullPrimaryTranscript.isEmpty &&
-                                    !fullPrimaryResult.hadSuspiciousOutro &&
-                                    !looksIncompleteForLongRecording(fullPrimaryResult) {
-                                    rawResult = fullPrimaryResult.transcript
-                                } else if fullPrimaryResult.hadSuspiciousOutro {
-                                    if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "suspicious full saved audio after primary failure") {
-                                        rawResult = fallbackResult
-                                    } else {
-                                        rawResult = ""
-                                    }
-                                } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: "empty full saved audio after primary failure") {
-                                    rawResult = fallbackResult
-                                } else {
-                                    rawResult = fullPrimaryResult.transcript
-                                }
-                            } catch {
-                                if let fallbackResult = try await retryWithAutomaticFallbacks(reason: error.localizedDescription) {
-                                    rawResult = fallbackResult
-                                } else {
-                                    throw primaryFailure ?? error
-                                }
-                            }
-                        } else if let fallbackResult = try await retryWithAutomaticFallbacks(reason: error.localizedDescription) {
+                        if let fallbackResult = try await retryWithAutomaticFallbacks(reason: error.localizedDescription) {
                             rawResult = fallbackResult
                         } else {
                             throw primaryFailure ?? error
@@ -946,6 +867,9 @@ extension AppState {
                         processingStatus = "Post-processing disabled"
                         postProcessingPrompt = ""
                     }
+                    let sttDebugStatus = fallbackReason.map {
+                        "Done · STT: \(successfulTranscriptionPath) · fallback: \($0)"
+                    } ?? "Done · STT: \(successfulTranscriptionPath)"
                     let historyAudioFileName = effectiveSavedAudioFileName
                     await MainActor.run {
                         self.lastContextSummary = appContext.contextSummary
@@ -958,6 +882,7 @@ extension AppState {
                         self.lastRawTranscript = trimmedRawTranscript
                         self.lastPostProcessedTranscript = trimmedFinalTranscript
                         self.lastPostProcessingStatus = processingStatus
+                        self.debugStatusMessage = sttDebugStatus
                         self.recordPipelineHistoryEntry(
                             rawTranscript: trimmedRawTranscript,
                             postProcessedTranscript: trimmedFinalTranscript,
@@ -971,7 +896,6 @@ extension AppState {
                         self.transcribingIndicatorTask = nil
                         self.lastTranscript = trimmedFinalTranscript
                         self.isTranscribing = false
-                        self.debugStatusMessage = "Done"
 
                         if trimmedFinalTranscript.isEmpty {
                             self.statusText = "Nothing to transcribe"
@@ -1047,7 +971,7 @@ extension AppState {
 
     /// Returns true for transient network errors that are worth retrying once
     /// (connection lost, timeout, DNS failure, etc.)
-    private static func isTransientNetworkError(_ error: Error) -> Bool {
+    static func isTransientNetworkError(_ error: Error) -> Bool {
         if let transcriptionError = error as? TranscriptionError, transcriptionError.isTimeout {
             return false
         }
