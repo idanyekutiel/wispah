@@ -68,6 +68,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !appState.hasCompletedSetup {
+            showSetupWindow()
+            return true
+        }
         if !flag {
             showSettingsWindow()
         }
@@ -104,10 +108,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleShowSettings() {
+        guard appState.hasCompletedSetup else {
+            showSetupWindow()
+            return
+        }
         showSettingsWindow()
     }
 
     @objc private func handleShowDebugLogs() {
+        guard appState.hasCompletedSetup else {
+            showSetupWindow()
+            return
+        }
         showDebugLogWindow()
     }
 
@@ -200,6 +212,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showSetupWindow() {
+        if let setupWindow, setupWindow.isVisible {
+            setupWindow.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
         let setupView = SetupView(onComplete: { [weak self] in
             self?.completeSetup()
         })
@@ -207,18 +225,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 480),
-            styleMask: [.titled, .closable, .fullSizeContentView],
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         window.title = "Wispah Flow"
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
+        window.standardWindowButton(.closeButton)?.isHidden = true
+        window.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        window.standardWindowButton(.zoomButton)?.isHidden = true
+        window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: setupView)
         window.minSize = NSSize(width: 520, height: 480)
         window.center()
         window.makeKeyAndOrderFront(nil)
-        window.isReleasedWhenClosed = false
 
         self.setupWindow = window
         NSApp.activate(ignoringOtherApps: true)
