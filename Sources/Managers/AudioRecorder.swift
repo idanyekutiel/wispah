@@ -260,12 +260,15 @@ final class AudioRecorder: NSObject, ObservableObject {
         return fileURL
     }
 
-    /// Canonical recording format: 48kHz mono 16-bit signed PCM. Every written buffer
-    /// is converted to this so the file is uniform regardless of device quirks.
+    /// Canonical recording format: 16kHz mono 16-bit signed PCM. 16kHz is Whisper's
+    /// native rate (and what we upload anyway), so capturing here is lossless for
+    /// transcription while cutting data volume, file size, and the pre-upload resample.
+    /// Every written buffer is converted to this so the file is uniform regardless of
+    /// device quirks.
     private func makeCanonicalFormat() throws -> AVAudioFormat {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
-            sampleRate: 48_000,
+            sampleRate: 16_000,
             channels: 1,
             interleaved: true
         ) else {
@@ -294,7 +297,7 @@ final class AudioRecorder: NSObject, ObservableObject {
     private func normalizedCaptureAudioSettings() -> [String: Any] {
         [
             AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 48_000,
+            AVSampleRateKey: 16_000,
             AVNumberOfChannelsKey: 1,
             AVLinearPCMBitDepthKey: 16,
             AVLinearPCMIsFloatKey: false,
@@ -726,29 +729,31 @@ final class AudioRecorder: NSObject, ObservableObject {
 
         let reader = try AVAssetReader(asset: asset)
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
-        // Keep the moov atom recoverable if the process dies mid-write.
-        writer.shouldOptimizeForNetworkUse = true
 
         guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
             throw AudioRecorderError.invalidInputFormat("No audio track found")
         }
 
-        // Trim to speech boundaries (skips key click noise at start/end)
-        let duration = try await asset.load(.duration)
-        let totalSeconds = CMTimeGetSeconds(duration)
-        let startSeconds = min(skipLeadingSeconds, totalSeconds * 0.25) // never skip more than 25%
-        let endSeconds: Double
-        if let trim = trimToSeconds, trim > 0, trim < totalSeconds {
-            endSeconds = trim
-        } else {
-            endSeconds = totalSeconds
-        }
-        if startSeconds > 0 || endSeconds < totalSeconds {
-            let safeEnd = max(endSeconds, startSeconds + 0.1) // always keep at least 0.1s
-            let startTime = CMTime(seconds: startSeconds, preferredTimescale: 44100)
-            let endTime = CMTime(seconds: safeEnd, preferredTimescale: 44100)
-            reader.timeRange = CMTimeRange(start: startTime, end: endTime)
-            os_log(.info, log: recordingLog, "preprocessing: speech range %.2fs-%.2fs of %.2fs total", startSeconds, safeEnd, totalSeconds)
+        // Only load the asset duration + set a trim range when trimming is actually
+        // requested. The common path passes no trimming, so this skips an asset-duration
+        // load on every upload.
+        if (trimToSeconds ?? 0) > 0 || skipLeadingSeconds > 0 {
+            let duration = try await asset.load(.duration)
+            let totalSeconds = CMTimeGetSeconds(duration)
+            let startSeconds = min(skipLeadingSeconds, totalSeconds * 0.25) // never skip more than 25%
+            let endSeconds: Double
+            if let trim = trimToSeconds, trim > 0, trim < totalSeconds {
+                endSeconds = trim
+            } else {
+                endSeconds = totalSeconds
+            }
+            if startSeconds > 0 || endSeconds < totalSeconds {
+                let safeEnd = max(endSeconds, startSeconds + 0.1) // always keep at least 0.1s
+                let startTime = CMTime(seconds: startSeconds, preferredTimescale: 44100)
+                let endTime = CMTime(seconds: safeEnd, preferredTimescale: 44100)
+                reader.timeRange = CMTimeRange(start: startTime, end: endTime)
+                os_log(.info, log: recordingLog, "preprocessing: speech range %.2fs-%.2fs of %.2fs total", startSeconds, safeEnd, totalSeconds)
+            }
         }
 
         // Reader: decode to 16KHz mono PCM

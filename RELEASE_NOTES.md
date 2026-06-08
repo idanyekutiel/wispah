@@ -6,12 +6,8 @@
 
 ## Changelog
 
-- **More reliable recording.** Rebuilt the audio capture core to eliminate corrupted or garbled audio, especially on longer dictations, with per-buffer format validation and gap detection.
-- **More consistent transcriptions.** Deterministic decoding plus an automatic re-try on weak results, and the live recording path now uses the exact same highest-quality pipeline as the manual "retry".
-- **Re-transcribe from the menu bar.** Re-run your last recording straight from the menu if something didn't come out right.
-- **Richer Run Log.** Each entry now shows how it was transcribed (method) along with retry and network diagnostics, and the audio player is now scrubbable — click or drag anywhere on the progress bar to seek.
-- **Onboarding improvements.** Added an audio-behavior setting for what happens while recording, and the test step now runs the real transcription pipeline so a passing test reflects your actual setup.
-- **Reliability fixes.** Smarter request timeouts for long recordings, better silence/hallucination handling, and resource-leak cleanups.
+- **Lighter, faster transcription pipeline.** Audio is now captured at 16 kHz (Whisper's native rate) instead of being downsampled later — same transcription accuracy, but smaller uploads and less processing between stopping a recording and getting your text.
+- **Snappier stop-to-paste.** Removed redundant file work after recording (an unnecessary metadata-rewrite pass and a duplicate duration read) so results come back a little quicker.
 
 ## Requirements
 
