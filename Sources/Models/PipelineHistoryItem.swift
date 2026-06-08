@@ -15,6 +15,10 @@ struct PipelineHistoryItem: Identifiable, Codable {
     let customVocabulary: String
     let audioFileName: String?
     let recordingDurationSeconds: Double?
+    /// Raw value of `TranscriptionMethod` — how this transcription was produced.
+    let transcriptionMethod: String?
+    /// Human-readable retry/network diagnostics (e.g. "Network retries: 1 · Re-roll: empty result").
+    let diagnostics: String?
 
     init(
         id: UUID = UUID(),
@@ -30,7 +34,9 @@ struct PipelineHistoryItem: Identifiable, Codable {
         debugStatus: String,
         customVocabulary: String,
         audioFileName: String? = nil,
-        recordingDurationSeconds: Double? = nil
+        recordingDurationSeconds: Double? = nil,
+        transcriptionMethod: String? = nil,
+        diagnostics: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -46,5 +52,7 @@ struct PipelineHistoryItem: Identifiable, Codable {
         self.customVocabulary = customVocabulary
         self.audioFileName = audioFileName
         self.recordingDurationSeconds = recordingDurationSeconds
+        self.transcriptionMethod = transcriptionMethod
+        self.diagnostics = diagnostics
     }
 }

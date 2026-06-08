@@ -90,6 +90,13 @@ struct MenuBarView: View {
                     }
                 }
 
+                if let lastItem = appState.lastRetranscribableItem {
+                    Button("Re-transcribe Last Audio") {
+                        appState.retryHistoryEntry(item: lastItem)
+                    }
+                    .disabled(appState.isRecording || appState.isTranscribing)
+                }
+
                 Divider()
 
                 Menu("Microphone") {

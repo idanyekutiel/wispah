@@ -664,7 +664,7 @@ struct SetupView: View {
         case .screenRecording:   return 520
         case .hotkey:            return 620
         case .vocabulary:        return 560
-        case .language:          return 680
+        case .language:          return 800
         case .launchAtLogin:     return 400
         case .testTranscription: return 520
         case .ready:             return 440
@@ -769,6 +769,31 @@ struct SetupView: View {
                     }
 
                     Text("Setting a specific language improves accuracy.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.leading, 36)
+                }
+                .padding(12)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "speaker.wave.2")
+                            .frame(width: 24)
+                            .foregroundStyle(.blue)
+                        Text("While recording")
+                        Spacer()
+                        Picker("", selection: $appState.audioWhileRecording) {
+                            ForEach(AudioWhileRecording.allCases) { option in
+                                Text(option.displayName).tag(option)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 200)
+                    }
+
+                    Text(appState.audioWhileRecording.description)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.leading, 36)
@@ -1290,12 +1315,28 @@ struct SetupView: View {
             return
         }
 
+        // Run the SAME pipeline the app uses for real (preprocess → temperature 0 →
+        // validation → smart re-roll), so a passing test genuinely reflects the user's
+        // working setup — language, vocabulary, and provider all included.
+        let expectedDuration = recorder.lastNonSilentDuration
         Task {
             do {
-                let service = TranscriptionService(apiKey: appState.activeAPIKey, baseURL: appState.activeBaseURL, model: appState.whisperModelId)
-                let transcript = try await service.transcribe(fileURL: url)
+                let service = TranscriptionService(
+                    apiKey: appState.activeAPIKey,
+                    baseURL: appState.activeBaseURL,
+                    model: appState.whisperModelId,
+                    language: appState.transcriptionLanguage
+                )
+                let source = AudioSource(label: "onboarding_test", applyPreprocessing: true, replaceSavedAudio: false) { url }
+                let outcome = try await appState.runUnifiedTranscription(
+                    sources: [source],
+                    savedAudioFileName: nil,
+                    expectedDurationSeconds: expectedDuration,
+                    vocabularyPrompt: appState.vocabularyOnlySTTPrompt(customVocabulary: appState.customVocabulary),
+                    transcriptionService: service
+                )
                 await MainActor.run {
-                    testTranscript = transcript
+                    testTranscript = outcome.rawTranscript
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
                         testPhase = .done
                     }

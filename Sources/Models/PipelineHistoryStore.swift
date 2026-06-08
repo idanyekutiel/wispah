@@ -86,6 +86,8 @@ final class PipelineHistoryStore {
         entity.customVocabulary = item.customVocabulary
         entity.audioFileName = item.audioFileName
         entity.recordingDurationSeconds = item.recordingDurationSeconds ?? 0
+        entity.transcriptionMethod = item.transcriptionMethod
+        entity.diagnostics = item.diagnostics
         try saveContext()
     }
 
@@ -142,6 +144,8 @@ final class PipelineHistoryStore {
         entity.customVocabulary = item.customVocabulary
         entity.audioFileName = item.audioFileName
         entity.recordingDurationSeconds = item.recordingDurationSeconds ?? 0
+        entity.transcriptionMethod = item.transcriptionMethod
+        entity.diagnostics = item.diagnostics
         try saveContext()
     }
 
@@ -174,7 +178,9 @@ final class PipelineHistoryStore {
             debugStatus: entity.debugStatus ?? "",
             customVocabulary: entity.customVocabulary ?? "",
             audioFileName: entity.audioFileName,
-            recordingDurationSeconds: entity.recordingDurationSeconds > 0 ? entity.recordingDurationSeconds : nil
+            recordingDurationSeconds: entity.recordingDurationSeconds > 0 ? entity.recordingDurationSeconds : nil,
+            transcriptionMethod: entity.transcriptionMethod,
+            diagnostics: entity.diagnostics
         )
     }
 
@@ -199,7 +205,9 @@ final class PipelineHistoryStore {
             makeAttribute(name: "debugStatus", type: .stringAttributeType, isOptional: false),
             makeAttribute(name: "customVocabulary", type: .stringAttributeType, isOptional: false),
             makeAttribute(name: "audioFileName", type: .stringAttributeType, isOptional: true),
-            makeAttribute(name: "recordingDurationSeconds", type: .doubleAttributeType, isOptional: true)
+            makeAttribute(name: "recordingDurationSeconds", type: .doubleAttributeType, isOptional: true),
+            makeAttribute(name: "transcriptionMethod", type: .stringAttributeType, isOptional: true),
+            makeAttribute(name: "diagnostics", type: .stringAttributeType, isOptional: true)
         ]
 
         model.entities = [entity]
@@ -244,4 +252,6 @@ final class PipelineHistoryEntry: NSManagedObject {
     @NSManaged var customVocabulary: String?
     @NSManaged var audioFileName: String?
     @NSManaged var recordingDurationSeconds: Double
+    @NSManaged var transcriptionMethod: String?
+    @NSManaged var diagnostics: String?
 }

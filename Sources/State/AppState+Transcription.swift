@@ -7,10 +7,81 @@ struct PreparedTranscriptionUpload {
     let temporaryUploadURL: URL?
 }
 
-struct SharedTranscriptionAttemptResult {
-    let transcriptionResult: TranscriptionResult
+/// An ordered fallback source of audio for transcription. The pipeline walks the
+/// list, running the *same* `TranscriptionEngine` against each, until one yields a
+/// high-confidence result. This is the entire redundancy layer — deliberately small
+/// and out of the way of the linear main path.
+struct AudioSource {
+    let label: String
+    /// Whether to downsample/encode this source before upload. Raw recordings need it;
+    /// already-preprocessed saved audio should be uploaded as-is (no second lossy
+    /// re-encode, no overwrite of the stored file).
+    let applyPreprocessing: Bool
+    /// Whether a successful upload should replace the saved history audio with the
+    /// (preprocessed) file that was actually sent.
+    let replaceSavedAudio: Bool
+    /// Produces the source URL lazily (nil if unavailable — e.g. nothing to recover).
+    let provide: () async -> URL?
+}
+
+struct UnifiedTranscriptionOutcome {
+    let rawTranscript: String
     let effectiveAudioFileName: String?
-    let temporaryUploadURL: URL?
+    /// Which source produced the result (for debug status).
+    let path: String
+    /// True when a non-primary source or a best-effort (low-confidence) result was used.
+    let usedFallback: Bool
+    /// True when the returned result passed validation.
+    let succeeded: Bool
+    let networkRetryCount: Int
+    let didReroll: Bool
+    let rerollReason: String?
+
+    /// One-line, human-readable diagnostics for the run log (network retries, re-rolls, outcome).
+    var diagnosticsSummary: String {
+        var parts = ["Source: \(path)"]
+        if networkRetryCount > 0 {
+            parts.append("Network retries: \(networkRetryCount)")
+        }
+        if didReroll {
+            parts.append("Re-roll: \(rerollReason ?? "weak result")")
+        }
+        let resultDesc: String
+        if succeeded {
+            resultDesc = "high confidence"
+        } else if rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            resultDesc = "empty"
+        } else {
+            resultDesc = "best effort"
+        }
+        parts.append("Result: \(resultDesc)")
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// How a transcription was produced — shown as a tag in the run log detail view.
+enum TranscriptionMethod: String {
+    case standard
+    case recovered
+    case manualRetry
+    case retranscribe
+    case failed
+
+    var displayLabel: String {
+        switch self {
+        case .standard: return "Standard"
+        case .recovered: return "Recovered (fallback)"
+        case .manualRetry: return "Manual retry"
+        case .retranscribe: return "Retranscribe"
+        case .failed: return "Failed"
+        }
+    }
+
+    /// The method for a freshly-recorded transcription, given how it resolved.
+    static func live(succeeded: Bool, usedFallback: Bool) -> TranscriptionMethod {
+        if !succeeded && usedFallback { return .recovered }
+        return .standard
+    }
 }
 
 extension AppState {
@@ -67,70 +138,106 @@ extension AppState {
         }
     }
 
-    func transcribePreparedUpload(
-        _ uploadURL: URL,
-        using transcriptionService: TranscriptionService,
-        prompt: String?,
-        emptyRetryDuration: Double,
-        debugStatusMessage message: String = "Transcribing audio"
-    ) async throws -> TranscriptionResult {
-        await MainActor.run { [weak self] in
-            self?.debugStatusMessage = message
-        }
-
-        var result: TranscriptionResult
-        do {
-            result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: prompt)
-        } catch let error where Self.isTransientNetworkError(error) {
-            os_log(.info, log: recordingLog, "transcription failed with transient error — retrying once: %{public}@", error.localizedDescription)
-            await MainActor.run { [weak self] in
-                self?.debugStatusMessage = "Connection issue, retrying…"
-            }
-            result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: prompt)
-        }
-
-        if result.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && emptyRetryDuration > 1.5 {
-            os_log(.info, log: recordingLog, "empty transcript on %.1fs recording — retrying once", emptyRetryDuration)
-            result = try await transcriptionService.transcribeDetailed(fileURL: uploadURL, prompt: prompt)
-        }
-
-        return result
-    }
-
-    func transcribeSavedAudioAttempt(
-        sourceURL: URL,
+    /// The single transcription path shared by live recording and retranscribe.
+    /// Walks `sources` in order, preprocessing each and running the one canonical
+    /// `TranscriptionEngine`, and returns the first high-confidence result (falling
+    /// back to the best non-empty attempt). Saved-audio bookkeeping and temp-file
+    /// cleanup are handled here so the engine stays pure.
+    func runUnifiedTranscription(
+        sources: [AudioSource],
         savedAudioFileName: String?,
-        transcriptionService: TranscriptionService,
-        customVocabulary: String,
-        applySpeechTrimming: Bool,
-        trimDuration: Double,
-        speechStart: Double,
-        replaceSavedAudio: Bool = true,
-        useVocabularyPrompt: Bool,
-        debugStatusMessage: String = "Transcribing audio"
-    ) async throws -> SharedTranscriptionAttemptResult {
-        let prepared = await prepareTranscriptionUpload(
-            from: sourceURL,
-            savedAudioFileName: savedAudioFileName,
-            applySpeechTrimming: applySpeechTrimming,
-            trimDuration: trimDuration,
-            speechStart: speechStart,
-            replaceSavedAudio: replaceSavedAudio
-        )
+        expectedDurationSeconds: Double,
+        vocabularyPrompt: String?,
+        transcriptionService: TranscriptionService
+    ) async throws -> UnifiedTranscriptionOutcome {
+        let engine = TranscriptionEngine(service: transcriptionService)
+        let prompt = vocabularyPrompt
 
-        let prompt = useVocabularyPrompt ? vocabularyOnlySTTPrompt(customVocabulary: customVocabulary) : nil
-        let result = try await transcribePreparedUpload(
-            prepared.uploadURL,
-            using: transcriptionService,
-            prompt: prompt,
-            emptyRetryDuration: trimDuration,
-            debugStatusMessage: debugStatusMessage
-        )
+        var effectiveAudioFileName = savedAudioFileName
+        var temporaryUploadURLs: [URL] = []
+        var bestTranscript = ""
+        var bestPath = "empty"
+        var bestResult: EngineResult?
+        var lastError: Error?
 
-        return SharedTranscriptionAttemptResult(
-            transcriptionResult: result,
-            effectiveAudioFileName: prepared.effectiveAudioFileName,
-            temporaryUploadURL: prepared.temporaryUploadURL
+        defer {
+            for url in temporaryUploadURLs { try? FileManager.default.removeItem(at: url) }
+        }
+
+        for (sourceIndex, source) in sources.enumerated() {
+            guard let sourceURL = await source.provide() else { continue }
+
+            let uploadURL: URL
+            if source.applyPreprocessing {
+                let prepared = await prepareTranscriptionUpload(
+                    from: sourceURL,
+                    savedAudioFileName: effectiveAudioFileName,
+                    applySpeechTrimming: false,
+                    trimDuration: expectedDurationSeconds,
+                    speechStart: 0,
+                    replaceSavedAudio: source.replaceSavedAudio
+                )
+                if let temporaryUploadURL = prepared.temporaryUploadURL {
+                    temporaryUploadURLs.append(temporaryUploadURL)
+                }
+                effectiveAudioFileName = prepared.effectiveAudioFileName ?? effectiveAudioFileName
+                uploadURL = prepared.uploadURL
+            } else {
+                // Already upload-ready (saved audio): send as-is, don't re-encode or replace.
+                uploadURL = sourceURL
+            }
+
+            do {
+                let result = try await engine.transcribe(
+                    uploadURL: uploadURL,
+                    prompt: prompt,
+                    expectedDurationSeconds: expectedDurationSeconds
+                )
+                if result.isHighConfidence && !result.isEmpty {
+                    return UnifiedTranscriptionOutcome(
+                        rawTranscript: result.rawTranscript,
+                        effectiveAudioFileName: effectiveAudioFileName,
+                        path: source.label,
+                        usedFallback: sourceIndex > 0,
+                        succeeded: true,
+                        networkRetryCount: result.networkRetryCount,
+                        didReroll: result.didReroll,
+                        rerollReason: result.rerollReason
+                    )
+                }
+                if bestTranscript.isEmpty && !result.isEmpty {
+                    bestTranscript = result.rawTranscript
+                    bestPath = "\(source.label)_best_effort"
+                    bestResult = result
+                }
+            } catch {
+                lastError = error
+                os_log(.error, log: recordingLog, "engine source %{public}@ failed: %{public}@", source.label, error.localizedDescription)
+            }
+        }
+
+        if !bestTranscript.isEmpty {
+            return UnifiedTranscriptionOutcome(
+                rawTranscript: bestTranscript,
+                effectiveAudioFileName: effectiveAudioFileName,
+                path: bestPath,
+                usedFallback: true,
+                succeeded: false,
+                networkRetryCount: bestResult?.networkRetryCount ?? 0,
+                didReroll: bestResult?.didReroll ?? false,
+                rerollReason: bestResult?.rerollReason
+            )
+        }
+        if let lastError { throw lastError }
+        return UnifiedTranscriptionOutcome(
+            rawTranscript: "",
+            effectiveAudioFileName: effectiveAudioFileName,
+            path: "empty",
+            usedFallback: false,
+            succeeded: false,
+            networkRetryCount: 0,
+            didReroll: false,
+            rerollReason: nil
         )
     }
 }

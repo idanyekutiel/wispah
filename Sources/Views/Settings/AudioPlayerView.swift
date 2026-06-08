@@ -20,11 +20,12 @@ struct AudioPlayerView: View {
     @State private var isPlaying = false
     @State private var duration: TimeInterval = 0
     @State private var elapsed: TimeInterval = 0
+    @State private var isScrubbing = false
     @State private var progressTimer: Timer?
 
     private var progress: Double {
         guard duration > 0 else { return 0 }
-        return min(elapsed / duration, 1.0)
+        return min(max(elapsed / duration, 0), 1.0)
     }
 
     var body: some View {
@@ -32,7 +33,7 @@ struct AudioPlayerView: View {
             Button {
                 togglePlayback()
             } label: {
-                Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                     .font(.body)
                     .frame(width: 28, height: 28)
                     .background(Circle().fill(Color.accentColor.opacity(0.15)))
@@ -40,15 +41,33 @@ struct AudioPlayerView: View {
             .buttonStyle(.plain)
 
             GeometryReader { geo in
+                let knobX = max(0, min(geo.size.width, geo.size.width * progress))
                 ZStack(alignment: .leading) {
                     Capsule()
                         .fill(Color.secondary.opacity(0.15))
                         .frame(height: 4)
                     Capsule()
                         .fill(Color.accentColor)
-                        .frame(width: max(0, geo.size.width * progress), height: 4)
+                        .frame(width: knobX, height: 4)
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: isScrubbing ? 12 : 9, height: isScrubbing ? 12 : 9)
+                        .offset(x: knobX - (isScrubbing ? 6 : 4.5))
+                        .animation(.easeOut(duration: 0.1), value: isScrubbing)
                 }
                 .frame(maxHeight: .infinity, alignment: .center)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            isScrubbing = true
+                            seek(toFraction: value.location.x / geo.size.width, resume: false)
+                        }
+                        .onEnded { value in
+                            isScrubbing = false
+                            seek(toFraction: value.location.x / geo.size.width, resume: isPlaying)
+                        }
+                )
             }
             .frame(height: 28)
 
@@ -58,43 +77,61 @@ struct AudioPlayerView: View {
                 .fixedSize()
         }
         .onAppear {
-            loadDuration()
+            preparePlayer()
         }
         .onDisappear {
-            stopPlayback()
+            teardownPlayer()
         }
     }
 
-    private func loadDuration() {
-        guard FileManager.default.fileExists(atPath: audioURL.path) else { return }
-        if let p = try? AVAudioPlayer(contentsOf: audioURL) {
-            duration = p.duration
+    /// Load the player up front (paused) so the scrubber works before first play.
+    @discardableResult
+    private func preparePlayer() -> AVAudioPlayer? {
+        if let player { return player }
+        guard FileManager.default.fileExists(atPath: audioURL.path) else { return nil }
+        guard let p = try? AVAudioPlayer(contentsOf: audioURL) else { return nil }
+        delegate.onFinish = {
+            self.isPlaying = false
+            self.stopProgressTimer()
+            self.elapsed = 0
+            self.player?.currentTime = 0
         }
+        p.delegate = delegate
+        p.prepareToPlay()
+        player = p
+        duration = p.duration
+        return p
     }
 
     private func togglePlayback() {
+        guard let p = preparePlayer() else { return }
         if isPlaying {
-            stopPlayback()
+            p.pause()
+            isPlaying = false
+            stopProgressTimer()
         } else {
-            guard FileManager.default.fileExists(atPath: audioURL.path) else { return }
-            do {
-                let p = try AVAudioPlayer(contentsOf: audioURL)
-                delegate.onFinish = {
-                    self.stopPlayback()
-                }
-                p.delegate = delegate
-                p.play()
-                player = p
-                isPlaying = true
-                elapsed = 0
-                startProgressTimer()
-            } catch {}
+            p.play()
+            isPlaying = true
+            startProgressTimer()
         }
     }
 
-    private func stopPlayback() {
-        progressTimer?.invalidate()
-        progressTimer = nil
+    /// Seek to a 0...1 fraction of the track, optionally resuming playback.
+    private func seek(toFraction fraction: Double, resume: Bool) {
+        guard let p = preparePlayer(), duration > 0 else { return }
+        let clamped = min(max(fraction, 0), 1)
+        let time = clamped * duration
+        p.currentTime = time
+        elapsed = time
+        if resume {
+            p.play()
+            isPlaying = true
+            startProgressTimer()
+        }
+    }
+
+    private func teardownPlayer() {
+        stopProgressTimer()
         player?.stop()
         player = nil
         isPlaying = false
@@ -104,10 +141,14 @@ struct AudioPlayerView: View {
     private func startProgressTimer() {
         progressTimer?.invalidate()
         progressTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            if let p = player, p.isPlaying {
-                elapsed = p.currentTime
-            }
+            guard !isScrubbing, let p = player, p.isPlaying else { return }
+            elapsed = p.currentTime
         }
+    }
+
+    private func stopProgressTimer() {
+        progressTimer?.invalidate()
+        progressTimer = nil
     }
 
     private func formatDuration(_ seconds: TimeInterval) -> String {

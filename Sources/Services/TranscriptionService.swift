@@ -13,8 +13,8 @@ class TranscriptionService {
     private let baseURL: String
     private let transcriptionModel: String
     private let transcriptionLanguage: String?
-    private let minimumTimeoutSeconds: TimeInterval = 10
-    private let maximumTimeoutSeconds: TimeInterval = 20
+    private let minimumTimeoutSeconds: TimeInterval = 15
+    private let maximumTimeoutSeconds: TimeInterval = 120
 
     init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", model: String = "whisper-large-v3", language: String? = nil) {
         self.apiKey = apiKey
@@ -31,8 +31,10 @@ class TranscriptionService {
             let duration = try await asset.load(.duration)
             let durationSeconds = CMTimeGetSeconds(duration)
             if durationSeconds.isFinite && durationSeconds > 0 {
-                let extraSeconds = max(0, durationSeconds - 10)
-                let calculatedTimeout = minimumTimeoutSeconds + min(extraSeconds * 0.25, maximumTimeoutSeconds - minimumTimeoutSeconds)
+                // Budget = floor + ~0.5s per second of audio. This comfortably covers
+                // upload + (fast) provider processing for multi-minute recordings, so a
+                // long take no longer trips the timeout and forces an unnecessary retry.
+                let calculatedTimeout = minimumTimeoutSeconds + durationSeconds * 0.5
                 return min(max(calculatedTimeout, minimumTimeoutSeconds), maximumTimeoutSeconds)
             }
         } catch {
@@ -150,6 +152,13 @@ class TranscriptionService {
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
         append("\(responseFormat)\r\n")
+
+        // temperature=0 starts Whisper's decoder in deterministic (greedy/beam) mode.
+        // The provider still escalates via server-side temperature fallback on hard
+        // chunks, but starting at 0 maximizes run-to-run stability for normal audio.
+        append("--\(boundary)\r\n")
+        append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n")
+        append("0\r\n")
 
         if let language, !language.isEmpty {
             append("--\(boundary)\r\n")

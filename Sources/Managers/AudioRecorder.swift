@@ -1,3 +1,4 @@
+import Accelerate
 import AVFoundation
 import Foundation
 import os.log
@@ -28,40 +29,54 @@ struct RecordingStartResult {
     let deviceUID: String?
 }
 
-private struct RecordingChunk {
-    let url: URL
-    var frameCount: AVAudioFramePosition
-}
-
+/// Records microphone audio to a single, continuous canonical-format file.
+///
+/// Design (see the Phase 2 refactor): the capture delegate does the minimum possible
+/// work and hands each buffer to a dedicated serial processing queue. All file I/O,
+/// format conversion, RMS metering, and speech detection run there — never on the
+/// capture delivery queue — so a slow disk or a heavy meter can't stall capture and
+/// cause the silent gaps/corruption Apple warns about (TN2445). Every buffer's format
+/// is validated and converted to one canonical format, and timestamp gaps are detected
+/// and padded so the written duration stays honest.
 final class AudioRecorder: NSObject, ObservableObject {
+    /// Queue the capture system delivers sample buffers on. Kept nearly empty.
     private let captureQueue = DispatchQueue(label: "com.idanyekutiel.wispah.capture")
+    /// Queue that does the real work (write + convert + meter). Serial → ordered.
+    private let processingQueue = DispatchQueue(label: "com.idanyekutiel.wispah.processing")
+
     private var captureSession: AVCaptureSession?
     private var audioOutput: AVCaptureAudioDataOutput?
     private var audioDeviceInput: AVCaptureDeviceInput?
-    private var masterRecordingFile: AVAudioFile?
-    private var chunkRecordingFile: AVAudioFile?
+
+    private var recordingFile: AVAudioFile?
     private var recordingFormat: AVAudioFormat?
     private var tempFileURL: URL?
-    private var fileOutputType: AVFileType = .caf
     private var currentDeviceUID: String?
+
+    /// Cached converter for the (rare) case where incoming buffers don't already
+    /// match the canonical format. Keyed by the input format's settings.
+    private var converter: AVAudioConverter?
+    private var converterInputFormat: AVAudioFormat?
+
+    // Timing / gap tracking (processing queue only)
     private var firstSampleTimestamp: CMTime?
+    private var expectedNextPTS: CMTime?
+    private var writtenFrameCount: AVAudioFramePosition = 0
+
     private var runtimeErrorObserver: NSObjectProtocol?
     private var deviceDisconnectObserver: NSObjectProtocol?
+
     private let startupLock = NSLock()
     private let lifecycleLock = NSLock()
     private var startupError: Error?
     private var startupResolved = false
     private var startupTimeoutWorkItem: DispatchWorkItem?
     private var recordingStartTime: CFAbsoluteTime = 0
-    private var masterFrameCount: AVAudioFramePosition = 0
-    private var recordingChunks: [RecordingChunk] = []
-    private let chunkDurationSeconds: Double = 5.0
-    private var masterRecordingHealthy = true
     private var suppressRecordingErrors = false
 
-    // MARK: - Thread-safe audio state
+    // MARK: - Thread-safe audio analysis state
 
-    /// Lock protecting mutable audio analysis state shared with the capture queue.
+    /// Lock protecting mutable audio analysis state shared with the main thread.
     private let tapLock = NSLock()
     private var bufferCount: Int = 0
     private var speechBufferCount: Int = 0
@@ -75,15 +90,19 @@ final class AudioRecorder: NSObject, ObservableObject {
     @Published var audioLevel: Float = 0.0
     private let silenceThresholdRMS: Float = 0.005
     private let speechThresholdRMS: Float = 0.015
-    /// Minimum speech buffers required (~0.3s of speech at 4096-sample buffers / 48kHz)
+    /// Minimum speech buffers required (~0.3s of speech).
     private let minSpeechBuffers: Int = 4
     private let startupTimeout: TimeInterval = 2.0
+    /// Timestamp gaps larger than this are padded with silence to keep duration honest.
+    private let gapDetectionThresholdSeconds: Double = 0.08
+    /// Never pad more than this much silence for a single gap (guards against a runaway).
+    private let maximumGapPaddingSeconds: Double = 3.0
 
-    /// Called once capture is alive and a real audio buffer has arrived.
+    /// Called once capture is alive and a real audio buffer has been written.
     var onRecordingReady: (() -> Void)?
 
     /// Called when a mid-recording error occurs (for example, capture device disconnect).
-    /// The error message is passed as the parameter. Called on the main queue.
+    /// The error message is passed as the parameter.
     var onRecordingError: ((String) -> Void)?
 
     // MARK: - Reset audio state
@@ -166,41 +185,30 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func tearDownCapture(cancelWriter: Bool, preserveRecordingArtifacts: Bool = false) {
+    /// Stop the session and detach the delegate. Must run on `captureQueue`.
+    private func tearDownSession() {
         removeObservers()
-
-        if let output = audioOutput {
-            output.setSampleBufferDelegate(nil, queue: nil)
-        }
-
+        audioOutput?.setSampleBufferDelegate(nil, queue: nil)
         if let session = captureSession, session.isRunning {
             session.stopRunning()
             os_log(.info, log: recordingLog, "capture session stopped")
         }
-
-        if cancelWriter, let tempFileURL {
-            try? FileManager.default.removeItem(at: tempFileURL)
-            self.tempFileURL = nil
-        }
-
-        masterRecordingFile = nil
-        chunkRecordingFile = nil
         captureSession = nil
         audioOutput = nil
         audioDeviceInput = nil
         currentDeviceUID = nil
+    }
+
+    /// Close the recording file and reset processing state. Must run on `processingQueue`.
+    private func finalizeRecordingFile() -> (url: URL?, frames: AVAudioFramePosition) {
+        let frames = writtenFrameCount
+        recordingFile = nil
+        let url = tempFileURL
+        converter = nil
+        converterInputFormat = nil
         firstSampleTimestamp = nil
-
-        guard !preserveRecordingArtifacts else { return }
-
-        for chunk in recordingChunks {
-            try? FileManager.default.removeItem(at: chunk.url)
-        }
-
-        recordingFormat = nil
-        masterFrameCount = 0
-        recordingChunks.removeAll()
-        masterRecordingHealthy = true
+        expectedNextPTS = nil
+        return (url, frames)
     }
 
     private func registerObservers(for session: AVCaptureSession, deviceUID: String) {
@@ -224,7 +232,6 @@ final class AudioRecorder: NSObject, ObservableObject {
             guard let self,
                   let device = notification.object as? AVCaptureDevice,
                   device.uniqueID == deviceUID else { return }
-
             self.handleCaptureFailure(
                 AudioRecorderError.captureSessionError("Selected microphone disconnected")
             )
@@ -242,61 +249,20 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
     }
 
-    private func recordingFileType() -> AVFileType {
-        let supportedTypes = Set(AVCaptureAudioFileOutput.availableOutputFileTypes())
-        if supportedTypes.contains(.caf) {
-            return .caf
-        }
-        if supportedTypes.contains(.wav) {
-            return .wav
-        }
-        if supportedTypes.contains(.aiff) {
-            return .aiff
-        }
-        return AVCaptureAudioFileOutput.availableOutputFileTypes().first ?? .caf
-    }
-
-    private func fileExtension(for fileType: AVFileType) -> String {
-        switch fileType {
-        case .caf:
-            return "caf"
-        case .wav:
-            return "wav"
-        case .aiff:
-            return "aiff"
-        case .m4a:
-            return "m4a"
-        default:
-            return "caf"
-        }
-    }
-
-    private func prepareOutputURL(for fileType: AVFileType) throws -> URL {
+    private func prepareOutputURL() throws -> URL {
         if let existingURL = tempFileURL {
             try? FileManager.default.removeItem(at: existingURL)
         }
-
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension(fileExtension(for: fileType))
+            .appendingPathExtension("caf")
         tempFileURL = fileURL
         return fileURL
     }
 
-    private func chunkURL(forFinalURL finalURL: URL, index: Int) -> URL {
-        finalURL
-            .deletingPathExtension()
-            .appendingPathExtension("part\(String(format: "%04d", index)).\(finalURL.pathExtension)")
-    }
-
-    private func recoveredChunkURL(forFinalURL finalURL: URL) -> URL {
-        finalURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("recovered_\(UUID().uuidString)")
-            .appendingPathExtension(finalURL.pathExtension)
-    }
-
-    private func createRecordingFormat() throws -> AVAudioFormat {
+    /// Canonical recording format: 48kHz mono 16-bit signed PCM. Every written buffer
+    /// is converted to this so the file is uniform regardless of device quirks.
+    private func makeCanonicalFormat() throws -> AVAudioFormat {
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatInt16,
             sampleRate: 48_000,
@@ -308,137 +274,33 @@ final class AudioRecorder: NSObject, ObservableObject {
         return format
     }
 
-    private func startNewChunk() throws {
-        guard let finalURL = tempFileURL else {
-            throw AudioRecorderError.captureSessionError("Recording output URL is not available")
-        }
-        guard let format = recordingFormat else {
-            throw AudioRecorderError.invalidInputFormat("Recording format is not available")
-        }
-
-        let chunkIndex = recordingChunks.count + 1
-        let chunkURL = chunkURL(forFinalURL: finalURL, index: chunkIndex)
-        try? FileManager.default.removeItem(at: chunkURL)
-        chunkRecordingFile = try AVAudioFile(
-            forWriting: chunkURL,
-            settings: format.settings,
-            commonFormat: format.commonFormat,
-            interleaved: format.isInterleaved
-        )
-        recordingChunks.append(RecordingChunk(url: chunkURL, frameCount: 0))
-        os_log(.info, log: recordingLog, "started chunk %d: %{public}@", chunkIndex, chunkURL.lastPathComponent)
-    }
-
     private func createRecordingFile(at outputURL: URL) throws {
-        let format = try createRecordingFormat()
+        let format = try makeCanonicalFormat()
         recordingFormat = format
         tempFileURL = outputURL
-        masterRecordingFile = try AVAudioFile(
+        recordingFile = try AVAudioFile(
             forWriting: outputURL,
             settings: format.settings,
             commonFormat: format.commonFormat,
             interleaved: format.isInterleaved
         )
-        masterFrameCount = 0
-        masterRecordingHealthy = true
-        recordingChunks.removeAll()
-        try startNewChunk()
+        writtenFrameCount = 0
+        firstSampleTimestamp = nil
+        expectedNextPTS = nil
+        converter = nil
+        converterInputFormat = nil
     }
 
-    private func currentChunkFrameCount() -> AVAudioFramePosition {
-        recordingChunks.last?.frameCount ?? 0
-    }
-
-    private func rotateChunkIfNeeded() throws {
-        guard let format = recordingFormat else { return }
-        let frameLimit = AVAudioFramePosition(format.sampleRate * chunkDurationSeconds)
-        guard currentChunkFrameCount() >= frameLimit else { return }
-        chunkRecordingFile = nil
-        try startNewChunk()
-    }
-
-    private func trimEmptyTrailingChunks() {
-        while let last = recordingChunks.last, last.frameCount == 0 {
-            try? FileManager.default.removeItem(at: last.url)
-            recordingChunks.removeLast()
-        }
-    }
-
-    private func recoverWriterAndRetry(sampleBuffer: CMSampleBuffer) throws {
-        os_log(.error, log: recordingLog, "chunk write failed — rotating chunk and retrying")
-        chunkRecordingFile = nil
-        trimEmptyTrailingChunks()
-        try startNewChunk()
-        let recovered = try writeChunkBuffer(sampleBuffer, allowRecovery: false)
-        if !recovered {
-            throw AudioRecorderError.captureSessionError("Chunk writer could not recover")
-        }
-    }
-
-    private func assembleChunks(outputURL finalURL: URL, removeSourceChunks: Bool = true) throws -> URL? {
-        trimEmptyTrailingChunks()
-        let validChunks = recordingChunks.filter { $0.frameCount > 0 }
-        return try assembleChunkGroup(validChunks, outputURL: finalURL, removeSourceChunks: removeSourceChunks)
-    }
-
-    private func assembleChunkGroup(
-        _ validChunks: [RecordingChunk],
-        outputURL finalURL: URL,
-        removeSourceChunks: Bool
-    ) throws -> URL? {
-        guard !validChunks.isEmpty else { return nil }
-
-        if validChunks.count == 1, removeSourceChunks {
-            let onlyChunk = validChunks[0].url
-            try? FileManager.default.removeItem(at: finalURL)
-            try FileManager.default.moveItem(at: onlyChunk, to: finalURL)
-            return finalURL
-        }
-
-        try? FileManager.default.removeItem(at: finalURL)
-        let firstInput = try AVAudioFile(forReading: validChunks[0].url)
-        let outputFile = try AVAudioFile(
-            forWriting: finalURL,
-            settings: firstInput.fileFormat.settings,
-            commonFormat: firstInput.processingFormat.commonFormat,
-            interleaved: firstInput.processingFormat.isInterleaved
-        )
-
-        for chunk in validChunks {
-            let inputFile = try AVAudioFile(forReading: chunk.url)
-            guard let buffer = AVAudioPCMBuffer(
-                pcmFormat: inputFile.processingFormat,
-                frameCapacity: 8_192
-            ) else {
-                throw AudioRecorderError.invalidInputFormat("Could not allocate assembly buffer")
-            }
-
-            while true {
-                try inputFile.read(into: buffer, frameCount: buffer.frameCapacity)
-                if buffer.frameLength == 0 {
-                    break
-                }
-                try outputFile.write(from: buffer)
-            }
-        }
-
-        if removeSourceChunks {
-            for chunk in validChunks {
-                try? FileManager.default.removeItem(at: chunk.url)
-            }
-        }
-        return finalURL
-    }
-
-    private var totalChunkFrameCount: AVAudioFramePosition {
-        recordingChunks.reduce(0) { $0 + $1.frameCount }
-    }
-
-    private func shouldUseMasterRecording() -> Bool {
-        let chunkFrames = totalChunkFrameCount
-        guard masterRecordingHealthy, masterFrameCount > 0 else { return false }
-        guard chunkFrames > 0 else { return true }
-        return Double(masterFrameCount) >= Double(chunkFrames) * 0.95
+    private func normalizedCaptureAudioSettings() -> [String: Any] {
+        [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 48_000,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
     }
 
     private func buildCaptureSession(for device: AVCaptureDevice, outputURL: URL) throws {
@@ -468,7 +330,6 @@ final class AudioRecorder: NSObject, ObservableObject {
         audioDeviceInput = input
         audioOutput = output
         currentDeviceUID = device.uniqueID
-        firstSampleTimestamp = nil
 
         registerObservers(for: session, deviceUID: device.uniqueID)
         session.startRunning()
@@ -479,195 +340,181 @@ final class AudioRecorder: NSObject, ObservableObject {
         os_log(.info, log: recordingLog, "capture session started for %{public}@", device.uniqueID)
     }
 
-    private func normalizedCaptureAudioSettings() -> [String: Any] {
-        [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: 48_000,
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-            AVLinearPCMIsNonInterleaved: false,
-        ]
-    }
+    // MARK: - Sample processing (processing queue)
 
-    private func elapsedSeconds(for sampleBuffer: CMSampleBuffer) -> TimeInterval {
-        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+    private func elapsedSeconds(for pts: CMTime) -> TimeInterval {
         guard let firstSampleTimestamp else { return 0 }
-        let elapsed = CMTimeSubtract(timestamp, firstSampleTimestamp)
+        let elapsed = CMTimeSubtract(pts, firstSampleTimestamp)
         return max(CMTimeGetSeconds(elapsed), 0)
     }
 
-    private func rms(from sampleBuffer: CMSampleBuffer) -> Float {
-        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let streamDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee else {
-            return 0
-        }
-
-        var blockBuffer: CMBlockBuffer?
-        var audioBufferList = AudioBufferList(
-            mNumberBuffers: 1,
-            mBuffers: AudioBuffer(mNumberChannels: 0, mDataByteSize: 0, mData: nil)
-        )
-
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: &audioBufferList,
-            bufferListSize: MemoryLayout<AudioBufferList>.size,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment),
-            blockBufferOut: &blockBuffer
-        )
-
-        guard status == noErr else { return 0 }
-
-        let isFloat = (streamDescription.mFormatFlags & kAudioFormatFlagIsFloat) != 0
-        let isSignedInteger = (streamDescription.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
-        let buffers = UnsafeMutableAudioBufferListPointer(&audioBufferList)
-
-        var sum: Double = 0
-        var sampleCount = 0
-
-        for buffer in buffers {
-            guard let data = buffer.mData, buffer.mDataByteSize > 0 else { continue }
-
-            if isFloat && streamDescription.mBitsPerChannel == 32 {
-                let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
-                let samples = data.bindMemory(to: Float.self, capacity: count)
-                for index in 0..<count {
-                    let sample = Double(samples[index])
-                    sum += sample * sample
-                }
-                sampleCount += count
-            } else if isSignedInteger && streamDescription.mBitsPerChannel == 16 {
-                let count = Int(buffer.mDataByteSize) / MemoryLayout<Int16>.size
-                let samples = data.bindMemory(to: Int16.self, capacity: count)
-                let scale = Double(Int16.max)
-                for index in 0..<count {
-                    let sample = Double(samples[index]) / scale
-                    sum += sample * sample
-                }
-                sampleCount += count
-            } else if isSignedInteger && streamDescription.mBitsPerChannel == 32 {
-                let count = Int(buffer.mDataByteSize) / MemoryLayout<Int32>.size
-                let samples = data.bindMemory(to: Int32.self, capacity: count)
-                let scale = Double(Int32.max)
-                for index in 0..<count {
-                    let sample = Double(samples[index]) / scale
-                    sum += sample * sample
-                }
-                sampleCount += count
-            }
-        }
-
-        guard sampleCount > 0 else { return 0 }
-        return Float(sqrt(sum / Double(sampleCount)))
+    private func formatsMatch(_ lhs: AVAudioFormat, _ rhs: AVAudioFormat) -> Bool {
+        lhs.sampleRate == rhs.sampleRate
+            && lhs.channelCount == rhs.channelCount
+            && lhs.commonFormat == rhs.commonFormat
     }
 
-    private func makePCMBuffer(from sampleBuffer: CMSampleBuffer) throws -> AVAudioPCMBuffer {
-        guard let recordingFormat else {
+    /// Produce a canonical-format PCM buffer from an incoming sample buffer, converting
+    /// if the device delivered a different format (defends against the documented
+    /// mid-stream ASBD changes that otherwise corrupt the file).
+    private func canonicalBuffer(from sampleBuffer: CMSampleBuffer) throws -> AVAudioPCMBuffer {
+        guard let canonical = recordingFormat else {
             throw AudioRecorderError.captureSessionError("Recording format is not available")
+        }
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) else {
+            throw AudioRecorderError.invalidInputFormat("Sample buffer has no format description")
         }
         let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
         guard sampleCount > 0 else {
             throw AudioRecorderError.invalidInputFormat("Sample buffer contained no audio frames")
         }
-        guard let pcmBuffer = AVAudioPCMBuffer(
-            pcmFormat: recordingFormat,
+        let inputFormat = AVAudioFormat(cmAudioFormatDescription: formatDescription)
+
+        guard let inputBuffer = AVAudioPCMBuffer(
+            pcmFormat: inputFormat,
             frameCapacity: AVAudioFrameCount(sampleCount)
         ) else {
-            throw AudioRecorderError.invalidInputFormat("Could not allocate audio buffer")
+            throw AudioRecorderError.invalidInputFormat("Could not allocate input buffer")
         }
-
-        pcmBuffer.frameLength = pcmBuffer.frameCapacity
-        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
+        inputBuffer.frameLength = inputBuffer.frameCapacity
+        let copyStatus = CMSampleBufferCopyPCMDataIntoAudioBufferList(
             sampleBuffer,
             at: 0,
             frameCount: Int32(sampleCount),
-            into: pcmBuffer.mutableAudioBufferList
+            into: inputBuffer.mutableAudioBufferList
         )
-        guard status == noErr else {
-            throw AudioRecorderError.invalidInputFormat("Could not copy audio samples (\(status))")
+        guard copyStatus == noErr else {
+            throw AudioRecorderError.invalidInputFormat("Could not copy audio samples (\(copyStatus))")
         }
-        return pcmBuffer
-    }
 
-    private func writeMasterBuffer(_ pcmBuffer: AVAudioPCMBuffer) -> Bool {
-        guard let masterRecordingFile else { return false }
-        do {
-            try masterRecordingFile.write(from: pcmBuffer)
-            masterFrameCount += AVAudioFramePosition(pcmBuffer.frameLength)
-            return true
-        } catch {
-            masterRecordingHealthy = false
-            self.masterRecordingFile = nil
-            os_log(.error, log: recordingLog, "master recording write failed: %{public}@", error.localizedDescription)
-            return false
+        if formatsMatch(inputFormat, canonical) {
+            return inputBuffer
         }
-    }
 
-    private func writeChunkBuffer(_ sampleBuffer: CMSampleBuffer, allowRecovery: Bool = true) throws -> Bool {
-        guard let chunkRecordingFile else { return false }
-        let pcmBuffer = try makePCMBuffer(from: sampleBuffer)
-        do {
-            try chunkRecordingFile.write(from: pcmBuffer)
-        } catch {
-            guard allowRecovery else {
-                self.chunkRecordingFile = nil
-                os_log(.error, log: recordingLog, "chunk recording write failed permanently: %{public}@", error.localizedDescription)
-                return false
+        // Convert to canonical via a cached converter.
+        if converter == nil || converterInputFormat != inputFormat {
+            converter = AVAudioConverter(from: inputFormat, to: canonical)
+            converterInputFormat = inputFormat
+            os_log(.info, log: recordingLog, "input format %{public}@ differs from canonical — converting", inputFormat)
+        }
+        guard let converter else {
+            throw AudioRecorderError.invalidInputFormat("Could not create audio converter")
+        }
+
+        let ratio = canonical.sampleRate / inputFormat.sampleRate
+        let outputCapacity = AVAudioFrameCount(Double(sampleCount) * ratio) + 1
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: outputCapacity) else {
+            throw AudioRecorderError.invalidInputFormat("Could not allocate converted buffer")
+        }
+
+        var conversionError: NSError?
+        var providedInput = false
+        let statusValue = converter.convert(to: outputBuffer, error: &conversionError) { _, inputStatus in
+            if providedInput {
+                inputStatus.pointee = .noDataNow
+                return nil
             }
-            do {
-                try recoverWriterAndRetry(sampleBuffer: sampleBuffer)
-                return true
-            } catch {
-                self.chunkRecordingFile = nil
-                os_log(.error, log: recordingLog, "chunk recovery failed permanently: %{public}@", error.localizedDescription)
-                return false
-            }
+            providedInput = true
+            inputStatus.pointee = .haveData
+            return inputBuffer
         }
-        if !recordingChunks.isEmpty {
-            recordingChunks[recordingChunks.count - 1].frameCount += AVAudioFramePosition(pcmBuffer.frameLength)
+        if let conversionError {
+            throw AudioRecorderError.invalidInputFormat("Audio conversion failed: \(conversionError.localizedDescription)")
         }
-        try rotateChunkIfNeeded()
-        return true
+        guard statusValue != .error, outputBuffer.frameLength > 0 else {
+            throw AudioRecorderError.invalidInputFormat("Audio conversion produced no frames")
+        }
+        return outputBuffer
     }
 
-    private func appendSampleBufferToRecordingFile(_ sampleBuffer: CMSampleBuffer) throws {
-        guard CMSampleBufferGetNumSamples(sampleBuffer) > 0 else { return }
-        let pcmBuffer = try makePCMBuffer(from: sampleBuffer)
-        let masterSucceeded = writeMasterBuffer(pcmBuffer)
-        let chunkSucceeded = try writeChunkBuffer(sampleBuffer)
-        guard masterSucceeded || chunkSucceeded else {
-            throw AudioRecorderError.captureSessionError("No recording sink is accepting audio")
+    /// Detect a timestamp discontinuity and pad with silence so the written duration
+    /// keeps matching wall-clock time (so trimming and coverage checks stay correct).
+    private func padSilenceForGapIfNeeded(pts: CMTime) {
+        guard let canonical = recordingFormat, let expectedNextPTS else { return }
+        let gapSeconds = CMTimeGetSeconds(CMTimeSubtract(pts, expectedNextPTS))
+        guard gapSeconds > gapDetectionThresholdSeconds else { return }
+
+        let cappedGap = min(gapSeconds, maximumGapPaddingSeconds)
+        os_log(.error, log: recordingLog, "capture gap of %.3fs detected — padding %.3fs of silence", gapSeconds, cappedGap)
+        let frames = AVAudioFrameCount(cappedGap * canonical.sampleRate)
+        guard frames > 0,
+              let silence = AVAudioPCMBuffer(pcmFormat: canonical, frameCapacity: frames),
+              let channel = silence.int16ChannelData else { return }
+        silence.frameLength = frames
+        memset(channel[0], 0, Int(frames) * MemoryLayout<Int16>.size)
+        do {
+            try recordingFile?.write(from: silence)
+            writtenFrameCount += AVAudioFramePosition(frames)
+        } catch {
+            os_log(.error, log: recordingLog, "failed to write silence padding: %{public}@", error.localizedDescription)
         }
     }
 
-    private func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+    /// vDSP-vectorized RMS over a canonical (Int16) buffer, normalized to ~[0, 1).
+    private func rms(of buffer: AVAudioPCMBuffer) -> Float {
+        guard let channel = buffer.int16ChannelData, buffer.frameLength > 0 else { return 0 }
+        let count = Int(buffer.frameLength)
+        var floats = [Float](repeating: 0, count: count)
+        vDSP_vflt16(channel[0], 1, &floats, 1, vDSP_Length(count))
+        var rmsValue: Float = 0
+        vDSP_rmsqv(floats, 1, &rmsValue, vDSP_Length(count))
+        return rmsValue / Float(Int16.max)
+    }
+
+    private func process(_ sampleBuffer: CMSampleBuffer) {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         if firstSampleTimestamp == nil {
-            firstSampleTimestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            firstSampleTimestamp = pts
         }
+
+        // Buffer-level problems skip the buffer and keep recording — the next buffer's
+        // gap detection pads the seam. Only the session-level observers (runtime error /
+        // device disconnect) abort a recording.
+        let pcmBuffer: AVAudioPCMBuffer
         do {
-            try appendSampleBufferToRecordingFile(sampleBuffer)
+            pcmBuffer = try canonicalBuffer(from: sampleBuffer)
         } catch {
-            handleCaptureFailure(error)
+            os_log(.error, log: recordingLog, "skipping unprocessable buffer: %{public}@", error.localizedDescription)
             return
         }
-        let rmsValue = rms(from: sampleBuffer)
-        let elapsed = elapsedSeconds(for: sampleBuffer)
+
+        padSilenceForGapIfNeeded(pts: pts)
+
+        guard let canonical = recordingFormat else { return }
+        do {
+            try recordingFile?.write(from: pcmBuffer)
+            writtenFrameCount += AVAudioFramePosition(pcmBuffer.frameLength)
+        } catch {
+            os_log(.error, log: recordingLog, "skipping buffer after write error: %{public}@", error.localizedDescription)
+            return
+        }
+
+        // Advance the expected-next timestamp from the buffer's own duration so we track
+        // the true capture clock (reconstructing it from frame count re-quantizes each
+        // step and the rounding error accumulates into spurious gap padding).
+        let sampleDuration = CMSampleBufferGetDuration(sampleBuffer)
+        if sampleDuration.isValid && sampleDuration.value > 0 {
+            expectedNextPTS = CMTimeAdd(pts, sampleDuration)
+        } else {
+            let bufferSeconds = Double(pcmBuffer.frameLength) / canonical.sampleRate
+            expectedNextPTS = CMTimeAdd(pts, CMTimeMakeWithSeconds(bufferSeconds, preferredTimescale: 48_000))
+        }
+
+        let rmsValue = rms(of: pcmBuffer)
+        let elapsed = elapsedSeconds(for: pts)
+        updateAnalysis(rms: rmsValue, elapsed: elapsed)
+    }
+
+    private func updateAnalysis(rms rmsValue: Float, elapsed: TimeInterval) {
         var shouldFireReady = false
         var currentBufferCount = 0
 
         tapLock.lock()
         bufferCount += 1
         currentBufferCount = bufferCount
-
         if rmsValue > silenceThresholdRMS {
             lastNonSilentTime = elapsed
         }
-
         if rmsValue > speechThresholdRMS {
             speechBufferCount += 1
             if firstSpeechTime == 0 {
@@ -675,7 +522,6 @@ final class AudioRecorder: NSObject, ObservableObject {
             }
             lastSpeechTime = elapsed
         }
-
         if !readyFired {
             readyFired = true
             shouldFireReady = true
@@ -701,26 +547,24 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     private func attemptStartRecording(selectionUID: String?) throws -> String? {
         resetTapState()
-        firstSampleTimestamp = nil
 
         guard let captureDevice = resolveCaptureDevice(for: selectionUID) else {
             throw AudioRecorderError.missingInputDevice
         }
 
-        fileOutputType = recordingFileType()
-        let outputURL = try prepareOutputURL(for: fileOutputType)
+        let outputURL = try prepareOutputURL()
         prepareForStartupMonitoring()
 
         do {
             try captureQueue.sync {
-                tearDownCapture(cancelWriter: true)
+                tearDownSession()
                 try buildCaptureSession(for: captureDevice, outputURL: outputURL)
             }
         } catch {
             resolveStartup(error: error)
-            captureQueue.sync {
-                tearDownCapture(cancelWriter: true)
-            }
+            captureQueue.sync { tearDownSession() }
+            processingQueue.sync { _ = finalizeRecordingFile() }
+            try? FileManager.default.removeItem(at: outputURL)
             throw error
         }
         armStartupWatchdog()
@@ -757,12 +601,10 @@ final class AudioRecorder: NSObject, ObservableObject {
     var lastNonSilentDuration: TimeInterval {
         tapLock.lock()
         defer { tapLock.unlock() }
-        // Add a small buffer (0.3s) to avoid cutting off speech tails
         return lastNonSilentTime > 0 ? lastNonSilentTime + 0.3 : 0
     }
 
     /// Whether the recording contained enough speech-level audio (not just background noise).
-    /// Requires multiple consecutive speech-level buffers to filter out noise spikes.
     var detectedSpeech: Bool {
         tapLock.lock()
         defer { tapLock.unlock() }
@@ -771,79 +613,65 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     var writtenDuration: TimeInterval {
         guard let recordingFormat else { return 0 }
-        return Double(max(masterFrameCount, totalChunkFrameCount)) / recordingFormat.sampleRate
+        // Plain read of an Int64 counter — an estimate sampled in the stop flow. Reading
+        // without hopping onto processingQueue avoids stalling the caller (UI) thread on a
+        // busy queue; a slightly stale value is fine for the severe-mismatch sanity check.
+        return Double(writtenFrameCount) / recordingFormat.sampleRate
     }
 
     var wallClockDuration: TimeInterval {
         max(CFAbsoluteTimeGetCurrent() - recordingStartTime, 0)
     }
 
-    /// Time range of detected speech with small padding to preserve natural speech tails.
-    /// Returns (start, end) in seconds from recording start, or nil if no speech detected.
-    var speechTimeRange: (start: Double, end: Double)? {
-        tapLock.lock()
-        defer { tapLock.unlock() }
-        guard speechBufferCount >= minSpeechBuffers else { return nil }
-        let start = max(firstSpeechTime - 0.15, 0)  // small pad before first word
-        let end = lastSpeechTime + 0.5               // pad after last word for tails
-        return (start, end)
-    }
-
     func stopRecording() -> URL? {
         setSuppressRecordingErrors(true)
-        tapLock.lock()
-        let recordedBuffers = bufferCount
-        let recordedSpeechBuffers = speechBufferCount
-        let lastAudioTime = lastNonSilentTime
-        tapLock.unlock()
-        os_log(
-            .info,
-            log: recordingLog,
-            "stopRecording() called after %.3fms, buffers=%d, speechBuffers=%d, lastAudio=%.2fs",
-            (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000,
-            recordedBuffers,
-            recordedSpeechBuffers,
-            lastAudioTime
-        )
-        let finishedURL = captureQueue.sync { () -> URL? in
-            let frameCount = max(masterFrameCount, totalChunkFrameCount)
-            masterRecordingFile = nil
-            chunkRecordingFile = nil
-            trimEmptyTrailingChunks()
-            let outputURL: URL?
-            if shouldUseMasterRecording() {
-                outputURL = tempFileURL
-            } else {
-                do {
-                    guard let finalURL = tempFileURL else {
-                        throw AudioRecorderError.captureSessionError("Final output URL is not available")
-                    }
-                    outputURL = try assembleChunks(outputURL: finalURL)
-                } catch {
-                    os_log(.error, log: recordingLog, "failed to assemble chunks: %{public}@", error.localizedDescription)
-                    return nil
-                }
-            }
-            tearDownCapture(cancelWriter: false, preserveRecordingArtifacts: true)
-            guard frameCount > 0 else { return nil }
-            return outputURL
+        logStopSnapshot(label: "stopRecording")
+
+        captureQueue.sync { tearDownSession() }
+        let finished = processingQueue.sync { () -> URL? in
+            let result = finalizeRecordingFile()
+            return result.frames > 0 ? result.url : nil
         }
 
         DispatchQueue.main.async {
             self.isRecording = false
             self.audioLevel = 0.0
         }
-
         tapLock.lock()
         smoothedLevel = 0.0
         tapLock.unlock()
         onRecordingReady = nil
 
-        return finishedURL
+        return finished
     }
 
     func stopRecordingAsync(completion: @escaping (URL?) -> Void) {
         setSuppressRecordingErrors(true)
+        logStopSnapshot(label: "stopRecordingAsync")
+
+        captureQueue.async { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            self.tearDownSession()
+            self.processingQueue.async {
+                let result = self.finalizeRecordingFile()
+                let finished = result.frames > 0 ? result.url : nil
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                    self.audioLevel = 0.0
+                    completion(finished)
+                }
+                self.tapLock.lock()
+                self.smoothedLevel = 0.0
+                self.tapLock.unlock()
+                self.onRecordingReady = nil
+            }
+        }
+    }
+
+    private func logStopSnapshot(label: String) {
         tapLock.lock()
         let recordedBuffers = bufferCount
         let recordedSpeechBuffers = speechBufferCount
@@ -852,46 +680,13 @@ final class AudioRecorder: NSObject, ObservableObject {
         os_log(
             .info,
             log: recordingLog,
-            "stopRecordingAsync() called after %.3fms, buffers=%d, speechBuffers=%d, lastAudio=%.2fs",
+            "%{public}@() after %.3fms, buffers=%d, speechBuffers=%d, lastAudio=%.2fs",
+            label,
             (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000,
             recordedBuffers,
             recordedSpeechBuffers,
             lastAudioTime
         )
-        captureQueue.async { [weak self] in
-            guard let self else { return }
-            let frameCount = max(self.masterFrameCount, self.totalChunkFrameCount)
-            self.masterRecordingFile = nil
-            self.chunkRecordingFile = nil
-            self.trimEmptyTrailingChunks()
-            let outputURL: URL?
-            if self.shouldUseMasterRecording() {
-                outputURL = self.tempFileURL
-            } else {
-                do {
-                    guard let finalURL = self.tempFileURL else {
-                        throw AudioRecorderError.captureSessionError("Final output URL is not available")
-                    }
-                    outputURL = try self.assembleChunks(outputURL: finalURL)
-                } catch {
-                    os_log(.error, log: recordingLog, "failed to assemble chunks: %{public}@", error.localizedDescription)
-                    outputURL = nil
-                }
-            }
-            self.tearDownCapture(cancelWriter: false, preserveRecordingArtifacts: true)
-            let finishedURL = frameCount > 0 ? outputURL : nil
-
-            DispatchQueue.main.async {
-                self.isRecording = false
-                self.audioLevel = 0.0
-                completion(finishedURL)
-            }
-
-            self.tapLock.lock()
-            self.smoothedLevel = 0.0
-            self.tapLock.unlock()
-            self.onRecordingReady = nil
-        }
     }
 
     private func computeAudioLevel(rms: Float) {
@@ -921,8 +716,18 @@ final class AudioRecorder: NSObject, ObservableObject {
         let outputURL = inputURL.deletingLastPathComponent()
             .appendingPathComponent("upload_\(UUID().uuidString).m4a")
 
+        // Don't leave a partial upload file behind if any step below throws.
+        var preprocessingSucceeded = false
+        defer {
+            if !preprocessingSucceeded {
+                try? FileManager.default.removeItem(at: outputURL)
+            }
+        }
+
         let reader = try AVAssetReader(asset: asset)
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
+        // Keep the moov atom recoverable if the process dies mid-write.
+        writer.shouldOptimizeForNetworkUse = true
 
         guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
             throw AudioRecorderError.invalidInputFormat("No audio track found")
@@ -971,7 +776,9 @@ final class AudioRecorder: NSObject, ObservableObject {
         writerInput.expectsMediaDataInRealTime = false
         writer.add(writerInput)
 
-        reader.startReading()
+        guard reader.startReading() else {
+            throw AudioRecorderError.invalidInputFormat("Audio reader failed to start: \(reader.error?.localizedDescription ?? "unknown")")
+        }
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
@@ -979,11 +786,12 @@ final class AudioRecorder: NSObject, ObservableObject {
         // sequentially on the writer's serial queue, so there's no data race.
         nonisolated(unsafe) let writerInputRef = writerInput
         nonisolated(unsafe) let readerOutputRef = readerOutput
+        nonisolated(unsafe) let readerRef = reader
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             writerInputRef.requestMediaDataWhenReady(on: DispatchQueue(label: "com.idanyekutiel.wispah.audiopreprocess")) {
                 while writerInputRef.isReadyForMoreMediaData {
-                    if let sampleBuffer = readerOutputRef.copyNextSampleBuffer() {
+                    if readerRef.status == .reading, let sampleBuffer = readerOutputRef.copyNextSampleBuffer() {
                         writerInputRef.append(sampleBuffer)
                     } else {
                         writerInputRef.markAsFinished()
@@ -1000,10 +808,19 @@ final class AudioRecorder: NSObject, ObservableObject {
             let errorMsg = writer.error?.localizedDescription ?? "Unknown error"
             throw AudioRecorderError.invalidInputFormat("Audio preprocessing failed: \(errorMsg)")
         }
+        if reader.status == .failed {
+            throw AudioRecorderError.invalidInputFormat("Audio preprocessing read failed: \(reader.error?.localizedDescription ?? "unknown")")
+        }
+
+        // Sanity-check the output isn't empty/truncated before handing it off.
+        let outputDuration = CMTimeGetSeconds(try await AVURLAsset(url: outputURL).load(.duration))
+        guard outputDuration.isFinite, outputDuration > 0 else {
+            throw AudioRecorderError.invalidInputFormat("Audio preprocessing produced an empty file")
+        }
 
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
-
-        os_log(.info, log: recordingLog, "preprocessed audio: %{public}@", outputURL.lastPathComponent)
+        os_log(.info, log: recordingLog, "preprocessed audio: %{public}@ (%.2fs)", outputURL.lastPathComponent, outputDuration)
+        preprocessingSucceeded = true
         return outputURL
     }
 
@@ -1033,92 +850,30 @@ final class AudioRecorder: NSObject, ObservableObject {
 
     func cleanup() {
         setSuppressRecordingErrors(false)
-        if let url = tempFileURL {
-            try? FileManager.default.removeItem(at: url)
+        captureQueue.sync { tearDownSession() }
+        // Session is stopped and the queue drained, so resetting recording state inside
+        // the same processingQueue hop keeps all of it confined to one queue (no races
+        // with an in-flight process()).
+        let urlToRemove: URL? = processingQueue.sync {
+            _ = finalizeRecordingFile()
+            let url = tempFileURL
             tempFileURL = nil
+            recordingFormat = nil
+            writtenFrameCount = 0
+            return url
         }
-        for chunk in recordingChunks {
-            try? FileManager.default.removeItem(at: chunk.url)
-        }
-        recordingChunks.removeAll()
-        recordingFormat = nil
-        masterFrameCount = 0
-        masterRecordingHealthy = true
-    }
-
-    func assembleFallbackRecordingIfAvailable() -> URL? {
-        captureQueue.sync {
-            trimEmptyTrailingChunks()
-            guard !recordingChunks.isEmpty, let finalURL = tempFileURL else { return nil }
-            do {
-                let recoveredURL = recoveredChunkURL(forFinalURL: finalURL)
-                try? FileManager.default.removeItem(at: recoveredURL)
-                return try assembleChunks(outputURL: recoveredURL)
-            } catch {
-                os_log(.error, log: recordingLog, "failed to assemble fallback chunks: %{public}@", error.localizedDescription)
-                return nil
-            }
-        }
-    }
-
-    func assembleTranscriptionSegmentsIfAvailable(targetDurationSeconds: Double = 30) -> [URL] {
-        captureQueue.sync {
-            trimEmptyTrailingChunks()
-            guard let recordingFormat else { return [] }
-            let validChunks = recordingChunks.filter {
-                $0.frameCount > 0 && FileManager.default.fileExists(atPath: $0.url.path)
-            }
-            guard !validChunks.isEmpty else { return [] }
-
-            let targetFrames = max(
-                AVAudioFramePosition(recordingFormat.sampleRate * targetDurationSeconds),
-                AVAudioFramePosition(recordingFormat.sampleRate)
-            )
-
-            var segmentURLs: [URL] = []
-            var segmentChunks: [RecordingChunk] = []
-            var segmentFrames: AVAudioFramePosition = 0
-            var segmentIndex = 1
-
-            func flushSegment() {
-                guard !segmentChunks.isEmpty else { return }
-                let segmentURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("transcription_segment_\(UUID().uuidString)_\(String(format: "%03d", segmentIndex))")
-                    .appendingPathExtension("caf")
-                do {
-                    try? FileManager.default.removeItem(at: segmentURL)
-                    if let outputURL = try assembleChunkGroup(
-                        segmentChunks,
-                        outputURL: segmentURL,
-                        removeSourceChunks: false
-                    ) {
-                        segmentURLs.append(outputURL)
-                    }
-                } catch {
-                    os_log(.error, log: recordingLog, "failed to assemble transcription segment: %{public}@", error.localizedDescription)
-                    try? FileManager.default.removeItem(at: segmentURL)
-                }
-                segmentChunks.removeAll()
-                segmentFrames = 0
-                segmentIndex += 1
-            }
-
-            for chunk in validChunks {
-                segmentChunks.append(chunk)
-                segmentFrames += chunk.frameCount
-                if segmentFrames >= targetFrames {
-                    flushSegment()
-                }
-            }
-            flushSegment()
-
-            return segmentURLs
+        if let urlToRemove {
+            try? FileManager.default.removeItem(at: urlToRemove)
         }
     }
 }
 
 extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        processSampleBuffer(sampleBuffer)
+        // Hand off immediately — all real work happens on the processing queue so a
+        // slow write or meter can never stall capture and drop buffers.
+        processingQueue.async { [weak self] in
+            self?.process(sampleBuffer)
+        }
     }
 }

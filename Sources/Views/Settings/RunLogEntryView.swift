@@ -26,6 +26,23 @@ struct RunLogEntryView: View {
         item.postProcessingStatus.hasPrefix("Error:")
     }
 
+    private var transcriptionMethodLabel: String? {
+        guard let raw = item.transcriptionMethod,
+              let method = TranscriptionMethod(rawValue: raw) else { return nil }
+        return method.displayLabel
+    }
+
+    private var methodTagColor: Color {
+        guard let raw = item.transcriptionMethod,
+              let method = TranscriptionMethod(rawValue: raw) else { return .secondary }
+        switch method {
+        case .standard: return .green
+        case .recovered: return .orange
+        case .manualRetry, .retranscribe: return .blue
+        case .failed: return .red
+        }
+    }
+
     private var canRetry: Bool {
         item.audioFileName != nil && retryState != .retrying
     }
@@ -217,20 +234,27 @@ struct RunLogEntryView: View {
                         }
                     }
 
-                    // Custom vocabulary
-                    if !item.customVocabulary.isEmpty {
+                    // Transcription method + retry diagnostics
+                    if transcriptionMethodLabel != nil || (item.diagnostics?.isEmpty == false) {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Custom Vocabulary")
-                                .font(.caption.weight(.semibold))
-                            FlowLayout(spacing: 4) {
-                                ForEach(parseVocabulary(item.customVocabulary), id: \.self) { word in
-                                    Text(word)
-                                        .font(.caption2)
+                            HStack(spacing: 8) {
+                                Text("Method")
+                                    .font(.caption.weight(.semibold))
+                                if let method = transcriptionMethodLabel {
+                                    Text(method)
+                                        .font(.caption2.weight(.medium))
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
-                                        .background(Color.accentColor.opacity(0.12))
+                                        .background(methodTagColor.opacity(0.15))
+                                        .foregroundStyle(methodTagColor)
                                         .cornerRadius(4)
                                 }
+                            }
+                            if let diagnostics = item.diagnostics, !diagnostics.isEmpty {
+                                Text(diagnostics)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
                             }
                         }
                     }
@@ -433,27 +457,17 @@ struct RunLogEntryView: View {
                     model: appState.whisperModelId,
                     language: appState.transcriptionLanguage
                 )
-                let retryAttempt = try await appState.transcribeSavedAudioAttempt(
-                    sourceURL: audioURL,
+                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: false, replaceSavedAudio: false) { audioURL }
+                let outcome = try await appState.runUnifiedTranscription(
+                    sources: [savedSource],
                     savedAudioFileName: item.audioFileName,
-                    transcriptionService: transcriptionService,
-                    customVocabulary: item.customVocabulary,
-                    applySpeechTrimming: false,
-                    trimDuration: item.recordingDurationSeconds ?? 0,
-                    speechStart: 0,
-                    replaceSavedAudio: true,
-                    useVocabularyPrompt: true,
-                    debugStatusMessage: "Transcribing audio..."
+                    expectedDurationSeconds: item.recordingDurationSeconds ?? 0,
+                    vocabularyPrompt: appState.vocabularyOnlySTTPrompt(customVocabulary: item.customVocabulary),
+                    transcriptionService: transcriptionService
                 )
-                defer {
-                    if let temporaryUploadURL = retryAttempt.temporaryUploadURL {
-                        try? FileManager.default.removeItem(at: temporaryUploadURL)
-                    }
-                }
 
-                let rawTranscript = retryAttempt.transcriptionResult.transcript
-                let trimmedRawTranscript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-                let updatedAudioFileName = retryAttempt.effectiveAudioFileName ?? item.audioFileName
+                let trimmedRawTranscript = outcome.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let updatedAudioFileName = outcome.effectiveAudioFileName ?? item.audioFileName
 
                 let finalTranscript: String
                 let processingStatus: String
@@ -509,10 +523,12 @@ struct RunLogEntryView: View {
                             contextScreenshotDataURL: item.contextScreenshotDataURL,
                             contextScreenshotStatus: item.contextScreenshotStatus,
                             postProcessingStatus: processingStatus,
-                            debugStatus: "Retranscribe · STT: full_saved_audio",
+                            debugStatus: "Retranscribe · STT: \(outcome.path)",
                             customVocabulary: item.customVocabulary,
                             audioFileName: updatedAudioFileName,
-                            recordingDurationSeconds: item.recordingDurationSeconds
+                            recordingDurationSeconds: item.recordingDurationSeconds,
+                            transcriptionMethod: TranscriptionMethod.retranscribe.rawValue,
+                            diagnostics: outcome.diagnosticsSummary
                         )
                         appState.pipelineHistory[index] = updated
                         try? appState.updateHistoryEntry(updated)
@@ -581,9 +597,4 @@ struct RunLogEntryView: View {
         return formatter.string(fromByteCount: size)
     }
 
-    private func parseVocabulary(_ text: String) -> [String] {
-        text.components(separatedBy: CharacterSet(charactersIn: ",;\n"))
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-    }
 }

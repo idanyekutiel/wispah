@@ -14,6 +14,15 @@ extension AppState {
         }
     }
 
+    /// The most recent history entry whose audio file still exists on disk — the target
+    /// for "re-transcribe last audio" from the menu bar.
+    var lastRetranscribableItem: PipelineHistoryItem? {
+        pipelineHistory.first { item in
+            guard let name = item.audioFileName else { return false }
+            return FileManager.default.fileExists(atPath: Self.audioStorageDirectory().appendingPathComponent(name).path)
+        }
+    }
+
     func retryHistoryEntry(item: PipelineHistoryItem) {
         guard let audioFileName = item.audioFileName else {
             errorMessage = "No audio file available to retry"
@@ -28,26 +37,17 @@ extension AppState {
         Task {
             do {
                 let service = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
-                let retryAttempt = try await transcribeSavedAudioAttempt(
-                    sourceURL: audioURL,
+                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: false, replaceSavedAudio: false) { audioURL }
+                let outcome = try await runUnifiedTranscription(
+                    sources: [savedSource],
                     savedAudioFileName: item.audioFileName,
-                    transcriptionService: service,
-                    customVocabulary: item.customVocabulary,
-                    applySpeechTrimming: false,
-                    trimDuration: item.recordingDurationSeconds ?? 0,
-                    speechStart: 0,
-                    replaceSavedAudio: true,
-                    useVocabularyPrompt: true
+                    expectedDurationSeconds: item.recordingDurationSeconds ?? 0,
+                    vocabularyPrompt: vocabularyOnlySTTPrompt(customVocabulary: item.customVocabulary),
+                    transcriptionService: service
                 )
-                defer {
-                    if let temporaryUploadURL = retryAttempt.temporaryUploadURL {
-                        try? FileManager.default.removeItem(at: temporaryUploadURL)
-                    }
-                }
 
-                let transcript = retryAttempt.transcriptionResult.transcript
-                let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                let updatedAudioFileName = retryAttempt.effectiveAudioFileName ?? item.audioFileName
+                let trimmed = outcome.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                let updatedAudioFileName = outcome.effectiveAudioFileName ?? item.audioFileName
 
                 await MainActor.run {
                     NSPasteboard.general.clearContents()
@@ -65,10 +65,12 @@ extension AppState {
                             contextScreenshotDataURL: item.contextScreenshotDataURL,
                             contextScreenshotStatus: item.contextScreenshotStatus,
                             postProcessingStatus: "Retried successfully",
-                            debugStatus: "Retry · STT: full_saved_audio",
+                            debugStatus: "Retry · STT: \(outcome.path)",
                             customVocabulary: item.customVocabulary,
                             audioFileName: updatedAudioFileName,
-                            recordingDurationSeconds: item.recordingDurationSeconds
+                            recordingDurationSeconds: item.recordingDurationSeconds,
+                            transcriptionMethod: TranscriptionMethod.manualRetry.rawValue,
+                            diagnostics: outcome.diagnosticsSummary
                         )
                         pipelineHistory[index] = updated
                         try? pipelineHistoryStore.update(updated)
@@ -107,7 +109,9 @@ extension AppState {
         context: AppContext,
         processingStatus: String,
         audioFileName: String? = nil,
-        recordingDurationSeconds: Double? = nil
+        recordingDurationSeconds: Double? = nil,
+        transcriptionMethod: String? = nil,
+        diagnostics: String? = nil
     ) {
         let isError = processingStatus.hasPrefix("Error:")
 
@@ -142,7 +146,9 @@ extension AppState {
             debugStatus: debugStatusMessage,
             customVocabulary: customVocabulary,
             audioFileName: effectiveAudioFileName,
-            recordingDurationSeconds: recordingDurationSeconds
+            recordingDurationSeconds: recordingDurationSeconds,
+            transcriptionMethod: transcriptionMethod,
+            diagnostics: diagnostics
         )
         do {
             let removedAudioFileNames = try pipelineHistoryStore.append(newEntry, maxCount: maxPipelineHistoryCount)
