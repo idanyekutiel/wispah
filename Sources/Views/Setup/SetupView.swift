@@ -1327,7 +1327,7 @@ struct SetupView: View {
                     model: appState.whisperModelId,
                     language: appState.transcriptionLanguage
                 )
-                let source = AudioSource(label: "onboarding_test", applyPreprocessing: true, replaceSavedAudio: false) { url }
+                let source = AudioSource(label: "onboarding_test", applyPreprocessing: true, replaceSavedAudio: false, applySpeechTrimming: true) { url }
                 let outcome = try await appState.runUnifiedTranscription(
                     sources: [source],
                     savedAudioFileName: nil,

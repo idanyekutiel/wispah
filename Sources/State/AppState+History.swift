@@ -37,7 +37,7 @@ extension AppState {
         Task {
             do {
                 let service = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
-                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: false, replaceSavedAudio: false) { audioURL }
+                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: false, replaceSavedAudio: false, applySpeechTrimming: false) { audioURL }
                 let outcome = try await runUnifiedTranscription(
                     sources: [savedSource],
                     savedAudioFileName: item.audioFileName,

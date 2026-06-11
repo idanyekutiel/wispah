@@ -528,7 +528,7 @@ extension AppState {
                     // retry). Additional sources can be appended here without touching the
                     // main path.
                     let sources: [AudioSource] = [
-                        AudioSource(label: "primary_recording", applyPreprocessing: true, replaceSavedAudio: true) {
+                        AudioSource(label: "primary_recording", applyPreprocessing: true, replaceSavedAudio: true, applySpeechTrimming: true) {
                             primarySourceURL
                         },
                     ]

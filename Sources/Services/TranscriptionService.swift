@@ -62,18 +62,22 @@ class TranscriptionService {
     }
 
     // Upload audio file, submit for transcription, poll until done, return text
-    func transcribe(fileURL: URL, prompt: String? = nil) async throws -> String {
-        try await transcribeDetailed(fileURL: fileURL, prompt: prompt).transcript
+    func transcribe(fileURL: URL, prompt: String? = nil, temperature: Double = 0) async throws -> String {
+        try await transcribeDetailed(fileURL: fileURL, prompt: prompt, temperature: temperature).transcript
     }
 
-    func transcribeDetailed(fileURL: URL, prompt: String? = nil) async throws -> TranscriptionResult {
+    /// - Parameter temperature: decoder temperature. 0 maximizes run-to-run stability for
+    ///   normal audio; a re-roll passes a higher value so it can escape a *stuck*
+    ///   hallucination (the same file at temp 0 is deterministic, so re-rolling at 0 just
+    ///   reproduces the bad result).
+    func transcribeDetailed(fileURL: URL, prompt: String? = nil, temperature: Double = 0) async throws -> TranscriptionResult {
         let timeout = await timeoutForFile(fileURL)
         return try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
             group.addTask { [weak self] in
                 guard let self else {
                     throw TranscriptionError.submissionFailed("Service deallocated")
                 }
-                return try await self.transcribeAudio(fileURL: fileURL, prompt: prompt, timeout: timeout)
+                return try await self.transcribeAudio(fileURL: fileURL, prompt: prompt, temperature: temperature, timeout: timeout)
             }
 
             group.addTask {
@@ -90,7 +94,7 @@ class TranscriptionService {
     }
 
     // Send audio file for transcription and return text
-    private func transcribeAudio(fileURL: URL, prompt: String? = nil, timeout: TimeInterval) async throws -> TranscriptionResult {
+    private func transcribeAudio(fileURL: URL, prompt: String? = nil, temperature: Double = 0, timeout: TimeInterval) async throws -> TranscriptionResult {
         let url = URL(string: "\(baseURL)/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -107,7 +111,8 @@ class TranscriptionService {
             model: transcriptionModel,
             boundary: boundary,
             language: transcriptionLanguage,
-            prompt: prompt
+            prompt: prompt,
+            temperature: temperature
         )
         request.httpBody = body
 
@@ -136,7 +141,7 @@ class TranscriptionService {
         return try parseTranscript(from: data)
     }
 
-    private func makeMultipartBody(audioData: Data, fileName: String, model: String, boundary: String, language: String? = nil, prompt: String? = nil) -> Data {
+    private func makeMultipartBody(audioData: Data, fileName: String, model: String, boundary: String, language: String? = nil, prompt: String? = nil, temperature: Double = 0) -> Data {
         var body = Data()
 
         func append(_ value: String) {
@@ -153,12 +158,12 @@ class TranscriptionService {
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
         append("\(responseFormat)\r\n")
 
-        // temperature=0 starts Whisper's decoder in deterministic (greedy/beam) mode.
-        // The provider still escalates via server-side temperature fallback on hard
-        // chunks, but starting at 0 maximizes run-to-run stability for normal audio.
+        // temperature=0 starts Whisper's decoder in deterministic mode — best run-to-run
+        // stability for normal audio. A re-roll passes a higher value (see TranscriptionEngine)
+        // so it can break out of a *stuck* hallucination instead of reproducing it.
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n")
-        append("0\r\n")
+        append("\(temperature)\r\n")
 
         if let language, !language.isEmpty {
             append("--\(boundary)\r\n")
@@ -323,9 +328,15 @@ class TranscriptionService {
         if shortHallucinationSuffixPhrases.contains(phrase) {
             let trimmedPrefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
             guard trimmedPrefix.count >= 24 else { return false }
+            // Short sign-offs ("thanks") are often legitimate, so only strip them after a
+            // hard sentence boundary — never a comma ("…I appreciate it, thanks").
+            return ".!?:;)]}\"'".contains(lastSignificantCharacter)
         }
 
-        return ".!?:;)]}\"'".contains(lastSignificantCharacter)
+        // Longer outro phrases ("thank you for watching") are essentially never real
+        // speech, so also strip them when Whisper ran the outro into the sentence with a
+        // comma ("…some others that I said I have questions, Thank you for watching!").
+        return ".!?,:;)]}\"'".contains(lastSignificantCharacter)
     }
 
     private let suspiciousHallucinationPhrases: Set<String> = [

@@ -45,6 +45,10 @@ final class TranscriptionEngine {
     private let minimumCoverageFraction = 0.6
     /// Recordings at or above this length are eligible for the coverage check.
     private let longRecordingThresholdSeconds: Double = 30
+    /// Temperature for the single re-roll. The first attempt is deterministic (0); a stuck
+    /// hallucination ("thank you for watching" on silence) reproduces verbatim at 0, so the
+    /// re-roll must perturb the decoder to have any chance of escaping it.
+    private let rerollTemperature: Double = 0.4
 
     init(service: TranscriptionService) {
         self.service = service
@@ -68,8 +72,8 @@ final class TranscriptionEngine {
         let rerollReason = rerollReason(result, expected: expectedDurationSeconds)
         if let rerollReason {
             didReroll = true
-            os_log(.info, log: recordingLog, "engine: %{public}@ — one smart re-roll", rerollReason)
-            let (reroll, rerollNetworkRetries) = try await requestCountingNetworkRetries(uploadURL, prompt: prompt)
+            os_log(.info, log: recordingLog, "engine: %{public}@ — one smart re-roll at temp %.1f", rerollReason, rerollTemperature)
+            let (reroll, rerollNetworkRetries) = try await requestCountingNetworkRetries(uploadURL, prompt: prompt, temperature: rerollTemperature)
             networkRetryCount += rerollNetworkRetries
             result = preferBetter(result, reroll, expected: expectedDurationSeconds)
         }
@@ -91,13 +95,14 @@ final class TranscriptionEngine {
     /// (Empty/weak-result re-rolls are owned solely by `transcribe` so they can't stack.)
     private func requestCountingNetworkRetries(
         _ uploadURL: URL,
-        prompt: String?
+        prompt: String?,
+        temperature: Double = 0
     ) async throws -> (TranscriptionResult, Int) {
         do {
-            return (try await service.transcribeDetailed(fileURL: uploadURL, prompt: prompt), 0)
+            return (try await service.transcribeDetailed(fileURL: uploadURL, prompt: prompt, temperature: temperature), 0)
         } catch let error where AppState.isTransientNetworkError(error) {
             os_log(.info, log: recordingLog, "engine: transient network error — retrying once: %{public}@", error.localizedDescription)
-            return (try await service.transcribeDetailed(fileURL: uploadURL, prompt: prompt), 1)
+            return (try await service.transcribeDetailed(fileURL: uploadURL, prompt: prompt, temperature: temperature), 1)
         }
     }
 

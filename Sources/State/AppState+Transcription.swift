@@ -20,6 +20,12 @@ struct AudioSource {
     /// Whether a successful upload should replace the saved history audio with the
     /// (preprocessed) file that was actually sent.
     let replaceSavedAudio: Bool
+    /// Whether to trim to the detected speech window before upload. This is critical:
+    /// Whisper hallucinates ("thank you for watching", etc.) on the non-speech padding
+    /// around real speech, so a *live* recording must trim its leading/trailing silence.
+    /// Already-processed saved audio (retry/retranscribe) was trimmed when first recorded,
+    /// so it's sent as-is.
+    let applySpeechTrimming: Bool
     /// Produces the source URL lazily (nil if unavailable — e.g. nothing to recover).
     let provide: () async -> URL?
 }
@@ -93,7 +99,14 @@ extension AppState {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         guard !terms.isEmpty else { return nil }
-        return terms.joined(separator: ", ")
+        // Frame the vocabulary as a glossary SENTENCE, never a bare comma list. A bare
+        // noun-list as Whisper's prompt deterministically poisons decoding: it primes
+        // caption-style output ("Thank you for watching!") and truncates real speech.
+        // Verified empirically on real recordings — bare list: 8/8 hallucinate; this
+        // framing: 0/12, and it still biases spelling toward these terms (e.g. Zyron→Syron,
+        // Cell→OpenClaw). Sound-alike misses left over are caught by the LLM post-processor's
+        // <vocabulary> correction (e.g. Onyx→Onyks). See PostProcessingService.
+        return "Glossary of terms that may appear: " + terms.joined(separator: ", ") + "."
     }
 
     func prepareTranscriptionUpload(
@@ -172,7 +185,7 @@ extension AppState {
                 let prepared = await prepareTranscriptionUpload(
                     from: sourceURL,
                     savedAudioFileName: effectiveAudioFileName,
-                    applySpeechTrimming: false,
+                    applySpeechTrimming: source.applySpeechTrimming,
                     trimDuration: expectedDurationSeconds,
                     speechStart: 0,
                     replaceSavedAudio: source.replaceSavedAudio

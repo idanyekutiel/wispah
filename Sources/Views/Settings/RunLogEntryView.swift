@@ -457,7 +457,7 @@ struct RunLogEntryView: View {
                     model: appState.whisperModelId,
                     language: appState.transcriptionLanguage
                 )
-                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: false, replaceSavedAudio: false) { audioURL }
+                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: false, replaceSavedAudio: false, applySpeechTrimming: false) { audioURL }
                 let outcome = try await appState.runUnifiedTranscription(
                     sources: [savedSource],
                     savedAudioFileName: item.audioFileName,

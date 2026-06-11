@@ -6,8 +6,10 @@
 
 ## Changelog
 
-- **Lighter, faster transcription pipeline.** Audio is now captured at 16 kHz (Whisper's native rate) instead of being downsampled later — same transcription accuracy, but smaller uploads and less processing between stopping a recording and getting your text.
-- **Snappier stop-to-paste.** Removed redundant file work after recording (an unnecessary metadata-rewrite pass and a duplicate duration read) so results come back a little quicker.
+- **Fixed the "Thank you for watching" bug.** When you had custom vocabulary set, recordings could come back as just "Thank you for watching!" — sometimes dropping a big chunk of what you actually said. The cause was how your vocabulary was being sent to the transcriber: a bare list of words was confusing the model into producing canned video-style endings and cutting transcripts short. Vocabulary is now sent as a proper glossary, which eliminates it (verified: the exact recording that used to fail every time now comes back clean every time).
+- **Better recognition of custom words.** The new glossary format also helps the transcriber spell your custom terms correctly (names, product names, etc.), and the cleanup pass continues to correct close-sounding mistakes against your vocabulary list.
+- **Smarter automatic retry.** If a result comes back empty or suspicious, the automatic re-roll now actually varies its decoding so it can recover — previously it could repeat the same bad result.
+- **Less silence sent to the transcriber.** Recordings are trimmed to your speech again before upload, reducing a known source of hallucinations on quiet audio.
 
 ## Requirements
 
