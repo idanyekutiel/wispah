@@ -55,13 +55,13 @@ final class TranscriptionEngine {
     /// independently and stitched back together (see `transcribeChunked`). Below it, the
     /// single-shot path is faster and carries no stitching risk, so it's left untouched.
     private let chunkingThresholdSeconds: Double = 90
-    /// Max chunks uploaded at once. Bounded so a long take doesn't fan out into a burst
-    /// that trips provider rate limits.
-    private let maxConcurrentChunks = 4
+    /// Provider-specific concurrency / throttle / retry budget for the chunked path.
+    private let rateLimitPolicy: ChunkRateLimitPolicy
 
     init(service: TranscriptionService, chunker: AudioChunker = AudioChunker()) {
         self.service = service
         self.chunker = chunker
+        self.rateLimitPolicy = service.provider.chunkRateLimitPolicy
     }
 
     /// Transcribe an already-preprocessed, upload-ready file.
@@ -80,6 +80,12 @@ final class TranscriptionEngine {
         if expectedDurationSeconds > chunkingThresholdSeconds {
             do {
                 return try await transcribeChunked(uploadURL: uploadURL, prompt: prompt)
+            } catch let error as TranscriptionError where error.isRateLimited {
+                // Resending the whole file as one request would hit the same limit (and on
+                // OpenAI can exceed the 25-min/request cap), so surface the rate limit
+                // instead of pretending a single-shot retry will help.
+                os_log(.error, log: recordingLog, "engine: chunked transcription rate-limited — not falling back to single-shot")
+                throw error
             } catch {
                 os_log(.error, log: recordingLog, "engine: chunked transcription failed (%{public}@) — falling back to single-shot", error.localizedDescription)
             }
@@ -163,23 +169,21 @@ final class TranscriptionEngine {
     }
 
     /// Run chunks through `transcribeSingleFile` with at most `maxConcurrentChunks` in
-    /// flight, preserving original order in the returned array. A chunk that throws after
-    /// its own retries aborts the whole split (caller falls back to single-shot).
+    /// flight, preserving original order in the returned array. A shared throttle paces
+    /// requests once the provider starts returning 429s. A chunk that exhausts its 429
+    /// retry budget aborts the whole split.
     private func transcribeChunksConcurrently(_ chunks: [AudioChunk], prompt: String?) async throws -> [EngineResult] {
         var results = [EngineResult?](repeating: nil, count: chunks.count)
+        let throttle = ChunkThrottle(policy: rateLimitPolicy)
 
         try await withThrowingTaskGroup(of: (Int, EngineResult).self) { group in
             var nextIndex = 0
-            let initialWave = min(maxConcurrentChunks, chunks.count)
+            let initialWave = min(rateLimitPolicy.maxConcurrentChunks, chunks.count)
 
             func addTask(_ index: Int) {
                 let chunk = chunks[index]
                 group.addTask {
-                    let result = try await self.transcribeSingleFile(
-                        uploadURL: chunk.url,
-                        prompt: prompt,
-                        expectedDurationSeconds: chunk.durationSeconds
-                    )
+                    let result = try await self.transcribeChunkWithRateLimitRetry(chunk, prompt: prompt, throttle: throttle)
                     return (index, result)
                 }
             }
@@ -198,6 +202,27 @@ final class TranscriptionEngine {
         }
 
         return results.compactMap { $0 }
+    }
+
+    /// Transcribe one chunk, retrying on 429 up to the provider's budget. Each attempt
+    /// waits its turn at the shared throttle (a no-op until the first 429, then serial-
+    /// with-gaps), and a 429 is reported so the server's `Retry-After` paces all chunks.
+    private func transcribeChunkWithRateLimitRetry(_ chunk: AudioChunk, prompt: String?, throttle: ChunkThrottle) async throws -> EngineResult {
+        var attempt = 0
+        while true {
+            await throttle.awaitTurn()
+            do {
+                return try await transcribeSingleFile(
+                    uploadURL: chunk.url,
+                    prompt: prompt,
+                    expectedDurationSeconds: chunk.durationSeconds
+                )
+            } catch let error as TranscriptionError where error.isRateLimited && attempt < rateLimitPolicy.maxRateLimitRetries {
+                attempt += 1
+                let waited = await throttle.note429(retryAfter: error.retryAfterSeconds)
+                os_log(.info, log: recordingLog, "engine: chunk rate-limited (attempt %d/%d) — waiting ~%.1fs", attempt, rateLimitPolicy.maxRateLimitRetries, waited)
+            }
+        }
     }
 
     // MARK: - Stitching
@@ -344,5 +369,45 @@ final class TranscriptionEngine {
         // Or an extremely low unique-word ratio over a long transcript.
         let uniqueRatio = Double(Set(words).count) / Double(words.count)
         return words.count >= 60 && uniqueRatio < 0.1
+    }
+}
+
+/// Shared pacing for one chunked transcription. Free-running (a no-op) until the first
+/// 429; after that, requests are released one at a time, spaced by the provider's
+/// `spacingAfterThrottleSeconds`, and each 429's `Retry-After` pushes the next slot out.
+/// This is the "back off, then send the chunks serially" behavior — applied only when the
+/// provider actually signals overload, so unthrottled runs keep full concurrency.
+actor ChunkThrottle {
+    private let policy: ChunkRateLimitPolicy
+    private var throttled = false
+    private var nextSlot: Date = .distantPast
+
+    init(policy: ChunkRateLimitPolicy) {
+        self.policy = policy
+    }
+
+    /// Record a 429 and extend the next-slot time by the server's `Retry-After` (or the
+    /// provider fallback). Returns the resulting delay from now, for logging.
+    @discardableResult
+    func note429(retryAfter: TimeInterval?) -> TimeInterval {
+        throttled = true
+        let wait = retryAfter ?? policy.fallbackRetryAfterSeconds
+        let candidate = Date().addingTimeInterval(wait)
+        if candidate > nextSlot { nextSlot = candidate }
+        return max(0, nextSlot.timeIntervalSinceNow)
+    }
+
+    /// Block until this request's turn. Returns immediately while unthrottled; once
+    /// throttled, reserves the next serial slot and sleeps until it. Reserving before the
+    /// `await` (then suspending) is what serializes concurrent callers into spaced slots.
+    func awaitTurn() async {
+        guard throttled else { return }
+        let now = Date()
+        let start = max(now, nextSlot)
+        nextSlot = start.addingTimeInterval(policy.spacingAfterThrottleSeconds)
+        let delay = start.timeIntervalSince(now)
+        if delay > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+        }
     }
 }

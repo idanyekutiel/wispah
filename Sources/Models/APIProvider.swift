@@ -1,10 +1,55 @@
 import Foundation
 
+/// How the chunked-transcription engine paces and retries requests for a provider.
+/// Groq's free tier is request-per-minute constrained (so we stay gentle and lean on
+/// `Retry-After`); OpenAI tolerates more concurrency but caps single requests at 25
+/// minutes — a limit chunking already keeps us under.
+struct ChunkRateLimitPolicy {
+    /// How many chunk uploads run at once before any throttling kicks in.
+    let maxConcurrentChunks: Int
+    /// Minimum spacing between request starts after a 429 has been seen (requests go
+    /// serial-with-gaps so we settle just under the provider's per-minute ceiling).
+    let spacingAfterThrottleSeconds: Double
+    /// Per-chunk retry budget for 429s before the chunk gives up.
+    let maxRateLimitRetries: Int
+    /// Wait used when a 429 arrives without a usable `Retry-After` header.
+    let fallbackRetryAfterSeconds: Double
+}
+
 enum APIProvider: String, CaseIterable, Identifiable {
     case groq
     case openai
 
     var id: String { rawValue }
+
+    /// Provider-specific pacing for chunked long-audio transcription.
+    var chunkRateLimitPolicy: ChunkRateLimitPolicy {
+        switch self {
+        case .groq:
+            // Free tier ~30 requests/min. Keep concurrency low and, once throttled,
+            // space requests ~2.1s apart (~28/min) so we hug the limit without tripping it.
+            return ChunkRateLimitPolicy(
+                maxConcurrentChunks: 3,
+                spacingAfterThrottleSeconds: 2.1,
+                maxRateLimitRetries: 6,
+                fallbackRetryAfterSeconds: 5
+            )
+        case .openai:
+            // Higher request ceilings; the real constraint (25-min/request) is handled by
+            // chunk sizing, so we can fan out wider and recover from the rare 429 quickly.
+            return ChunkRateLimitPolicy(
+                maxConcurrentChunks: 6,
+                spacingAfterThrottleSeconds: 1.0,
+                maxRateLimitRetries: 4,
+                fallbackRetryAfterSeconds: 3
+            )
+        }
+    }
+
+    /// Resolve a provider from a base URL (the engine only carries the URL).
+    static func from(baseURL: String) -> APIProvider {
+        APIProvider.allCases.first { baseURL.hasPrefix($0.baseURL) } ?? .groq
+    }
 
     var displayName: String {
         switch self {

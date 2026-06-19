@@ -23,6 +23,26 @@ class TranscriptionService {
         self.transcriptionLanguage = language
     }
 
+    /// Provider inferred from the base URL — drives provider-specific rate-limit pacing.
+    var provider: APIProvider { APIProvider.from(baseURL: baseURL) }
+
+    /// Parse a 429 `Retry-After` header. Both providers send integer seconds; an HTTP-date
+    /// form is tolerated as a fallback. Returns nil when absent or unparseable.
+    static func parseRetryAfterSeconds(from response: HTTPURLResponse) -> TimeInterval? {
+        guard let raw = (response.value(forHTTPHeaderField: "Retry-After")
+            ?? response.value(forHTTPHeaderField: "retry-after"))?
+            .trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
+        if let seconds = TimeInterval(raw) { return max(0, seconds) }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        if let date = formatter.date(from: raw) {
+            return max(0, date.timeIntervalSinceNow)
+        }
+        return nil
+    }
+
     /// Timeout budget is intentionally aggressive because these providers are expected
     /// to respond quickly; hung requests should fail fast instead of stalling the UX.
     private func timeoutForFile(_ fileURL: URL) async -> TimeInterval {
@@ -130,7 +150,10 @@ class TranscriptionService {
             case 401, 403:
                 throw TranscriptionError.submissionFailed("Invalid or expired API key")
             case 429:
-                throw TranscriptionError.submissionFailed("Rate limit exceeded. Please wait and try again.")
+                // Both Groq and OpenAI return a `Retry-After` header (seconds) on 429.
+                // Surfacing it lets the engine wait exactly as long as the server asks
+                // before retrying the chunk, instead of guessing or giving up.
+                throw TranscriptionError.rateLimited(Self.parseRetryAfterSeconds(from: httpResponse))
             case 500...:
                 throw TranscriptionError.submissionFailed("Server error (\(statusCode)). Please try again later.")
             default:
@@ -370,6 +393,7 @@ enum TranscriptionError: LocalizedError {
     case submissionFailed(String)
     case transcriptionFailed(String)
     case transcriptionTimedOut(TimeInterval)
+    case rateLimited(TimeInterval?)
     case pollFailed(String)
 
     var errorDescription: String? {
@@ -377,6 +401,7 @@ enum TranscriptionError: LocalizedError {
         case .uploadFailed(let msg): return "Upload failed: \(msg)"
         case .submissionFailed(let msg): return "Submission failed: \(msg)"
         case .transcriptionTimedOut(let seconds): return "Transcription timed out after \(Int(seconds))s"
+        case .rateLimited: return "Rate limit exceeded. Please wait and try again."
         case .transcriptionFailed(let msg): return "Transcription failed: \(msg)"
         case .pollFailed(let msg): return "Polling failed: \(msg)"
         }
@@ -385,5 +410,16 @@ enum TranscriptionError: LocalizedError {
     var isTimeout: Bool {
         if case .transcriptionTimedOut = self { return true }
         return false
+    }
+
+    var isRateLimited: Bool {
+        if case .rateLimited = self { return true }
+        return false
+    }
+
+    /// Server-requested wait (seconds) for a 429, if one was provided.
+    var retryAfterSeconds: TimeInterval? {
+        if case .rateLimited(let seconds) = self { return seconds }
+        return nil
     }
 }
