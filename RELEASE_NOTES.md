@@ -6,10 +6,9 @@
 
 ## Changelog
 
-- **Fixed the "Thank you for watching" bug.** When you had custom vocabulary set, recordings could come back as just "Thank you for watching!" — sometimes dropping a big chunk of what you actually said. The cause was how your vocabulary was being sent to the transcriber: a bare list of words was confusing the model into producing canned video-style endings and cutting transcripts short. Vocabulary is now sent as a proper glossary, which eliminates it (verified: the exact recording that used to fail every time now comes back clean every time).
-- **Better recognition of custom words.** The new glossary format also helps the transcriber spell your custom terms correctly (names, product names, etc.), and the cleanup pass continues to correct close-sounding mistakes against your vocabulary list.
-- **Smarter automatic retry.** If a result comes back empty or suspicious, the automatic re-roll now actually varies its decoding so it can recover — previously it could repeat the same bad result.
-- **Less silence sent to the transcriber.** Recordings are trimmed to your speech again before upload, reducing a known source of hallucinations on quiet audio.
+- **Long recordings now transcribe reliably.** Recordings longer than ~1.5 minutes used to degrade, repeat themselves, or cut off entirely. Wispah now automatically splits long recordings at natural pauses, transcribes the pieces, and stitches them back together — so even a 30-minute dictation comes through cleanly and completely.
+- **Faster long transcriptions.** The pieces are transcribed in parallel, so long recordings finish noticeably quicker.
+- **Graceful handling of API rate limits.** When your provider is busy (especially on Groq's free tier), Wispah now paces and retries automatically instead of failing — tuned for each provider.
 
 ## Requirements
 
