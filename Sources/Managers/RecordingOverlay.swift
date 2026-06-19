@@ -8,6 +8,14 @@ class RecordingOverlayState: ObservableObject {
     @Published var audioLevel: Float = 0.0
 }
 
+/// State for the transcribing overlay. `message == nil` renders the compact dots-only
+/// pill; a non-nil message expands the pill to show status text (e.g. "Still working
+/// on it…", "Rate limited — retrying…") and, when `showCancel` is set, a Cancel button.
+class TranscribingOverlayState: ObservableObject {
+    @Published var message: String? = nil
+    @Published var showCancel: Bool = false
+}
+
 enum OverlayPhase {
     case initializing
     case recording
@@ -69,7 +77,16 @@ class RecordingOverlayManager {
     private var errorPanel: NSPanel?
     private var errorDismissWorkItem: DispatchWorkItem?
     private var overlayState = RecordingOverlayState()
+    private var transcribingState = TranscribingOverlayState()
     private let errorDisplayDuration: TimeInterval = 12
+
+    /// Compact (dots-only) and expanded (dots + status text + Cancel) transcribing pill sizes.
+    private let transcribingCompactSize = CGSize(width: 44, height: 22)
+    private let transcribingExpandedSize = CGSize(width: 280, height: 34)
+
+    /// Invoked when the user taps Cancel on the transcribing overlay. Set by `AppState`
+    /// before transcription begins; cleared when the overlay is dismissed.
+    var onTranscribingCancel: (() -> Void)?
 
     /// Whether the main screen has a camera housing (notch).
     private var screenHasNotch: Bool {
@@ -103,6 +120,30 @@ class RecordingOverlayManager {
 
     func showTranscribing() {
         DispatchQueue.main.async { self._showTranscribing() }
+    }
+
+    /// Set (or clear) the transcribing status message, expanding/collapsing the pill.
+    /// Shows the transcribing panel first if it isn't visible yet (e.g. a retry that
+    /// happens before the normal indicator delay elapses).
+    func updateTranscribingStatus(_ message: String?, showCancel: Bool) {
+        DispatchQueue.main.async {
+            if self.transcribingPanel == nil { self._showTranscribing() }
+            self.transcribingState.message = message
+            self.transcribingState.showCancel = showCancel
+            self._layoutTranscribingPanel(animated: true)
+        }
+    }
+
+    /// Show a low-priority "still working" notice — only if no status message (e.g. a
+    /// retry) is already showing, so it never clobbers more specific feedback.
+    func showLongWaitNotice(_ message: String) {
+        DispatchQueue.main.async {
+            guard self.transcribingState.message == nil else { return }
+            if self.transcribingPanel == nil { self._showTranscribing() }
+            self.transcribingState.message = message
+            self.transcribingState.showCancel = true
+            self._layoutTranscribingPanel(animated: true)
+        }
     }
 
     func slideUpToNotch(completion: @escaping () -> Void) {
@@ -215,30 +256,30 @@ class RecordingOverlayManager {
 
         if transcribingPanel != nil { return }
 
-        let panelWidth: CGFloat = 44
-        let panelHeight: CGFloat = 22
+        // Fresh run starts in the compact dots-only state.
+        transcribingState.message = nil
+        transcribingState.showCancel = false
 
-        let panel = makeOverlayPanel(width: panelWidth, height: panelHeight)
+        // Build at the larger size so the hosting view can lay out either state; the
+        // panel frame is then set to the (compact) size by `_layoutTranscribingPanel`.
+        let panel = makeOverlayPanel(
+            width: transcribingExpandedSize.width,
+            height: transcribingExpandedSize.height
+        )
 
-        let view = TranscribingIndicatorView()
+        let view = TranscribingIndicatorView(state: transcribingState) { [weak self] in
+            self?.onTranscribingCancel?()
+        }
         panel.contentView = makeGlassContent(
-            width: panelWidth,
-            height: panelHeight,
-            cornerRadius: 11,
+            width: transcribingExpandedSize.width,
+            height: transcribingExpandedSize.height,
+            cornerRadius: 14,
             maskedCorners: [.layerMinXMinYCorner, .layerMaxXMinYCorner],
             rootView: view
         )
 
-        if let screen = NSScreen.main {
-            let x = panelX(screen, width: panelWidth)
-            let y: CGFloat
-            if screenHasNotch {
-                y = screen.visibleFrame.maxY - panelHeight
-            } else {
-                y = screen.frame.maxY - panelHeight
-            }
-            panel.setFrame(NSRect(x: x, y: y, width: panelWidth, height: panelHeight), display: true)
-        }
+        self.transcribingPanel = panel
+        _layoutTranscribingPanel(animated: false)
 
         panel.alphaValue = 0
         panel.orderFrontRegardless()
@@ -247,12 +288,42 @@ class RecordingOverlayManager {
             context.duration = 0.25
             panel.animator().alphaValue = 1
         }
+    }
 
-        self.transcribingPanel = panel
+    /// Size and position the transcribing pill for the current state. The top edge stays
+    /// anchored to the screen top (tucked under the notch when present); the pill grows
+    /// downward when expanded. Mouse events are enabled only when a Cancel button is shown.
+    private func _layoutTranscribingPanel(animated: Bool) {
+        guard let panel = transcribingPanel, let screen = NSScreen.main else { return }
+
+        let expanded = transcribingState.message != nil
+        let size = expanded ? transcribingExpandedSize : transcribingCompactSize
+        let top = screenHasNotch ? screen.visibleFrame.maxY : screen.frame.maxY
+        let frame = NSRect(
+            x: panelX(screen, width: size.width),
+            y: top - size.height,
+            width: size.width,
+            height: size.height
+        )
+
+        panel.ignoresMouseEvents = !(expanded && transcribingState.showCancel)
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.18
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                panel.animator().setFrame(frame, display: true)
+            }
+        } else {
+            panel.setFrame(frame, display: true)
+        }
     }
 
     private func _showDone() {
         overlayState.phase = .done
+        onTranscribingCancel = nil
+        transcribingState.message = nil
+        transcribingState.showCancel = false
 
         if let panel = transcribingPanel {
             NSAnimationContext.runAnimationGroup({ context in
@@ -323,6 +394,9 @@ class RecordingOverlayManager {
 
     private func _dismiss() {
         cancelScheduledErrorDismiss()
+        onTranscribingCancel = nil
+        transcribingState.message = nil
+        transcribingState.showCancel = false
 
         if let panel = overlayWindow {
             panel.orderOut(nil)
@@ -504,10 +578,49 @@ struct RecordingOverlayView: View {
 // MARK: - Transcribing Indicator
 
 struct TranscribingIndicatorView: View {
+    @ObservedObject var state: TranscribingOverlayState
+    let onCancel: () -> Void
+
     @State private var animatingDot = 0
     @State private var dotAnimationTimer: Timer?
 
     var body: some View {
+        HStack(spacing: 8) {
+            dots
+
+            if let message = state.message {
+                Text(message)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if state.showCancel {
+                    Button(action: onCancel) {
+                        Text("Cancel")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(.white.opacity(0.18)))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, state.message == nil ? 0 : 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(
+            UnevenRoundedRectangle(bottomLeadingRadius: 14, bottomTrailingRadius: 14)
+                .fill(Color(white: 0.08))
+        )
+        .animation(.easeInOut(duration: 0.15), value: state.message)
+        .onAppear { startDotAnimation() }
+        .onDisappear { stopDotAnimation() }
+    }
+
+    private var dots: some View {
         HStack(spacing: 4) {
             ForEach(0..<3, id: \.self) { index in
                 Circle()
@@ -516,13 +629,6 @@ struct TranscribingIndicatorView: View {
                     .animation(.easeInOut(duration: 0.4), value: animatingDot)
             }
         }
-        .frame(width: 44, height: 22)
-        .background(
-            UnevenRoundedRectangle(bottomLeadingRadius: 11, bottomTrailingRadius: 11)
-                .fill(Color(white: 0.08))
-        )
-        .onAppear { startDotAnimation() }
-        .onDisappear { stopDotAnimation() }
     }
 
     private func startDotAnimation() {

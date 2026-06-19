@@ -1,6 +1,18 @@
 import Foundation
 import os.log
 
+/// Progress signals emitted by the engine while a transcription is in flight, so the UI
+/// can surface what's happening (a retry, a re-roll) instead of an opaque spinner.
+/// Delivered from arbitrary task contexts — handlers must hop to the main actor.
+enum TranscriptionProgress: Sendable {
+    /// A transient network failure is being retried.
+    case retryingNetwork
+    /// A chunk hit a 429 and is waiting to retry. `attempt` is 1-based.
+    case rateLimited(attempt: Int, maxAttempts: Int)
+    /// A weak first result triggered the one smart re-roll. `reason` is human-readable.
+    case rerolling(reason: String)
+}
+
 /// Outcome of a single engine transcription attempt.
 struct EngineResult {
     let rawTranscript: String
@@ -39,6 +51,9 @@ struct EngineResult {
 final class TranscriptionEngine {
     private let service: TranscriptionService
     private let chunker: AudioChunker
+    /// Optional progress sink. Called from concurrent task contexts, so it's `@Sendable`
+    /// and implementations must marshal to the main actor before touching UI.
+    private let onProgress: (@Sendable (TranscriptionProgress) -> Void)?
 
     /// Long-audio coverage below this fraction of the expected speech duration is
     /// treated as incomplete and worth one re-roll. Kept conservative (0.6) so normal
@@ -58,9 +73,14 @@ final class TranscriptionEngine {
     /// Provider-specific concurrency / throttle / retry budget for the chunked path.
     private let rateLimitPolicy: ChunkRateLimitPolicy
 
-    init(service: TranscriptionService, chunker: AudioChunker = AudioChunker()) {
+    init(
+        service: TranscriptionService,
+        chunker: AudioChunker = AudioChunker(),
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil
+    ) {
         self.service = service
         self.chunker = chunker
+        self.onProgress = onProgress
         self.rateLimitPolicy = service.provider.chunkRateLimitPolicy
     }
 
@@ -107,6 +127,7 @@ final class TranscriptionEngine {
         let rerollReason = rerollReason(result, expected: expectedDurationSeconds)
         if let rerollReason {
             didReroll = true
+            onProgress?(.rerolling(reason: rerollReason))
             os_log(.info, log: recordingLog, "engine: %{public}@ — one smart re-roll at temp %.1f", rerollReason, rerollTemperature)
             let (reroll, rerollNetworkRetries) = try await requestCountingNetworkRetries(uploadURL, prompt: prompt, temperature: rerollTemperature)
             networkRetryCount += rerollNetworkRetries
@@ -219,6 +240,7 @@ final class TranscriptionEngine {
                 )
             } catch let error as TranscriptionError where error.isRateLimited && attempt < rateLimitPolicy.maxRateLimitRetries {
                 attempt += 1
+                onProgress?(.rateLimited(attempt: attempt, maxAttempts: rateLimitPolicy.maxRateLimitRetries))
                 let waited = await throttle.note429(retryAfter: error.retryAfterSeconds)
                 os_log(.info, log: recordingLog, "engine: chunk rate-limited (attempt %d/%d) — waiting ~%.1fs", attempt, rateLimitPolicy.maxRateLimitRetries, waited)
             }
@@ -281,6 +303,7 @@ final class TranscriptionEngine {
         do {
             return (try await service.transcribeDetailed(fileURL: uploadURL, prompt: prompt, temperature: temperature), 0)
         } catch let error where AppState.isTransientNetworkError(error) {
+            onProgress?(.retryingNetwork)
             os_log(.info, log: recordingLog, "engine: transient network error — retrying once: %{public}@", error.localizedDescription)
             return (try await service.transcribeDetailed(fileURL: uploadURL, prompt: prompt, temperature: temperature), 1)
         }

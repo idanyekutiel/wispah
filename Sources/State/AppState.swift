@@ -35,6 +35,8 @@ final class AppState: ObservableObject, @unchecked Sendable {
     private let screenRecordingEnabledStorageKey = "screen_recording_enabled"
     private let recordingModeStorageKey = "recording_mode"
     let transcribingIndicatorDelay: TimeInterval = 1.0
+    /// How long transcription may run before the overlay shows a "still working" notice.
+    let transcribingLongWaitThreshold: TimeInterval = 10.0
 
     @Published var maxPipelineHistoryCount: Int {
         didSet {
@@ -293,6 +295,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
     var audioLevelCancellable: AnyCancellable?
     var debugOverlayTimer: Timer?
     var transcribingIndicatorTask: Task<Void, Never>?
+    /// Fires once if transcription is still running after `transcribingLongWaitThreshold`,
+    /// surfacing a "still working" notice (with a cancel affordance) in the overlay.
+    var transcribingLongWaitTask: Task<Void, Never>?
     var transcriptionTask: Task<Void, Never>?
     var contextService: AppContextService
     var contextCaptureTask: Task<AppContext?, Never>?

@@ -161,9 +161,10 @@ extension AppState {
         savedAudioFileName: String?,
         expectedDurationSeconds: Double,
         vocabularyPrompt: String?,
-        transcriptionService: TranscriptionService
+        transcriptionService: TranscriptionService,
+        onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil
     ) async throws -> UnifiedTranscriptionOutcome {
-        let engine = TranscriptionEngine(service: transcriptionService)
+        let engine = TranscriptionEngine(service: transcriptionService, onProgress: onProgress)
         let prompt = vocabularyPrompt
 
         var effectiveAudioFileName = savedAudioFileName

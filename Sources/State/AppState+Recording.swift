@@ -441,6 +441,10 @@ extension AppState {
         if playSoundsEnabled { NSSound(named: "Pop")?.play() }
         overlayManager.slideUpToNotch { }
 
+        overlayManager.onTranscribingCancel = { [weak self] in
+            self?.cancelTranscription()
+        }
+
         transcribingIndicatorTask?.cancel()
         let indicatorDelay = transcribingIndicatorDelay
         transcribingIndicatorTask = Task { [weak self] in
@@ -454,11 +458,25 @@ extension AppState {
             } catch {}
         }
 
+        // After a threshold with no result, reassure the user it's still working and
+        // offer a way out — unless a more specific notice (a retry) is already showing.
+        transcribingLongWaitTask?.cancel()
+        let longWaitThreshold = transcribingLongWaitThreshold
+        transcribingLongWaitTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(longWaitThreshold * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+                await MainActor.run { [weak self] in
+                    guard let self, self.isTranscribing else { return }
+                    self.overlayManager.showLongWaitNotice("Still working on it…")
+                }
+            } catch {}
+        }
+
         audioRecorder.stopRecordingAsync { [weak self] fileURL in
             guard let self else { return }
             guard let fileURL else {
-                self.transcribingIndicatorTask?.cancel()
-                self.transcribingIndicatorTask = nil
+                self.stopTranscribingOverlayTimers()
                 self.errorMessage = "No audio recorded"
                 self.isTranscribing = false
                 self.statusText = "Error"
@@ -468,8 +486,7 @@ extension AppState {
 
             let hasSevereWriteMismatch = wallClockDuration > 5 && writtenDuration < (wallClockDuration * 0.5)
             if hasSevereWriteMismatch {
-                self.transcribingIndicatorTask?.cancel()
-                self.transcribingIndicatorTask = nil
+                self.stopTranscribingOverlayTimers()
                 self.audioRecorder.cleanup()
                 try? FileManager.default.removeItem(at: fileURL)
                 self.errorMessage = String(
@@ -489,8 +506,7 @@ extension AppState {
                 if !self.audioRecorder.detectedSpeech {
                     os_log(.info, log: recordingLog, "no speech detected — skipping transcription")
                 }
-                self.transcribingIndicatorTask?.cancel()
-                self.transcribingIndicatorTask = nil
+                self.stopTranscribingOverlayTimers()
                 self.isTranscribing = false
                 self.statusText = "Nothing to transcribe"
                 self.overlayManager.dismiss()
@@ -533,12 +549,27 @@ extension AppState {
                         },
                     ]
 
+                    let onProgress: @Sendable (TranscriptionProgress) -> Void = { [weak self] progress in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.isTranscribing else { return }
+                            switch progress {
+                            case .retryingNetwork:
+                                self.overlayManager.updateTranscribingStatus("Connection hiccup — retrying…", showCancel: true)
+                            case .rateLimited(let attempt, let maxAttempts):
+                                self.overlayManager.updateTranscribingStatus("Rate limited — retrying (\(attempt)/\(maxAttempts))…", showCancel: true)
+                            case .rerolling:
+                                self.overlayManager.updateTranscribingStatus("Refining transcription…", showCancel: true)
+                            }
+                        }
+                    }
+
                     let outcome = try await self.runUnifiedTranscription(
                         sources: sources,
                         savedAudioFileName: effectiveSavedAudioFileName,
                         expectedDurationSeconds: expectedDuration,
                         vocabularyPrompt: self.vocabularyOnlySTTPrompt(customVocabulary: self.customVocabulary),
-                        transcriptionService: transcriptionService
+                        transcriptionService: transcriptionService,
+                        onProgress: onProgress
                     )
                     effectiveSavedAudioFileName = outcome.effectiveAudioFileName ?? effectiveSavedAudioFileName
                     let successfulTranscriptionPath = outcome.path
@@ -576,6 +607,9 @@ extension AppState {
                             processingStatus = "Post-processing succeeded"
                             postProcessingPrompt = postProcessingResult.prompt
                         } catch {
+                            // A user cancellation must abort the pipeline, not fall back to
+                            // pasting the raw transcript — route it to the cancellation path.
+                            if Task.isCancelled || AppState.isCancellation(error) { throw error }
                             finalTranscript = resolvedRawTranscript
                             processingStatus = "Post-processing failed, using raw transcript"
                             postProcessingPrompt = ""
@@ -610,8 +644,7 @@ extension AppState {
                             transcriptionMethod: transcriptionMethod,
                             diagnostics: transcriptionDiagnostics
                         )
-                        self.transcribingIndicatorTask?.cancel()
-                        self.transcribingIndicatorTask = nil
+                        self.stopTranscribingOverlayTimers()
                         self.lastTranscript = trimmedFinalTranscript
                         self.isTranscribing = false
 
@@ -645,6 +678,14 @@ extension AppState {
                         }
                     }
                 } catch {
+                    // User-initiated cancellation isn't a failure: reset quietly without an
+                    // error overlay or a failed history entry.
+                    if Task.isCancelled || AppState.isCancellation(error) {
+                        await MainActor.run { [weak self] in
+                            self?.handleTranscriptionCancelled()
+                        }
+                        return
+                    }
                     let resolvedContext: AppContext
                     if let sessionContext {
                         resolvedContext = sessionContext
@@ -655,8 +696,7 @@ extension AppState {
                     }
                     let historyAudioFileName = effectiveSavedAudioFileName
                     await MainActor.run {
-                        self.transcribingIndicatorTask?.cancel()
-                        self.transcribingIndicatorTask = nil
+                        self.stopTranscribingOverlayTimers()
                         self.errorMessage = error.localizedDescription
                         self.isTranscribing = false
                         self.statusText = "Error"
@@ -685,6 +725,50 @@ extension AppState {
                 }
             }
         }
+    }
+
+    // MARK: - Transcription cancellation
+
+    /// Cancel the transcribing overlay's delayed-indicator and long-wait timers together.
+    func stopTranscribingOverlayTimers() {
+        transcribingIndicatorTask?.cancel()
+        transcribingIndicatorTask = nil
+        transcribingLongWaitTask?.cancel()
+        transcribingLongWaitTask = nil
+    }
+
+    /// User-initiated cancel from the transcribing overlay. Cancelling `transcriptionTask`
+    /// aborts the in-flight request (the async `URLSession` upload honors task cancellation)
+    /// and unwinds to the cancellation branch in `stopAndTranscribe`, which calls
+    /// `handleTranscriptionCancelled` to reset state. Shows immediate feedback meanwhile.
+    func cancelTranscription() {
+        guard isTranscribing else { return }
+        os_log(.info, log: recordingLog, "cancelTranscription() — user cancelled")
+        transcriptionTask?.cancel()
+        overlayManager.updateTranscribingStatus("Cancelling…", showCancel: false)
+    }
+
+    /// Quietly reset after a cancellation — no error overlay, no failed history entry.
+    func handleTranscriptionCancelled() {
+        stopTranscribingOverlayTimers()
+        isTranscribing = false
+        errorMessage = nil
+        statusText = "Cancelled"
+        overlayManager.dismiss()
+        audioRecorder.cleanup()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            if self.statusText == "Cancelled" {
+                self.statusText = "Ready"
+            }
+        }
+    }
+
+    /// True for errors that represent a cooperative cancellation (Swift task cancel or a
+    /// cancelled `URLSession` request), so the pipeline can treat them as user intent.
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return false
     }
 
     // MARK: - Network error classification
