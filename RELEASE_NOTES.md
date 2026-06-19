@@ -6,9 +6,9 @@
 
 ## Changelog
 
-- **Long recordings now transcribe reliably.** Recordings longer than ~1.5 minutes used to degrade, repeat themselves, or cut off entirely. Wispah now automatically splits long recordings at natural pauses, transcribes the pieces, and stitches them back together — so even a 30-minute dictation comes through cleanly and completely.
-- **Faster long transcriptions.** The pieces are transcribed in parallel, so long recordings finish noticeably quicker.
-- **Graceful handling of API rate limits.** When your provider is busy (especially on Groq's free tier), Wispah now paces and retries automatically instead of failing — tuned for each provider.
+- **See what's happening during transcription.** The transcribing indicator no longer just spins silently — if things take a while you'll see a "Still working on it…" notice, and if the connection hiccups or the service is rate-limited, the overlay now shows that it's retrying.
+- **Cancel a transcription.** Added a Cancel button to the transcribing overlay so you can stop a slow or stuck transcription instead of waiting it out.
+- **Cleaner cancelling.** Cancelling now quietly returns to Ready instead of flashing an error, and it no longer pastes a half-finished result.
 
 ## Requirements
 
