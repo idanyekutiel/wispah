@@ -51,6 +51,9 @@ final class AudioChunker {
         var overlapSeconds: Double = 2.0
         /// Half-width of the window (around the target) searched for the quietest point.
         var boundarySearchSeconds: Double = 8.0
+        /// A trailing chunk shorter than this is merged into the previous one. Whisper
+        /// hallucinates badly on very short clips, so a 2s tail must never go out alone.
+        var minTailSeconds: Double = 10.0
         /// RMS-envelope frame size used for silence detection.
         var envelopeFrameSeconds: Double = 0.02
 
@@ -88,6 +91,14 @@ final class AudioChunker {
             rangeStart = max(0, cut - configuration.overlapSeconds)
         }
         ranges.append((rangeStart, totalSeconds))
+
+        // A tiny trailing chunk hallucinates — fold it back into the previous chunk
+        // (which then slightly exceeds the max length, still far under any provider limit).
+        if ranges.count >= 2, let last = ranges.last, (last.end - last.start) < configuration.minTailSeconds {
+            let previous = ranges[ranges.count - 2]
+            ranges[ranges.count - 2] = (previous.start, last.end)
+            ranges.removeLast()
+        }
 
         os_log(.info, log: recordingLog, "chunker: %.1fs split into %d chunks at cuts %{public}@",
                totalSeconds, ranges.count, cutTimes.map { String(format: "%.1f", $0) }.joined(separator: ","))
