@@ -80,18 +80,24 @@ final class AudioRecorder: NSObject, ObservableObject {
     private let tapLock = NSLock()
     private var bufferCount: Int = 0
     private var speechBufferCount: Int = 0
+    private var quietSpeechBufferCount: Int = 0
     private var readyFired = false
     private var firstSpeechTime: TimeInterval = 0
     private var lastSpeechTime: TimeInterval = 0
     private var lastNonSilentTime: TimeInterval = 0
+    private var peakRMS: Float = 0.0
     private var smoothedLevel: Float = 0.0
 
     @Published var isRecording = false
     @Published var audioLevel: Float = 0.0
-    private let silenceThresholdRMS: Float = 0.005
+    /// Quiet microphones and a low macOS input-volume setting can put real speech well
+    /// below the old 0.005/0.015 cutoffs. Keep a conservative low-level path so a valid
+    /// recording is not silently discarded before Whisper gets a chance to inspect it.
+    private let quietSpeechThresholdRMS: Float = 0.0008
     private let speechThresholdRMS: Float = 0.015
-    /// Minimum speech buffers required (~0.3s of speech).
+    /// A few strong buffers are enough; quiet audio must be sustained to reject clicks.
     private let minSpeechBuffers: Int = 4
+    private let minQuietSpeechBuffers: Int = 12
     private let startupTimeout: TimeInterval = 2.0
     /// Timestamp gaps larger than this are padded with silence to keep duration honest.
     private let gapDetectionThresholdSeconds: Double = 0.08
@@ -112,10 +118,12 @@ final class AudioRecorder: NSObject, ObservableObject {
         defer { tapLock.unlock() }
         bufferCount = 0
         speechBufferCount = 0
+        quietSpeechBufferCount = 0
         readyFired = false
         firstSpeechTime = 0
         lastSpeechTime = 0
         lastNonSilentTime = 0
+        peakRMS = 0.0
         smoothedLevel = 0.0
     }
 
@@ -515,7 +523,9 @@ final class AudioRecorder: NSObject, ObservableObject {
         tapLock.lock()
         bufferCount += 1
         currentBufferCount = bufferCount
-        if rmsValue > silenceThresholdRMS {
+        peakRMS = max(peakRMS, rmsValue)
+        if rmsValue > quietSpeechThresholdRMS {
+            quietSpeechBufferCount += 1
             lastNonSilentTime = elapsed
         }
         if rmsValue > speechThresholdRMS {
@@ -612,6 +622,7 @@ final class AudioRecorder: NSObject, ObservableObject {
         tapLock.lock()
         defer { tapLock.unlock() }
         return speechBufferCount >= minSpeechBuffers
+            || quietSpeechBufferCount >= minQuietSpeechBuffers
     }
 
     var writtenDuration: TimeInterval {
@@ -678,16 +689,20 @@ final class AudioRecorder: NSObject, ObservableObject {
         tapLock.lock()
         let recordedBuffers = bufferCount
         let recordedSpeechBuffers = speechBufferCount
+        let recordedQuietSpeechBuffers = quietSpeechBufferCount
         let lastAudioTime = lastNonSilentTime
+        let recordedPeakRMS = peakRMS
         tapLock.unlock()
         os_log(
             .info,
             log: recordingLog,
-            "%{public}@() after %.3fms, buffers=%d, speechBuffers=%d, lastAudio=%.2fs",
+            "%{public}@() after %.3fms, buffers=%d, speechBuffers=%d, quietSpeechBuffers=%d, peakRMS=%.6f, lastAudio=%.2fs",
             label,
             (CFAbsoluteTimeGetCurrent() - recordingStartTime) * 1000,
             recordedBuffers,
             recordedSpeechBuffers,
+            recordedQuietSpeechBuffers,
+            recordedPeakRMS,
             lastAudioTime
         )
     }

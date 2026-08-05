@@ -6,9 +6,8 @@
 
 ## Changelog
 
-- **See what's happening during transcription.** The transcribing indicator no longer just spins silently — if things take a while you'll see a "Still working on it…" notice, and if the connection hiccups or the service is rate-limited, the overlay now shows that it's retrying.
-- **Cancel a transcription.** Added a Cancel button to the transcribing overlay so you can stop a slow or stuck transcription instead of waiting it out.
-- **Cleaner cancelling.** Cancelling now quietly returns to Ready instead of flashing an error, and it no longer pastes a half-finished result.
+- **Fixed quiet recordings disappearing.** Wispah no longer silently drops valid recordings when the microphone input volume is low. Sustained quiet speech now continues into transcription, appears in the Run Log, and pastes normally.
+- **Better recording diagnostics.** Recording logs now include quiet-speech activity and peak input level, making microphone-volume problems much easier to identify.
 
 ## Requirements
 
