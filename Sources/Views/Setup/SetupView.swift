@@ -46,6 +46,7 @@ struct SetupView: View {
     @State private var testTranscript: String = ""
     @State private var testError: String? = nil
     @State private var testAudioLevelCancellable: AnyCancellable? = nil
+    @State private var testTranscriptionTask: Task<Void, Never>? = nil
     @State private var testMicPulsing = false
     @State private var testRecordingStartTime: Date? = nil
     @State private var testSpeculativeToggleRecording = false
@@ -362,7 +363,7 @@ struct SetupView: View {
                         instructionRow(number: "3", text: "Click **Create API Key** and copy it")
                     }
                     if appState.apiProvider == .groq {
-                        Text("Groq provides unlimited free inference for individuals.")
+                        Text("Groq provides a free plan with rate limits; no paid tier is required.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
@@ -1315,38 +1316,46 @@ struct SetupView: View {
             return
         }
 
-        // Run the SAME pipeline the app uses for real (preprocess → temperature 0 →
-        // validation → smart re-roll), so a passing test genuinely reflects the user's
+        // Run the SAME pipeline the app uses for real (preprocess → deterministic STT →
+        // validation → independent recovery), so a passing test genuinely reflects the user's
         // working setup — language, vocabulary, and provider all included.
         let expectedDuration = recorder.lastNonSilentDuration
-        Task {
+        testTranscriptionTask?.cancel()
+        testTranscriptionTask = Task {
             do {
-                let service = TranscriptionService(
-                    apiKey: appState.activeAPIKey,
-                    baseURL: appState.activeBaseURL,
-                    model: appState.whisperModelId,
-                    language: appState.transcriptionLanguage
-                )
+                let service = appState.makePrimaryTranscriptionService(customVocabulary: appState.customVocabulary)
+                let recoveryService = appState.makeRecoveryTranscriptionService(customVocabulary: appState.customVocabulary)
                 let source = AudioSource(label: "onboarding_test", applyPreprocessing: true, replaceSavedAudio: false, applySpeechTrimming: true) { url }
                 let outcome = try await appState.runUnifiedTranscription(
                     sources: [source],
                     savedAudioFileName: nil,
                     expectedDurationSeconds: expectedDuration,
                     vocabularyPrompt: appState.vocabularyOnlySTTPrompt(customVocabulary: appState.customVocabulary),
-                    transcriptionService: service
+                    transcriptionService: service,
+                    recoveryTranscriptionService: recoveryService
                 )
+                guard !Task.isCancelled else {
+                    recorder.cleanup()
+                    return
+                }
                 await MainActor.run {
-                    testTranscript = outcome.rawTranscript
+                    testTranscript = outcome.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
                         testPhase = .done
                     }
+                    testTranscriptionTask = nil
                 }
             } catch {
+                if Task.isCancelled || AppState.isCancellation(error) {
+                    recorder.cleanup()
+                    return
+                }
                 await MainActor.run {
                     testError = error.localizedDescription
                     withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
                         testPhase = .done
                     }
+                    testTranscriptionTask = nil
                 }
             }
             recorder.cleanup()
@@ -1455,14 +1464,26 @@ struct SetupView: View {
         appState.hotkeyManager.onSpeculativeCancel = nil
         testAudioLevelCancellable?.cancel()
         testAudioLevelCancellable = nil
+        testTranscriptionTask?.cancel()
+        testTranscriptionTask = nil
         if let recorder = testAudioRecorder, recorder.isRecording {
             _ = recorder.stopRecording()
             recorder.cleanup()
         }
         testAudioRecorder = nil
+        if testPhase == .recording || testPhase == .transcribing {
+            testPhase = .idle
+            testTranscript = ""
+            testError = nil
+            testAudioLevel = 0
+            testRecordingStartTime = nil
+            testSpeculativeToggleRecording = false
+        }
     }
 
     private func resetTest() {
+        testTranscriptionTask?.cancel()
+        testTranscriptionTask = nil
         testPhase = .idle
         testTranscript = ""
         testError = nil

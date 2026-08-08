@@ -2,15 +2,15 @@ import Foundation
 import os.log
 
 /// Progress signals emitted by the engine while a transcription is in flight, so the UI
-/// can surface what's happening (a retry, a re-roll) instead of an opaque spinner.
+/// can surface retries and independent recovery instead of an opaque spinner.
 /// Delivered from arbitrary task contexts — handlers must hop to the main actor.
 enum TranscriptionProgress: Sendable {
     /// A transient network failure is being retried.
     case retryingNetwork
     /// A chunk hit a 429 and is waiting to retry. `attempt` is 1-based.
     case rateLimited(attempt: Int, maxAttempts: Int)
-    /// A weak first result triggered the one smart re-roll. `reason` is human-readable.
-    case rerolling(reason: String)
+    /// A weak first result is being checked by an independent provider/model.
+    case recovering(reason: String)
 }
 
 /// Outcome of a single engine transcription attempt.
@@ -22,10 +22,10 @@ struct EngineResult {
     let isHighConfidence: Bool
     /// How many times a request was retried due to a transient network error.
     let networkRetryCount: Int
-    /// Whether the engine re-rolled (one extra attempt) due to a weak first result.
-    let didReroll: Bool
-    /// Why the re-roll happened (e.g. "empty result", "repeat loop") — nil if none.
-    let rerollReason: String?
+    /// Whether an independent provider/model checked a weak first result.
+    let didRecoveryAttempt: Bool
+    /// Why recovery was attempted (e.g. "empty result", "repeat loop") — nil if none.
+    let recoveryReason: String?
 
     var trimmedTranscript: String {
         rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -40,31 +40,32 @@ struct EngineResult {
 /// "retranscribe from history" call `transcribe` so the highest-quality path is
 /// guaranteed identical no matter how it was triggered.
 ///
-/// Responsibilities: send one request with `temperature=0`, validate the result,
-/// and re-roll once on a suspicious/empty/incomplete result (Whisper's server-side
-/// temperature fallback is nondeterministic, so a second attempt often comes back
-/// clean — this is what a manual "redo" did before, now built in).
+/// Responsibilities: send one deterministic request, validate the result, and ask an
+/// independent provider/model to recover a suspicious/empty/incomplete result when one
+/// is configured. Repeating the same weak audio at a higher temperature is deliberately
+/// avoided because it trades a recognizable hallucination for a less predictable one.
 ///
 /// Audio preprocessing and saved-file bookkeeping stay in the orchestration layer
 /// (they are deterministic and shared by both callers, so they don't affect path
 /// parity); the engine receives an upload-ready file.
 final class TranscriptionEngine {
     private let service: TranscriptionService
+    private let recoveryService: TranscriptionService?
     private let chunker: AudioChunker
     /// Optional progress sink. Called from concurrent task contexts, so it's `@Sendable`
     /// and implementations must marshal to the main actor before touching UI.
     private let onProgress: (@Sendable (TranscriptionProgress) -> Void)?
 
     /// Long-audio coverage below this fraction of the expected speech duration is
-    /// treated as incomplete and worth one re-roll. Kept conservative (0.6) so normal
+    /// treated as incomplete and worth an independent recovery check. Kept conservative
+    /// (0.6) so normal
     /// leading/trailing silence doesn't masquerade as a truncated transcript.
     private let minimumCoverageFraction = 0.6
     /// Recordings at or above this length are eligible for the coverage check.
     private let longRecordingThresholdSeconds: Double = 30
-    /// Temperature for the single re-roll. The first attempt is deterministic (0); a stuck
-    /// hallucination ("thank you for watching" on silence) reproduces verbatim at 0, so the
-    /// re-roll must perturb the decoder to have any chance of escaping it.
-    private let rerollTemperature: Double = 0.4
+    /// Bounded transient retry budget. Three total attempts handles brief provider/network
+    /// faults without turning a held hotkey into an unbounded wait.
+    private let maxTransientRetries = 2
 
     /// Recordings longer than this are split into overlapping chunks transcribed
     /// independently and stitched back together (see `transcribeChunked`). Below it, the
@@ -75,10 +76,12 @@ final class TranscriptionEngine {
 
     init(
         service: TranscriptionService,
+        recoveryService: TranscriptionService? = nil,
         chunker: AudioChunker = AudioChunker(),
         onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil
     ) {
         self.service = service
+        self.recoveryService = recoveryService
         self.chunker = chunker
         self.onProgress = onProgress
         self.rateLimitPolicy = service.provider.chunkRateLimitPolicy
@@ -113,25 +116,68 @@ final class TranscriptionEngine {
         return try await transcribeSingleFile(uploadURL: uploadURL, prompt: prompt, expectedDurationSeconds: expectedDurationSeconds)
     }
 
-    /// Transcribe one upload-ready file as a single request, with the smart re-roll.
+    /// Transcribe one upload-ready file and independently verify only weak results.
     private func transcribeSingleFile(
         uploadURL: URL,
         prompt: String?,
-        expectedDurationSeconds: Double
+        expectedDurationSeconds: Double,
+        rateLimitRetryIsManagedExternally: Bool = false
     ) async throws -> EngineResult {
-        var (result, networkRetryCount) = try await requestCountingNetworkRetries(uploadURL, prompt: prompt)
+        var (result, networkRetryCount) = try await requestCountingNetworkRetries(
+            using: service,
+            uploadURL,
+            prompt: prompt,
+            retryRateLimits: !rateLimitRetryIsManagedExternally
+        )
 
-        // The empty/suspicious/incomplete re-roll lives here only — exactly one extra
-        // attempt — so a weak result never balloons into many requests.
-        var didReroll = false
-        let rerollReason = rerollReason(result, expected: expectedDurationSeconds)
-        if let rerollReason {
-            didReroll = true
-            onProgress?(.rerolling(reason: rerollReason))
-            os_log(.info, log: recordingLog, "engine: %{public}@ — one smart re-roll at temp %.1f", rerollReason, rerollTemperature)
-            let (reroll, rerollNetworkRetries) = try await requestCountingNetworkRetries(uploadURL, prompt: prompt, temperature: rerollTemperature)
-            networkRetryCount += rerollNetworkRetries
-            result = preferBetter(result, reroll, expected: expectedDurationSeconds)
+        var didRecoveryAttempt = false
+        let recoveryReason = recoveryReason(result, expected: expectedDurationSeconds)
+        if let recoveryReason, let recoveryService {
+            didRecoveryAttempt = true
+            onProgress?(.recovering(reason: recoveryReason))
+            os_log(
+                .info,
+                log: recordingLog,
+                "engine: %{public}@ — checking with independent %{public}@/%{public}@",
+                recoveryReason,
+                recoveryService.provider.displayName,
+                recoveryService.model
+            )
+            do {
+                let (recovery, recoveryNetworkRetries) = try await requestCountingNetworkRetries(
+                    using: recoveryService,
+                    uploadURL,
+                    prompt: prompt,
+                    retryRateLimits: !rateLimitRetryIsManagedExternally
+                )
+                networkRetryCount += recoveryNetworkRetries
+                result = preferBetter(result, recovery, expected: expectedDurationSeconds)
+            } catch {
+                if Task.isCancelled || AppState.isCancellation(error) { throw error }
+                os_log(
+                    .error,
+                    log: recordingLog,
+                    "engine: independent recovery failed; preserving first result: %{public}@",
+                    error.localizedDescription
+                )
+            }
+        } else if let recoveryReason {
+            os_log(
+                .info,
+                log: recordingLog,
+                "engine: %{public}@ — no independent recovery provider configured",
+                recoveryReason
+            )
+            // A stripped outro may leave a useful, grounded prefix. Empty, looping, or
+            // incomplete text is unsafe to paste as best-effort when nobody independently
+            // confirmed it.
+            if recoveryReason != "suspicious outro" {
+                result = TranscriptionResult(
+                    transcript: "",
+                    hadSuspiciousOutro: result.hadSuspiciousOutro,
+                    coveredAudioDuration: result.coveredAudioDuration
+                )
+            }
         }
 
         return EngineResult(
@@ -139,8 +185,8 @@ final class TranscriptionEngine {
             coveredAudioDuration: result.coveredAudioDuration,
             isHighConfidence: isHighConfidence(result, expected: expectedDurationSeconds),
             networkRetryCount: networkRetryCount,
-            didReroll: didReroll,
-            rerollReason: rerollReason
+            didRecoveryAttempt: didRecoveryAttempt,
+            recoveryReason: recoveryReason
         )
     }
 
@@ -149,7 +195,7 @@ final class TranscriptionEngine {
     /// Split a long recording at silence into overlapping chunks, transcribe them
     /// concurrently (each conditioned only on the vocabulary prompt — never on a sibling
     /// chunk's text, which is what stops Whisper's hallucinations from propagating), then
-    /// stitch the de-overlapped transcripts. Per-chunk re-roll and validation come for free
+    /// stitch the de-overlapped transcripts. Per-chunk recovery and validation come for free
     /// because each chunk goes through `transcribeSingleFile`.
     private func transcribeChunked(uploadURL: URL, prompt: String?) async throws -> EngineResult {
         let chunks = try await chunker.split(uploadURL)
@@ -168,24 +214,26 @@ final class TranscriptionEngine {
         let merged = stitch(results)
 
         let networkRetryCount = results.reduce(0) { $0 + $1.networkRetryCount }
-        let didReroll = results.contains { $0.didReroll }
-        let rerollReason = results.compactMap { $0.rerollReason }.first
+        let didRecoveryAttempt = results.contains { $0.didRecoveryAttempt }
+        let recoveryReason = results.compactMap { $0.recoveryReason }.first
         let coveredAudioDuration = chunks.map { $0.endSeconds }.max()
         let mergedTrimmed = merged.trimmingCharacters(in: .whitespacesAndNewlines)
         // Coverage is structurally complete (we transcribed every chunk), so confidence
         // hinges only on getting non-empty, non-looping text back.
-        let highConfidence = !mergedTrimmed.isEmpty && !hasRepeatLoop(mergedTrimmed)
+        let highConfidence = !mergedTrimmed.isEmpty
+            && !hasRepeatLoop(mergedTrimmed)
+            && results.allSatisfy(\.isHighConfidence)
 
-        os_log(.info, log: recordingLog, "engine: chunked %d pieces → %d chars, reroll=%{public}d, netRetries=%d",
-               chunks.count, mergedTrimmed.count, didReroll, networkRetryCount)
+        os_log(.info, log: recordingLog, "engine: chunked %d pieces → %d chars, recovery=%{public}d, netRetries=%d",
+               chunks.count, mergedTrimmed.count, didRecoveryAttempt, networkRetryCount)
 
         return EngineResult(
             rawTranscript: merged,
             coveredAudioDuration: coveredAudioDuration,
             isHighConfidence: highConfidence,
             networkRetryCount: networkRetryCount,
-            didReroll: didReroll,
-            rerollReason: didReroll ? (rerollReason ?? "chunk re-roll") : nil
+            didRecoveryAttempt: didRecoveryAttempt,
+            recoveryReason: didRecoveryAttempt ? (recoveryReason ?? "chunk recovery") : nil
         )
     }
 
@@ -236,7 +284,8 @@ final class TranscriptionEngine {
                 return try await transcribeSingleFile(
                     uploadURL: chunk.url,
                     prompt: prompt,
-                    expectedDurationSeconds: chunk.durationSeconds
+                    expectedDurationSeconds: chunk.durationSeconds,
+                    rateLimitRetryIsManagedExternally: true
                 )
             } catch let error as TranscriptionError where error.isRateLimited && attempt < rateLimitPolicy.maxRateLimitRetries {
                 attempt += 1
@@ -290,22 +339,58 @@ final class TranscriptionEngine {
         word.lowercased().trimmingCharacters(in: CharacterSet.punctuationCharacters)
     }
 
-    // MARK: - Request (with transient + empty re-tries)
+    // MARK: - Request (bounded transient retries)
 
-    /// One transcription request, retried once on a transient network error. Returns the
-    /// result plus how many network retries were spent (0 or 1).
-    /// (Empty/weak-result re-rolls are owned solely by `transcribe` so they can't stack.)
+    /// Retry timeouts, connection failures, HTTP 408, and HTTP 5xx with exponential
+    /// backoff + jitter. Weak text never enters this loop; semantic recovery uses the
+    /// independent service above.
     private func requestCountingNetworkRetries(
+        using requestService: TranscriptionService,
         _ uploadURL: URL,
         prompt: String?,
-        temperature: Double = 0
+        retryRateLimits: Bool = true
     ) async throws -> (TranscriptionResult, Int) {
-        do {
-            return (try await service.transcribeDetailed(fileURL: uploadURL, prompt: prompt, temperature: temperature), 0)
-        } catch let error where AppState.isTransientNetworkError(error) {
-            onProgress?(.retryingNetwork)
-            os_log(.info, log: recordingLog, "engine: transient network error — retrying once: %{public}@", error.localizedDescription)
-            return (try await service.transcribeDetailed(fileURL: uploadURL, prompt: prompt, temperature: temperature), 1)
+        var retryCount = 0
+        while true {
+            do {
+                return (
+                    try await requestService.transcribeDetailed(
+                        fileURL: uploadURL,
+                        prompt: prompt,
+                        temperature: 0
+                    ),
+                    retryCount
+                )
+            } catch {
+                let transient = AppState.isTransientNetworkError(error)
+                    || (error as? TranscriptionError)?.isTimeout == true
+                    || (error as? TranscriptionError)?.isServerUnavailable == true
+                let rateLimited = retryRateLimits
+                    && (error as? TranscriptionError)?.isRateLimited == true
+                guard (transient || rateLimited), retryCount < maxTransientRetries else { throw error }
+
+                retryCount += 1
+                if rateLimited {
+                    onProgress?(.rateLimited(attempt: retryCount, maxAttempts: maxTransientRetries))
+                } else {
+                    onProgress?(.retryingNetwork)
+                }
+                let serverDelay = (error as? TranscriptionError)?.retryAfterSeconds
+                let exponential = (rateLimited ? 2.0 : 0.35) * pow(2.0, Double(retryCount - 1))
+                let jitter = Double.random(in: 0...0.20)
+                let delay = serverDelay.map { min(max(0, $0), 30) }
+                    ?? min(exponential + jitter, 5)
+                os_log(
+                    .info,
+                    log: recordingLog,
+                    "engine: transient failure — retry %d/%d in %.2fs: %{public}@",
+                    retryCount,
+                    maxTransientRetries,
+                    delay,
+                    error.localizedDescription
+                )
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
         }
     }
 
@@ -320,8 +405,8 @@ final class TranscriptionEngine {
         return true
     }
 
-    /// The reason this result is weak enough to justify a single re-roll, or nil if it's fine.
-    private func rerollReason(_ result: TranscriptionResult, expected: Double) -> String? {
+    /// The reason this result needs an independent recovery check, or nil if it's fine.
+    private func recoveryReason(_ result: TranscriptionResult, expected: Double) -> String? {
         let text = result.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return expected > 1.5 ? "empty result" : nil }
         if result.hadSuspiciousOutro { return "suspicious outro" }
@@ -368,7 +453,7 @@ final class TranscriptionEngine {
 
     /// Conservative detector for Whisper's classic repeat-loop hallucination. Only
     /// flags unmistakable loops (the same word repeated many times in a row, or a
-    /// very low unique-word ratio over a long transcript) so we never re-roll good audio.
+    /// very low unique-word ratio over a long transcript) so good audio is never retried.
     private func hasRepeatLoop(_ text: String) -> Bool {
         let words = text
             .lowercased()

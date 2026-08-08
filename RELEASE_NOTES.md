@@ -6,8 +6,12 @@
 
 ## Changelog
 
-- **Fixed quiet recordings disappearing.** Wispah no longer silently drops valid recordings when the microphone input volume is low. Sustained quiet speech now continues into transcription, appears in the Run Log, and pastes normally.
-- **Better recording diagnostics.** Recording logs now include quiet-speech activity and peak input level, making microphone-volume problems much easier to identify.
+- **Far fewer hallucinations on silence and background noise.** An adaptive speech detector now trims long silent lead-ins and tails before upload, preserves short and quiet dictation, and refuses to send recordings that contain only clicks or noise. Common fake endings such as “Thank you for watching” and obvious repetition loops are also rejected instead of pasted.
+- **Groq-first models refreshed.** Groq now uses `whisper-large-v3` for its most accurate production transcription and `openai/gpt-oss-120b` for fast cleanup. Retired Llama models and weaker selectable transcription models have been removed. These models work with Groq's free plan, subject to its rate limits.
+- **Safer retries and recovery.** Network timeouts, rate limits, and temporary server failures use bounded backoff. Weak text is no longer rerun through the same model at a higher temperature; an independent provider is consulted only when its API key is already configured.
+- **OpenAI transcription upgraded.** The optional OpenAI provider now uses `gpt-transcribe`, including its language and keyword controls, while Groq remains the default workflow.
+- **Post-processing restored.** Transcript cleanup uses current low-latency models with reasoning kept minimal, and failed cleanup now falls back to the raw grounded transcript with a useful diagnostic.
+- **Onboarding test stabilized.** The setup recording test now runs through the same speech detection and transcription pipeline as normal dictation. Leaving the test while recording or transcribing cleanly cancels and resets it, so returning no longer leaves onboarding stuck.
 
 ## Requirements
 

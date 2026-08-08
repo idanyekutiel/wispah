@@ -160,6 +160,12 @@ final class AppState: ObservableObject, @unchecked Sendable {
     @Published var llmModelId: String {
         didSet {
             UserDefaults.standard.set(llmModelId, forKey: "llm_model_id")
+            contextService = AppContextService(
+                apiKey: activeAPIKey,
+                baseURL: apiProvider.baseURL,
+                llmModel: llmModelId,
+                visionModel: apiProvider.defaultVisionModel
+            )
         }
     }
 
@@ -402,21 +408,18 @@ final class AppState: ObservableObject, @unchecked Sendable {
 
         let apiProvider = APIProvider(rawValue: UserDefaults.standard.string(forKey: "api_provider") ?? "") ?? .groq
         let openaiAPIKey = Self.loadStoredAPIKey(account: "openai_api_key")
-        let whisperModelId: String
-        if let storedModelId = UserDefaults.standard.string(forKey: "whisper_model_id"), !storedModelId.isEmpty {
-            whisperModelId = storedModelId
-        } else if let legacyModel = UserDefaults.standard.string(forKey: "whisper_model"), !legacyModel.isEmpty {
-            whisperModelId = legacyModel
-        } else {
-            whisperModelId = apiProvider.defaultWhisperModel
-        }
+        let storedWhisperModel = UserDefaults.standard.string(forKey: "whisper_model_id")
+            ?? UserDefaults.standard.string(forKey: "whisper_model")
+        let whisperModelId = apiProvider.whisperModels.contains { $0.id == storedWhisperModel }
+            ? storedWhisperModel!
+            : apiProvider.defaultWhisperModel
 
-        let llmModelId: String
-        if let storedLLMModelId = UserDefaults.standard.string(forKey: "llm_model_id"), !storedLLMModelId.isEmpty {
-            llmModelId = storedLLMModelId
-        } else {
-            llmModelId = apiProvider.defaultLLMModel
-        }
+        // Retired/deleted picker values are migrated immediately instead of failing every
+        // request forever behind a generic raw-transcript fallback.
+        let storedLLMModel = UserDefaults.standard.string(forKey: "llm_model_id")
+        let llmModelId = apiProvider.llmModels.contains { $0.id == storedLLMModel }
+            ? storedLLMModel!
+            : apiProvider.defaultLLMModel
 
         let storedLanguage = UserDefaults.standard.string(forKey: "transcription_language") ?? ""
         let transcriptionLanguage: String? = storedLanguage.isEmpty ? nil : storedLanguage
@@ -487,6 +490,9 @@ final class AppState: ObservableObject, @unchecked Sendable {
         self.temporarilyUnavailablePreferredMicrophoneID = UserDefaults.standard.string(
             forKey: unavailablePreferredMicrophoneStorageKey
         )
+
+        UserDefaults.standard.set(whisperModelId, forKey: "whisper_model_id")
+        UserDefaults.standard.set(llmModelId, forKey: "llm_model_id")
 
         refreshAvailableMicrophones()
         installAudioDeviceListener()

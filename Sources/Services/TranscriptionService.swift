@@ -13,18 +13,27 @@ class TranscriptionService {
     private let baseURL: String
     private let transcriptionModel: String
     private let transcriptionLanguage: String?
+    private let vocabularyKeywords: [String]
     private let minimumTimeoutSeconds: TimeInterval = 15
     private let maximumTimeoutSeconds: TimeInterval = 120
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", model: String = "whisper-large-v3", language: String? = nil) {
+    init(
+        apiKey: String,
+        baseURL: String = "https://api.groq.com/openai/v1",
+        model: String = "whisper-large-v3",
+        language: String? = nil,
+        keywords: [String] = []
+    ) {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.transcriptionModel = model
         self.transcriptionLanguage = language
+        self.vocabularyKeywords = keywords
     }
 
     /// Provider inferred from the base URL — drives provider-specific rate-limit pacing.
     var provider: APIProvider { APIProvider.from(baseURL: baseURL) }
+    var model: String { transcriptionModel }
 
     /// Parse a 429 `Retry-After` header. Both providers send integer seconds; an HTTP-date
     /// form is tolerated as a fallback. Returns nil when absent or unparseable.
@@ -86,10 +95,8 @@ class TranscriptionService {
         try await transcribeDetailed(fileURL: fileURL, prompt: prompt, temperature: temperature).transcript
     }
 
-    /// - Parameter temperature: decoder temperature. 0 maximizes run-to-run stability for
-    ///   normal audio; a re-roll passes a higher value so it can escape a *stuck*
-    ///   hallucination (the same file at temp 0 is deterministic, so re-rolling at 0 just
-    ///   reproduces the bad result).
+    /// - Parameter temperature: legacy Whisper decoder temperature. The engine always
+    ///   uses zero; `gpt-transcribe` omits this field entirely.
     func transcribeDetailed(fileURL: URL, prompt: String? = nil, temperature: Double = 0) async throws -> TranscriptionResult {
         let timeout = await timeoutForFile(fileURL)
         return try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
@@ -154,8 +161,10 @@ class TranscriptionService {
                 // Surfacing it lets the engine wait exactly as long as the server asks
                 // before retrying the chunk, instead of guessing or giving up.
                 throw TranscriptionError.rateLimited(Self.parseRetryAfterSeconds(from: httpResponse))
+            case 408:
+                throw TranscriptionError.serverUnavailable(statusCode, Self.parseRetryAfterSeconds(from: httpResponse))
             case 500...:
-                throw TranscriptionError.submissionFailed("Server error (\(statusCode)). Please try again later.")
+                throw TranscriptionError.serverUnavailable(statusCode, Self.parseRetryAfterSeconds(from: httpResponse))
             default:
                 throw TranscriptionError.submissionFailed("Unexpected error (HTTP \(statusCode)): \(truncatedBody)")
             }
@@ -175,26 +184,37 @@ class TranscriptionService {
         append("Content-Disposition: form-data; name=\"model\"\r\n\r\n")
         append("\(model)\r\n")
 
-        // gpt-4o-transcribe models only support "json", not "verbose_json"
+        // GPT transcription models return the compact JSON contract. Whisper's
+        // verbose response is still useful for segment coverage/no-speech metadata.
+        let usesGPTTranscribeContract = model == "gpt-transcribe"
         let responseFormat = model.contains("transcribe") ? "json" : "verbose_json"
         append("--\(boundary)\r\n")
         append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
         append("\(responseFormat)\r\n")
 
-        // temperature=0 starts Whisper's decoder in deterministic mode — best run-to-run
-        // stability for normal audio. A re-roll passes a higher value (see TranscriptionEngine)
-        // so it can break out of a *stuck* hallucination instead of reproducing it.
-        append("--\(boundary)\r\n")
-        append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n")
-        append("\(temperature)\r\n")
+        // `gpt-transcribe` does not use Whisper's decoder-temperature contract.
+        // Omitting it also prevents the old high-temperature retry behavior from
+        // leaking into the new model path.
+        if !usesGPTTranscribeContract {
+            append("--\(boundary)\r\n")
+            append("Content-Disposition: form-data; name=\"temperature\"\r\n\r\n")
+            append("\(temperature)\r\n")
+        }
 
         if let language, !language.isEmpty {
             append("--\(boundary)\r\n")
-            append("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+            let fieldName = usesGPTTranscribeContract ? "languages[]" : "language"
+            append("Content-Disposition: form-data; name=\"\(fieldName)\"\r\n\r\n")
             append("\(language)\r\n")
         }
 
-        if let prompt, !prompt.isEmpty {
+        if usesGPTTranscribeContract {
+            for keyword in sanitizedKeywords(vocabularyKeywords) {
+                append("--\(boundary)\r\n")
+                append("Content-Disposition: form-data; name=\"keywords[]\"\r\n\r\n")
+                append("\(keyword)\r\n")
+            }
+        } else if let prompt, !prompt.isEmpty {
             append("--\(boundary)\r\n")
             append("Content-Disposition: form-data; name=\"prompt\"\r\n\r\n")
             append("\(prompt)\r\n")
@@ -208,6 +228,25 @@ class TranscriptionService {
         append("--\(boundary)--\r\n")
 
         return body
+    }
+
+    /// GPT Transcribe rejects the entire request when a keyword contains XML brackets
+    /// or a line break. Drop only invalid entries; never let one dictionary typo take
+    /// transcription offline.
+    private func sanitizedKeywords(_ keywords: [String]) -> [String] {
+        var seen = Set<String>()
+        return keywords.compactMap { raw in
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty,
+                  !value.contains("<"),
+                  !value.contains(">"),
+                  !value.contains("\r"),
+                  !value.contains("\n"),
+                  seen.insert(value.lowercased()).inserted else {
+                return nil
+            }
+            return value
+        }
     }
 
     private func audioContentType(for fileName: String) -> String {
@@ -236,13 +275,14 @@ class TranscriptionService {
                     .compactMap { $0["end"] as? Double }
                     .max()
 
-                let avgNoSpeech = segments
-                    .compactMap { $0["no_speech_prob"] as? Double }
-                    .reduce(0, +) / Double(segments.count)
-                os_log(.info, "Whisper segments=%d, avg no_speech_prob=%.3f", segments.count, avgNoSpeech)
-                if avgNoSpeech > 0.95 {
-                    os_log(.info, "Very high no_speech_prob (%.3f) — treating as empty transcript", avgNoSpeech)
-                    return TranscriptionResult(transcript: "", hadSuspiciousOutro: false, coveredAudioDuration: coveredAudioDuration)
+                let noSpeechProbabilities = segments.compactMap { $0["no_speech_prob"] as? Double }
+                if !noSpeechProbabilities.isEmpty {
+                    let avgNoSpeech = noSpeechProbabilities.reduce(0, +) / Double(noSpeechProbabilities.count)
+                    os_log(.info, "Whisper segments=%d, avg no_speech_prob=%.3f", segments.count, avgNoSpeech)
+                    if avgNoSpeech > 0.95 {
+                        os_log(.info, "Very high no_speech_prob (%.3f) — treating as empty transcript", avgNoSpeech)
+                        return TranscriptionResult(transcript: "", hadSuspiciousOutro: false, coveredAudioDuration: coveredAudioDuration)
+                    }
                 }
             }
 
@@ -275,9 +315,22 @@ class TranscriptionService {
             return TranscriptionResult(transcript: "", hadSuspiciousOutro: true, coveredAudioDuration: coveredAudioDuration)
         }
 
-        if let stripped = strippingKnownHallucinatedOutroSuffix(from: trimmed), !stripped.isEmpty {
-            os_log(.info, "Removed known hallucinated transcript suffix")
-            return TranscriptionResult(transcript: stripped, hadSuspiciousOutro: true, coveredAudioDuration: coveredAudioDuration)
+        var strippedTranscript = trimmed
+        var removedOutro = false
+        // Remove every repeated suffix, not only the final copy. Whisper sometimes emits
+        // "Thank you for watching" two or more times; a one-pass sanitizer accidentally
+        // accepted the earlier copies as real speech.
+        while let stripped = strippingKnownHallucinatedOutroSuffix(from: strippedTranscript) {
+            strippedTranscript = stripped
+            removedOutro = true
+            if strippedTranscript.isEmpty { break }
+        }
+        if removedOutro {
+            if isKnownHallucinatedOutro(strippedTranscript) {
+                strippedTranscript = ""
+            }
+            os_log(.info, "Removed known hallucinated transcript suffix(es)")
+            return TranscriptionResult(transcript: strippedTranscript, hadSuspiciousOutro: true, coveredAudioDuration: coveredAudioDuration)
         }
 
         return TranscriptionResult(transcript: trimmed, hadSuspiciousOutro: false, coveredAudioDuration: coveredAudioDuration)
@@ -394,6 +447,7 @@ enum TranscriptionError: LocalizedError {
     case transcriptionFailed(String)
     case transcriptionTimedOut(TimeInterval)
     case rateLimited(TimeInterval?)
+    case serverUnavailable(Int, TimeInterval?)
     case pollFailed(String)
 
     var errorDescription: String? {
@@ -402,6 +456,7 @@ enum TranscriptionError: LocalizedError {
         case .submissionFailed(let msg): return "Submission failed: \(msg)"
         case .transcriptionTimedOut(let seconds): return "Transcription timed out after \(Int(seconds))s"
         case .rateLimited: return "Rate limit exceeded. Please wait and try again."
+        case .serverUnavailable(let statusCode, _): return "Transcription service unavailable (HTTP \(statusCode)). Please try again."
         case .transcriptionFailed(let msg): return "Transcription failed: \(msg)"
         case .pollFailed(let msg): return "Polling failed: \(msg)"
         }
@@ -417,9 +472,15 @@ enum TranscriptionError: LocalizedError {
         return false
     }
 
+    var isServerUnavailable: Bool {
+        if case .serverUnavailable = self { return true }
+        return false
+    }
+
     /// Server-requested wait (seconds) for a 429, if one was provided.
     var retryAfterSeconds: TimeInterval? {
         if case .rateLimited(let seconds) = self { return seconds }
+        if case .serverUnavailable(_, let seconds) = self { return seconds }
         return nil
     }
 }

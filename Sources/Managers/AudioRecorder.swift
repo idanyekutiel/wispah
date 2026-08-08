@@ -5,6 +5,7 @@ import os.log
 
 enum AudioRecorderError: LocalizedError {
     case invalidInputFormat(String)
+    case noSpeechDetected
     case missingInputDevice
     case startupTimedOut
     case captureSessionError(String)
@@ -13,6 +14,8 @@ enum AudioRecorderError: LocalizedError {
         switch self {
         case .invalidInputFormat(let details):
             return "Invalid input format: \(details)"
+        case .noSpeechDetected:
+            return "No speech detected in the recording."
         case .missingInputDevice:
             return "No audio input device available."
         case .startupTimedOut:
@@ -20,6 +23,20 @@ enum AudioRecorderError: LocalizedError {
         case .captureSessionError(let details):
             return "Audio capture failed: \(details)"
         }
+    }
+}
+
+struct SpeechActivityAnalysis {
+    let speechStartSeconds: Double
+    let speechEndSeconds: Double
+    let voicedSeconds: Double
+    let totalSeconds: Double
+    let noiseFloorRMS: Float
+    let speechThresholdRMS: Float
+
+    var speechFraction: Double {
+        guard totalSeconds > 0 else { return 0 }
+        return voicedSeconds / totalSeconds
     }
 }
 
@@ -727,9 +744,178 @@ final class AudioRecorder: NSObject, ObservableObject {
         }
     }
 
-    /// Downsample audio to 16KHz mono AAC, skip leading noise, and optionally trim trailing silence.
+    /// Analyze 20 ms frames with an adaptive noise floor, hysteresis-like gap merging,
+    /// and a minimum contiguous speech duration. A percentile noise estimate adapts to
+    /// quiet microphones without letting steady background hiss count as speech.
+    func analyzeSpeechActivity(in inputURL: URL) async throws -> SpeechActivityAnalysis? {
+        let asset = AVURLAsset(url: inputURL)
+        guard let audioTrack = try await asset.loadTracks(withMediaType: .audio).first else {
+            throw AudioRecorderError.invalidInputFormat("No audio track found")
+        }
+
+        let reader = try AVAssetReader(asset: asset)
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: 16_000.0,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 32,
+            AVLinearPCMIsFloatKey: true,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false,
+        ]
+        let output = AVAssetReaderTrackOutput(track: audioTrack, outputSettings: settings)
+        output.alwaysCopiesSampleData = false
+        guard reader.canAdd(output) else {
+            throw AudioRecorderError.invalidInputFormat("Unable to create speech-analysis reader")
+        }
+        reader.add(output)
+        guard reader.startReading() else {
+            throw AudioRecorderError.invalidInputFormat("Speech-analysis reader failed to start")
+        }
+
+        let samplesPerFrame = 320 // 20 ms at 16 kHz
+        var frameRMSValues: [Float] = []
+        var frameSquareSum: Double = 0
+        var samplesInFrame = 0
+        var totalSamples = 0
+
+        while reader.status == .reading, let sampleBuffer = output.copyNextSampleBuffer() {
+            guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { continue }
+            let byteCount = CMBlockBufferGetDataLength(blockBuffer)
+            guard byteCount >= MemoryLayout<Float>.size else { continue }
+
+            var bytes = Data(count: byteCount)
+            let copyStatus = bytes.withUnsafeMutableBytes { rawBuffer -> OSStatus in
+                guard let destination = rawBuffer.baseAddress else { return -1 }
+                return CMBlockBufferCopyDataBytes(
+                    blockBuffer,
+                    atOffset: 0,
+                    dataLength: byteCount,
+                    destination: destination
+                )
+            }
+            guard copyStatus == kCMBlockBufferNoErr else { continue }
+
+            bytes.withUnsafeBytes { rawBuffer in
+                let samples = rawBuffer.bindMemory(to: Float.self)
+                for sample in samples where sample.isFinite {
+                    let clamped = max(-1, min(1, sample))
+                    frameSquareSum += Double(clamped * clamped)
+                    samplesInFrame += 1
+                    totalSamples += 1
+                    if samplesInFrame == samplesPerFrame {
+                        frameRMSValues.append(Float(sqrt(frameSquareSum / Double(samplesInFrame))))
+                        frameSquareSum = 0
+                        samplesInFrame = 0
+                    }
+                }
+            }
+        }
+
+        if samplesInFrame >= samplesPerFrame / 2 {
+            frameRMSValues.append(Float(sqrt(frameSquareSum / Double(samplesInFrame))))
+        }
+        if reader.status == .failed {
+            throw AudioRecorderError.invalidInputFormat(
+                "Speech analysis failed: \(reader.error?.localizedDescription ?? "unknown")"
+            )
+        }
+
+        return Self.detectSpeechActivity(
+            frameRMSValues: frameRMSValues,
+            totalSeconds: Double(totalSamples) / 16_000.0,
+            frameDurationSeconds: Double(samplesPerFrame) / 16_000.0
+        )
+    }
+
+    private static func detectSpeechActivity(
+        frameRMSValues: [Float],
+        totalSeconds: Double,
+        frameDurationSeconds: Double
+    ) -> SpeechActivityAnalysis? {
+        guard !frameRMSValues.isEmpty, totalSeconds > 0 else { return nil }
+
+        let sorted = frameRMSValues.sorted()
+        let noiseIndex = min(sorted.count - 1, Int(Double(sorted.count - 1) * 0.20))
+        let noiseFloor = max(sorted[noiseIndex], 0.000_001)
+        // About 10 dB above the measured floor, with an absolute floor low enough for
+        // quiet built-in microphones and a cap that still catches speech in noisy rooms.
+        let speechThreshold = max(0.000_5, min(0.02, noiseFloor * 3.2))
+        let maximumGapFrames = max(1, Int(0.10 / frameDurationSeconds))
+        // Capture/session clicks in the saved failure corpus were typically ~220 ms.
+        // Requiring 280 ms removes them while retaining short one-word dictations.
+        let minimumSegmentFrames = max(1, Int(0.28 / frameDurationSeconds))
+
+        struct Segment {
+            let start: Int
+            let end: Int
+            let activeFrames: Int
+        }
+
+        var segments: [Segment] = []
+        var candidateStart: Int?
+        var lastActive = 0
+        var activeFrames = 0
+
+        func appendCandidate() {
+            guard let start = candidateStart else { return }
+            let span = lastActive - start + 1
+            if span >= minimumSegmentFrames && activeFrames >= minimumSegmentFrames / 2 {
+                segments.append(Segment(start: start, end: lastActive, activeFrames: activeFrames))
+            }
+        }
+
+        for (index, rms) in frameRMSValues.enumerated() {
+            if rms >= speechThreshold {
+                if candidateStart == nil { candidateStart = index }
+                lastActive = index
+                activeFrames += 1
+            } else if candidateStart != nil, index - lastActive > maximumGapFrames {
+                appendCandidate()
+                candidateStart = nil
+                activeFrames = 0
+            }
+        }
+        appendCandidate()
+
+        guard let first = segments.first, let last = segments.last else { return nil }
+        let totalActiveFrames = segments.reduce(0) { $0 + $1.activeFrames }
+        let voicedSeconds = Double(totalActiveFrames) * frameDurationSeconds
+        // For long mostly-silent clips, require more than a single click or keyboard burst.
+        // The cap keeps short, real one-word dictations valid.
+        let minimumVoicedSeconds = max(0.12, min(0.50, totalSeconds * 0.015))
+        guard voicedSeconds >= minimumVoicedSeconds else { return nil }
+        if totalSeconds >= 10, voicedSeconds / totalSeconds < 0.03 {
+            return nil
+        }
+
+        let leadingPadding = 0.20
+        // Quiet sentence endings often fall below the adaptive threshold. Keep a short
+        // hangover so final words survive without sending multi-second silent tails.
+        let trailingPadding = 0.75
+        let start = max(0, Double(first.start) * frameDurationSeconds - leadingPadding)
+        let end = min(totalSeconds, Double(last.end + 1) * frameDurationSeconds + trailingPadding)
+        guard end - start >= 0.10 else { return nil }
+
+        return SpeechActivityAnalysis(
+            speechStartSeconds: start,
+            speechEndSeconds: end,
+            voicedSeconds: voicedSeconds,
+            totalSeconds: totalSeconds,
+            noiseFloorRMS: noiseFloor,
+            speechThresholdRMS: speechThreshold
+        )
+    }
+
+    /// Downsample audio to 16KHz mono AAC, trim to an adaptively detected speech window,
+    /// and optionally honor an explicit legacy trim range.
     /// Returns the URL of the preprocessed file (caller should clean up).
-    func preprocessAudio(inputURL: URL, trimToSeconds: Double? = nil, skipLeadingSeconds: Double = 0) async throws -> URL {
+    func preprocessAudio(
+        inputURL: URL,
+        trimToSeconds: Double? = nil,
+        skipLeadingSeconds: Double = 0,
+        automaticallyTrimSpeech: Bool = false
+    ) async throws -> URL {
         let asset = AVURLAsset(url: inputURL)
         let outputURL = inputURL.deletingLastPathComponent()
             .appendingPathComponent("upload_\(UUID().uuidString).m4a")
@@ -749,10 +935,31 @@ final class AudioRecorder: NSObject, ObservableObject {
             throw AudioRecorderError.invalidInputFormat("No audio track found")
         }
 
-        // Only load the asset duration + set a trim range when trimming is actually
-        // requested. The common path passes no trimming, so this skips an asset-duration
-        // load on every upload.
-        if (trimToSeconds ?? 0) > 0 || skipLeadingSeconds > 0 {
+        let speechAnalysis = automaticallyTrimSpeech
+            ? try await analyzeSpeechActivity(in: inputURL)
+            : nil
+        if automaticallyTrimSpeech, speechAnalysis == nil {
+            os_log(.info, log: recordingLog, "adaptive VAD: no reliable speech found; refusing STT upload")
+            throw AudioRecorderError.noSpeechDetected
+        }
+
+        if let speechAnalysis {
+            let startTime = CMTime(seconds: speechAnalysis.speechStartSeconds, preferredTimescale: 48_000)
+            let endTime = CMTime(seconds: speechAnalysis.speechEndSeconds, preferredTimescale: 48_000)
+            reader.timeRange = CMTimeRange(start: startTime, end: endTime)
+            os_log(
+                .info,
+                log: recordingLog,
+                "adaptive VAD: range %.2fs-%.2fs/%.2fs, voiced=%.2fs (%.1f%%), floor=%.6f, threshold=%.6f",
+                speechAnalysis.speechStartSeconds,
+                speechAnalysis.speechEndSeconds,
+                speechAnalysis.totalSeconds,
+                speechAnalysis.voicedSeconds,
+                speechAnalysis.speechFraction * 100,
+                speechAnalysis.noiseFloorRMS,
+                speechAnalysis.speechThresholdRMS
+            )
+        } else if (trimToSeconds ?? 0) > 0 || skipLeadingSeconds > 0 {
             let duration = try await asset.load(.duration)
             let totalSeconds = CMTimeGetSeconds(duration)
             let startSeconds = min(skipLeadingSeconds, totalSeconds * 0.25) // never skip more than 25%

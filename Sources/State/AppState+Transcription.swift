@@ -1,10 +1,12 @@
 import Foundation
+import AVFoundation
 import os.log
 
 struct PreparedTranscriptionUpload {
     let uploadURL: URL
     let effectiveAudioFileName: String?
     let temporaryUploadURL: URL?
+    let uploadDurationSeconds: Double?
 }
 
 /// An ordered fallback source of audio for transcription. The pipeline walks the
@@ -40,17 +42,17 @@ struct UnifiedTranscriptionOutcome {
     /// True when the returned result passed validation.
     let succeeded: Bool
     let networkRetryCount: Int
-    let didReroll: Bool
-    let rerollReason: String?
+    let didRecoveryAttempt: Bool
+    let recoveryReason: String?
 
-    /// One-line, human-readable diagnostics for the run log (network retries, re-rolls, outcome).
+    /// One-line, human-readable diagnostics for the run log.
     var diagnosticsSummary: String {
         var parts = ["Source: \(path)"]
         if networkRetryCount > 0 {
             parts.append("Network retries: \(networkRetryCount)")
         }
-        if didReroll {
-            parts.append("Re-roll: \(rerollReason ?? "weak result")")
+        if didRecoveryAttempt {
+            parts.append("Independent recovery: \(recoveryReason ?? "weak result")")
         }
         let resultDesc: String
         if succeeded {
@@ -91,22 +93,56 @@ enum TranscriptionMethod: String {
 }
 
 extension AppState {
+    func makePrimaryTranscriptionService(customVocabulary: String) -> TranscriptionService {
+        TranscriptionService(
+            apiKey: activeAPIKey,
+            baseURL: activeBaseURL,
+            model: whisperModelId,
+            language: transcriptionLanguage,
+            keywords: sttVocabularyTerms(customVocabulary: customVocabulary)
+        )
+    }
+
+    /// A weak result is only retried when the other provider is already configured.
+    /// This makes the second opinion genuinely independent without requiring another
+    /// key or silently routing ordinary successful dictation through two vendors.
+    func makeRecoveryTranscriptionService(customVocabulary: String) -> TranscriptionService? {
+        let recoveryProvider: APIProvider
+        let recoveryKey: String
+        switch apiProvider {
+        case .groq:
+            recoveryProvider = .openai
+            recoveryKey = openaiAPIKey
+        case .openai:
+            recoveryProvider = .groq
+            recoveryKey = apiKey
+        }
+
+        guard !recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return TranscriptionService(
+            apiKey: recoveryKey,
+            baseURL: recoveryProvider.baseURL,
+            model: recoveryProvider.defaultWhisperModel,
+            language: transcriptionLanguage,
+            keywords: sttVocabularyTerms(customVocabulary: customVocabulary)
+        )
+    }
+
     func vocabularyOnlySTTPrompt(customVocabulary: String) -> String? {
-        let vocab = customVocabulary.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !vocab.isEmpty else { return nil }
-        let terms = vocab
+        let terms = sttVocabularyTerms(customVocabulary: customVocabulary)
+        guard !terms.isEmpty else { return nil }
+        // Whisper accepts only a free-form prompt. GPT Transcribe receives the same
+        // entries through its dedicated `keywords[]` fields in TranscriptionService.
+        return "Glossary of terms that may appear: " + terms.joined(separator: ", ") + "."
+    }
+
+    func sttVocabularyTerms(customVocabulary: String) -> [String] {
+        customVocabulary
             .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
-        guard !terms.isEmpty else { return nil }
-        // Frame the vocabulary as a glossary SENTENCE, never a bare comma list. A bare
-        // noun-list as Whisper's prompt deterministically poisons decoding: it primes
-        // caption-style output ("Thank you for watching!") and truncates real speech.
-        // Verified empirically on real recordings — bare list: 8/8 hallucinate; this
-        // framing: 0/12, and it still biases spelling toward these terms (e.g. Zyron→Syron,
-        // Cell→OpenClaw). Sound-alike misses left over are caught by the LLM post-processor's
-        // <vocabulary> correction (e.g. Onyx→Onyks). See PostProcessingService.
-        return "Glossary of terms that may appear: " + terms.joined(separator: ", ") + "."
     }
 
     func prepareTranscriptionUpload(
@@ -116,13 +152,17 @@ extension AppState {
         trimDuration: Double,
         speechStart: Double,
         replaceSavedAudio: Bool
-    ) async -> PreparedTranscriptionUpload {
+    ) async -> PreparedTranscriptionUpload? {
         do {
             let uploadURL = try await audioRecorder.preprocessAudio(
                 inputURL: sourceURL,
                 trimToSeconds: applySpeechTrimming && trimDuration > 0 ? trimDuration : nil,
-                skipLeadingSeconds: applySpeechTrimming ? speechStart : 0
+                skipLeadingSeconds: applySpeechTrimming ? speechStart : 0,
+                automaticallyTrimSpeech: applySpeechTrimming
             )
+            let uploadAsset = AVURLAsset(url: uploadURL)
+            let uploadDuration = try? await uploadAsset.load(.duration)
+            let uploadDurationSeconds = uploadDuration.map(CMTimeGetSeconds)
             let effectiveAudioFileName: String?
             if replaceSavedAudio, let savedAudioFileName {
                 effectiveAudioFileName = Self.replaceAudioFile(
@@ -136,8 +176,15 @@ extension AppState {
             return PreparedTranscriptionUpload(
                 uploadURL: uploadURL,
                 effectiveAudioFileName: effectiveAudioFileName,
-                temporaryUploadURL: uploadURL != sourceURL ? uploadURL : nil
+                temporaryUploadURL: uploadURL != sourceURL ? uploadURL : nil,
+                uploadDurationSeconds: uploadDurationSeconds
             )
+        } catch AudioRecorderError.noSpeechDetected {
+            os_log(.info, log: recordingLog, "adaptive VAD rejected source %{public}@ before upload", sourceURL.lastPathComponent)
+            await MainActor.run { [weak self] in
+                self?.debugStatusMessage = "No reliable speech detected"
+            }
+            return nil
         } catch {
             os_log(.error, log: recordingLog, "audio preprocessing failed, using original: %{public}@", error.localizedDescription)
             await MainActor.run { [weak self] in
@@ -146,7 +193,8 @@ extension AppState {
             return PreparedTranscriptionUpload(
                 uploadURL: sourceURL,
                 effectiveAudioFileName: savedAudioFileName,
-                temporaryUploadURL: nil
+                temporaryUploadURL: nil,
+                uploadDurationSeconds: nil
             )
         }
     }
@@ -162,9 +210,14 @@ extension AppState {
         expectedDurationSeconds: Double,
         vocabularyPrompt: String?,
         transcriptionService: TranscriptionService,
+        recoveryTranscriptionService: TranscriptionService? = nil,
         onProgress: (@Sendable (TranscriptionProgress) -> Void)? = nil
     ) async throws -> UnifiedTranscriptionOutcome {
-        let engine = TranscriptionEngine(service: transcriptionService, onProgress: onProgress)
+        let engine = TranscriptionEngine(
+            service: transcriptionService,
+            recoveryService: recoveryTranscriptionService,
+            onProgress: onProgress
+        )
         let prompt = vocabularyPrompt
 
         var effectiveAudioFileName = savedAudioFileName
@@ -182,20 +235,28 @@ extension AppState {
             guard let sourceURL = await source.provide() else { continue }
 
             let uploadURL: URL
+            var sourceExpectedDuration = expectedDurationSeconds
             if source.applyPreprocessing {
-                let prepared = await prepareTranscriptionUpload(
+                guard let prepared = await prepareTranscriptionUpload(
                     from: sourceURL,
                     savedAudioFileName: effectiveAudioFileName,
                     applySpeechTrimming: source.applySpeechTrimming,
                     trimDuration: expectedDurationSeconds,
                     speechStart: 0,
                     replaceSavedAudio: source.replaceSavedAudio
-                )
+                ) else {
+                    continue
+                }
                 if let temporaryUploadURL = prepared.temporaryUploadURL {
                     temporaryUploadURLs.append(temporaryUploadURL)
                 }
                 effectiveAudioFileName = prepared.effectiveAudioFileName ?? effectiveAudioFileName
                 uploadURL = prepared.uploadURL
+                if let duration = prepared.uploadDurationSeconds,
+                   duration.isFinite,
+                   duration > 0 {
+                    sourceExpectedDuration = duration
+                }
             } else {
                 // Already upload-ready (saved audio): send as-is, don't re-encode or replace.
                 uploadURL = sourceURL
@@ -205,7 +266,7 @@ extension AppState {
                 let result = try await engine.transcribe(
                     uploadURL: uploadURL,
                     prompt: prompt,
-                    expectedDurationSeconds: expectedDurationSeconds
+                    expectedDurationSeconds: sourceExpectedDuration
                 )
                 if result.isHighConfidence && !result.isEmpty {
                     return UnifiedTranscriptionOutcome(
@@ -215,8 +276,8 @@ extension AppState {
                         usedFallback: sourceIndex > 0,
                         succeeded: true,
                         networkRetryCount: result.networkRetryCount,
-                        didReroll: result.didReroll,
-                        rerollReason: result.rerollReason
+                        didRecoveryAttempt: result.didRecoveryAttempt,
+                        recoveryReason: result.recoveryReason
                     )
                 }
                 if bestTranscript.isEmpty && !result.isEmpty {
@@ -238,8 +299,8 @@ extension AppState {
                 usedFallback: true,
                 succeeded: false,
                 networkRetryCount: bestResult?.networkRetryCount ?? 0,
-                didReroll: bestResult?.didReroll ?? false,
-                rerollReason: bestResult?.rerollReason
+                didRecoveryAttempt: bestResult?.didRecoveryAttempt ?? false,
+                recoveryReason: bestResult?.recoveryReason
             )
         }
         if let lastError { throw lastError }
@@ -250,8 +311,8 @@ extension AppState {
             usedFallback: false,
             succeeded: false,
             networkRetryCount: 0,
-            didReroll: false,
-            rerollReason: nil
+            didRecoveryAttempt: false,
+            recoveryReason: nil
         )
     }
 }

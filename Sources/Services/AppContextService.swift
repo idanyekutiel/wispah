@@ -30,7 +30,7 @@ final class AppContextService {
     private let screenshotCompressionPrimary = 0.5
     private let screenshotMaxDimension: CGFloat = 1024
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", llmModel: String = "meta-llama/llama-4-scout-17b-16e-instruct", visionModel: String = "meta-llama/llama-4-scout-17b-16e-instruct") {
+    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", llmModel: String = "openai/gpt-oss-120b", visionModel: String = "qwen/qwen3.6-27b") {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.fallbackTextModel = llmModel
@@ -118,10 +118,11 @@ final class AppContextService {
     ) async -> (activity: String, prompt: String)? {
         return await withTaskGroup(of: (activity: String, prompt: String)?.self) { group in
             group.addTask { [self] in
-                let modelsToTry = [
-                    screenshotDataURL != nil ? visionModel : fallbackTextModel,
-                    fallbackTextModel
-                ]
+                let primaryModel = screenshotDataURL != nil ? visionModel : fallbackTextModel
+                var modelsToTry = [primaryModel]
+                if fallbackTextModel != primaryModel {
+                    modelsToTry.append(fallbackTextModel)
+                }
 
                 for model in modelsToTry {
                     guard !Task.isCancelled else { return nil }
@@ -209,14 +210,27 @@ Return only two sentences, no labels, no markdown, no extra commentary.
 
             let fullPrompt = "Model: \(model)\n\n[System]\n\(systemPrompt)\n[User]\n\(userMessageDescription)"
 
-            let payload: [String: Any] = [
+            var payload: [String: Any] = [
                 "model": model,
-                "temperature": 0.2,
                 "messages": [
                     ["role": "system", "content": systemPrompt],
                     ["role": "user", "content": userMessage]
                 ]
             ]
+
+            if model == "qwen/qwen3.6-27b" {
+                // Context classification does not need chain-of-thought. Disabling it is
+                // essential here because this request has a strict three-second budget.
+                payload["reasoning_effort"] = "none"
+                payload["reasoning_format"] = "hidden"
+                payload["temperature"] = 0.2
+            } else if model.hasPrefix("openai/gpt-oss-") {
+                payload["reasoning_effort"] = "low"
+                payload["include_reasoning"] = false
+                payload["temperature"] = 0.2
+            } else if model.hasPrefix("gpt-5.6-") {
+                payload["reasoning_effort"] = "none"
+            }
 
             request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
             let (data, response) = try await URLSession.shared.data(for: request)

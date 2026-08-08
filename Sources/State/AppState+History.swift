@@ -36,17 +36,22 @@ extension AppState {
 
         Task {
             do {
-                let service = TranscriptionService(apiKey: activeAPIKey, baseURL: activeBaseURL, model: whisperModelId, language: transcriptionLanguage)
-                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: false, replaceSavedAudio: false, applySpeechTrimming: false) { audioURL }
+                let service = makePrimaryTranscriptionService(customVocabulary: item.customVocabulary)
+                let recoveryService = makeRecoveryTranscriptionService(customVocabulary: item.customVocabulary)
+                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: true, replaceSavedAudio: false, applySpeechTrimming: true) { audioURL }
                 let outcome = try await runUnifiedTranscription(
                     sources: [savedSource],
                     savedAudioFileName: item.audioFileName,
                     expectedDurationSeconds: item.recordingDurationSeconds ?? 0,
                     vocabularyPrompt: vocabularyOnlySTTPrompt(customVocabulary: item.customVocabulary),
-                    transcriptionService: service
+                    transcriptionService: service,
+                    recoveryTranscriptionService: recoveryService
                 )
 
                 let trimmed = outcome.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    throw TranscriptionError.transcriptionFailed("No reliable speech was detected in the saved audio")
+                }
                 let updatedAudioFileName = outcome.effectiveAudioFileName ?? item.audioFileName
 
                 await MainActor.run {

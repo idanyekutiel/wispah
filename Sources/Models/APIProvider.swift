@@ -89,21 +89,25 @@ enum APIProvider: String, CaseIterable, Identifiable {
     var defaultWhisperModel: String {
         switch self {
         case .groq: return "whisper-large-v3"
-        case .openai: return "gpt-4o-mini-transcribe"
+        case .openai: return "gpt-transcribe"
         }
     }
 
     var defaultLLMModel: String {
         switch self {
-        case .groq: return "meta-llama/llama-4-scout-17b-16e-instruct"
-        case .openai: return "gpt-5-nano"
+        case .groq: return "openai/gpt-oss-120b"
+        case .openai: return "gpt-5.6-luna"
         }
     }
 
     var defaultVisionModel: String {
         switch self {
-        case .groq: return "meta-llama/llama-4-scout-17b-16e-instruct"
-        case .openai: return "gpt-5-mini"
+        // GPT-OSS is text-only. Use Groq's current multimodal model solely for the
+        // optional screenshot summary, with the production GPT-OSS model as the
+        // text fallback. Keeping this separate prevents a preview vision model from
+        // becoming the reliability-critical post-processing default.
+        case .groq: return "qwen/qwen3.6-27b"
+        case .openai: return "gpt-5.6-luna"
         }
     }
 
@@ -111,14 +115,11 @@ enum APIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .groq:
             return [
-                (id: "whisper-large-v3", name: "Large V3 (Most Accurate)", description: "Best accuracy across all languages."),
-                (id: "whisper-large-v3-turbo", name: "Large V3 Turbo (Fast)", description: "Slightly faster with ~1% lower accuracy. Multilingual.")
+                (id: "whisper-large-v3", name: "Whisper Large V3", description: "Groq's most accurate production transcription model.")
             ]
         case .openai:
             return [
-                (id: "gpt-4o-mini-transcribe", name: "GPT-4o Mini Transcribe", description: "Better accuracy than Whisper. Low cost."),
-                (id: "gpt-4o-transcribe", name: "GPT-4o Transcribe", description: "Best accuracy. Higher cost."),
-                (id: "whisper-1", name: "Whisper 1", description: "Original model. Cheapest option.")
+                (id: "gpt-transcribe", name: "GPT Transcribe", description: "OpenAI's current high-accuracy model for completed recordings.")
             ]
         }
     }
@@ -127,18 +128,11 @@ enum APIProvider: String, CaseIterable, Identifiable {
         switch self {
         case .groq:
             return [
-                (id: "meta-llama/llama-4-scout-17b-16e-instruct", name: "Llama 4 Scout", description: "Fast and capable. Supports vision for screen context."),
-                (id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", description: "Larger model. Text only — no screen context support."),
-                (id: "meta-llama/llama-4-maverick-17b-128e-instruct", name: "Llama 4 Maverick", description: "128 experts. Highest quality, slower.")
+                (id: "openai/gpt-oss-120b", name: "GPT-OSS 120B", description: "Groq's production quality model; fast and available on the free tier.")
             ]
         case .openai:
             return [
-                (id: "gpt-5-nano", name: "GPT-5 Nano (Recommended)", description: "Fastest and cheapest. Supports vision. $0.05/$0.40 per 1M tokens."),
-                (id: "gpt-5-mini", name: "GPT-5 Mini", description: "Great balance of speed, cost, and quality. Supports vision. $0.25/$2 per 1M tokens."),
-                (id: "gpt-5", name: "GPT-5", description: "Most capable. Supports vision. $1.25/$10 per 1M tokens."),
-                (id: "gpt-4.1-nano", name: "GPT-4.1 Nano", description: "Previous gen. Fast and cheap. $0.10/$0.40 per 1M tokens."),
-                (id: "gpt-4.1-mini", name: "GPT-4.1 Mini", description: "Previous gen. Good quality. $0.40/$1.60 per 1M tokens."),
-                (id: "gpt-4.1", name: "GPT-4.1", description: "Previous gen. Most capable 4.1. $2/$8 per 1M tokens.")
+                (id: "gpt-5.6-luna", name: "GPT-5.6 Luna", description: "Current low-latency, cost-sensitive model for focused cleanup.")
             ]
         }
     }

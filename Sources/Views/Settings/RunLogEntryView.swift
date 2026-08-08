@@ -451,22 +451,22 @@ struct RunLogEntryView: View {
 
         retryTask = Task {
             do {
-                let transcriptionService = TranscriptionService(
-                    apiKey: appState.activeAPIKey,
-                    baseURL: appState.activeBaseURL,
-                    model: appState.whisperModelId,
-                    language: appState.transcriptionLanguage
-                )
-                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: false, replaceSavedAudio: false, applySpeechTrimming: false) { audioURL }
+                let transcriptionService = appState.makePrimaryTranscriptionService(customVocabulary: item.customVocabulary)
+                let recoveryTranscriptionService = appState.makeRecoveryTranscriptionService(customVocabulary: item.customVocabulary)
+                let savedSource = AudioSource(label: "saved_audio", applyPreprocessing: true, replaceSavedAudio: false, applySpeechTrimming: true) { audioURL }
                 let outcome = try await appState.runUnifiedTranscription(
                     sources: [savedSource],
                     savedAudioFileName: item.audioFileName,
                     expectedDurationSeconds: item.recordingDurationSeconds ?? 0,
                     vocabularyPrompt: appState.vocabularyOnlySTTPrompt(customVocabulary: item.customVocabulary),
-                    transcriptionService: transcriptionService
+                    transcriptionService: transcriptionService,
+                    recoveryTranscriptionService: recoveryTranscriptionService
                 )
 
                 let trimmedRawTranscript = outcome.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedRawTranscript.isEmpty else {
+                    throw TranscriptionError.transcriptionFailed("No reliable speech was detected in the saved audio")
+                }
                 let updatedAudioFileName = outcome.effectiveAudioFileName ?? item.audioFileName
 
                 let finalTranscript: String
@@ -495,7 +495,7 @@ struct RunLogEntryView: View {
                         postProcessingPrompt = result.prompt
                     } catch {
                         finalTranscript = trimmedRawTranscript
-                        processingStatus = "Post-processing failed on retranscribe, using raw transcript"
+                        processingStatus = "Post-processing failed on retranscribe: \(error.localizedDescription); using raw transcript"
                         postProcessingPrompt = ""
                     }
                 } else {

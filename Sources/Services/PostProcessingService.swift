@@ -84,7 +84,7 @@ final class PostProcessingService {
         "com.apple.systempreferences": "User is in System Settings. They may be describing settings or configurations.",
     ]
 
-    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", model: String = "meta-llama/llama-4-scout-17b-16e-instruct") {
+    init(apiKey: String, baseURL: String = "https://api.groq.com/openai/v1", model: String = "openai/gpt-oss-120b") {
         self.apiKey = apiKey
         self.baseURL = baseURL
         self.defaultModel = model
@@ -273,9 +273,8 @@ Model: \(model)
 \(userMessage)
 """
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "model": model,
-            "temperature": 0.0,
             "messages": [
                 [
                     "role": "system",
@@ -287,6 +286,20 @@ Model: \(model)
                 ]
             ]
         ]
+
+        if model.hasPrefix("openai/gpt-oss-") {
+            // Groq exposes GPT-OSS reasoning even for simple edits unless asked not to.
+            // Low effort preserves instruction following while keeping latency and free-
+            // tier token use small; excluding reasoning keeps it out of the parser/output.
+            payload["reasoning_effort"] = "low"
+            payload["include_reasoning"] = false
+            payload["temperature"] = 0.2
+        } else if model.hasPrefix("gpt-5.6-") {
+            // Transcript cleanup is a focused transform, not a reasoning workload.
+            // GPT-5.6 defaults to medium reasoning, so make the old low-latency behavior
+            // explicit on Chat Completions.
+            payload["reasoning_effort"] = "none"
+        }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
 

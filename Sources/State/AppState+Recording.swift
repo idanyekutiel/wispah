@@ -500,30 +500,16 @@ extension AppState {
                 return
             }
 
-            // Skip transcription if no actual audio or no speech detected
-            // (Whisper hallucinates on silent/near-silent audio — "thank you", etc.)
-            if trimDuration <= 0 || !self.audioRecorder.detectedSpeech {
-                if !self.audioRecorder.detectedSpeech {
-                    os_log(.info, log: recordingLog, "no speech detected — skipping transcription")
-                }
-                self.stopTranscribingOverlayTimers()
-                self.isTranscribing = false
-                self.statusText = "Nothing to transcribe"
-                self.overlayManager.dismiss()
-                self.audioRecorder.cleanup()
-                try? FileManager.default.removeItem(at: fileURL)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    if self.statusText == "Nothing to transcribe" {
-                        self.statusText = "Ready"
-                    }
-                }
-                return
-            }
+            // The streaming meter is intentionally only UI feedback. The finalized file
+            // gets an adaptive two-pass VAD scan below; using the old cumulative quiet-
+            // buffer counter here both admitted background noise and rejected some quiet
+            // real speech before the stronger detector could inspect it.
 
             let savedAudioFileName = Self.saveAudioFile(from: fileURL)
             self.debugStatusMessage = "Processing audio"
 
-            let transcriptionService = TranscriptionService(apiKey: self.activeAPIKey, baseURL: self.activeBaseURL, model: self.whisperModelId, language: self.transcriptionLanguage)
+            let transcriptionService = self.makePrimaryTranscriptionService(customVocabulary: self.customVocabulary)
+            let recoveryTranscriptionService = self.makeRecoveryTranscriptionService(customVocabulary: self.customVocabulary)
             let postProcessingService = PostProcessingService(apiKey: self.activeAPIKey, baseURL: self.activeBaseURL, model: self.llmModelId)
 
             self.transcriptionTask?.cancel()
@@ -540,7 +526,7 @@ extension AppState {
                     // the pipeline runs the one canonical engine against, in turn, until
                     // one returns a high-confidence result. With the single-file capture
                     // core the recording is the source; further redundancy is the engine's
-                    // own re-roll + network retries and the persisted saved audio (manual
+                    // independent recovery + network retries and the persisted saved audio (manual
                     // retry). Additional sources can be appended here without touching the
                     // main path.
                     let sources: [AudioSource] = [
@@ -557,8 +543,8 @@ extension AppState {
                                 self.overlayManager.updateTranscribingStatus("Connection hiccup — retrying…", showCancel: true)
                             case .rateLimited(let attempt, let maxAttempts):
                                 self.overlayManager.updateTranscribingStatus("Rate limited — retrying (\(attempt)/\(maxAttempts))…", showCancel: true)
-                            case .rerolling:
-                                self.overlayManager.updateTranscribingStatus("Refining transcription…", showCancel: true)
+                            case .recovering:
+                                self.overlayManager.updateTranscribingStatus("Checking transcription with backup model…", showCancel: true)
                             }
                         }
                     }
@@ -569,6 +555,7 @@ extension AppState {
                         expectedDurationSeconds: expectedDuration,
                         vocabularyPrompt: self.vocabularyOnlySTTPrompt(customVocabulary: self.customVocabulary),
                         transcriptionService: transcriptionService,
+                        recoveryTranscriptionService: recoveryTranscriptionService,
                         onProgress: onProgress
                     )
                     effectiveSavedAudioFileName = outcome.effectiveAudioFileName ?? effectiveSavedAudioFileName
@@ -592,7 +579,11 @@ extension AppState {
                     let finalTranscript: String
                     let processingStatus: String
                     let postProcessingPrompt: String
-                    if self.postProcessingEnabled {
+                    if resolvedRawTranscript.isEmpty {
+                        finalTranscript = ""
+                        processingStatus = "Post-processing skipped: no transcript"
+                        postProcessingPrompt = ""
+                    } else if self.postProcessingEnabled {
                         do {
                             let postProcessingResult = try await postProcessingService.postProcess(
                                 transcript: resolvedRawTranscript,
@@ -611,7 +602,7 @@ extension AppState {
                             // pasting the raw transcript — route it to the cancellation path.
                             if Task.isCancelled || AppState.isCancellation(error) { throw error }
                             finalTranscript = resolvedRawTranscript
-                            processingStatus = "Post-processing failed, using raw transcript"
+                            processingStatus = "Post-processing failed: \(error.localizedDescription); using raw transcript"
                             postProcessingPrompt = ""
                         }
                     } else {
