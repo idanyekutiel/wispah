@@ -171,6 +171,8 @@ extension AppState {
         capturedContext = nil
         isRecording = false
         pendingStop = false
+        recordingIntentStartTime = nil
+        pendingStopIntentDuration = nil
         _ = audioRecorder.stopRecording()
         audioRecorder.cleanup()
         speculativeToggleState = .none
@@ -248,6 +250,8 @@ extension AppState {
         isRecording = true
         isStartingRecording = true
         pendingStop = false
+        recordingIntentStartTime = CFAbsoluteTimeGetCurrent()
+        pendingStopIntentDuration = nil
         hasShownScreenshotPermissionAlert = false
         if !hiddenUntilCommit {
             statusText = "Starting..."
@@ -344,6 +348,8 @@ extension AppState {
                     self.handleAudioOnRecordingStop()
                     self.isStartingRecording = false
                     self.pendingStop = false
+                    self.recordingIntentStartTime = nil
+                    self.pendingStopIntentDuration = nil
                     self.isRecording = false
                     self.speculativeToggleState = .none
                     self.speculativeToggleCommitted = false
@@ -391,6 +397,8 @@ extension AppState {
         capturedContext = nil
         isStartingRecording = false
         pendingStop = false
+        recordingIntentStartTime = nil
+        pendingStopIntentDuration = nil
         isRecording = false
         recordingStartPresentation = .normal
         speculativeToggleState = .none
@@ -404,12 +412,19 @@ extension AppState {
     }
 
     func stopAndTranscribe() {
+        let stopIntentDuration = recordingIntentStartTime.map {
+            max(CFAbsoluteTimeGetCurrent() - $0, 0)
+        }
         // Don't try to stop if the audio engine hasn't finished starting — defer it
         guard !isStartingRecording else {
             os_log(.info, log: recordingLog, "stopAndTranscribe() deferred — still starting")
             pendingStop = true
+            pendingStopIntentDuration = stopIntentDuration
             return
         }
+        let userIntentDuration = pendingStopIntentDuration ?? stopIntentDuration ?? audioRecorder.wallClockDuration
+        recordingIntentStartTime = nil
+        pendingStopIntentDuration = nil
         handleAudioOnRecordingStop()
         audioLevelCancellable?.cancel()
         audioLevelCancellable = nil
@@ -475,6 +490,24 @@ extension AppState {
 
         audioRecorder.stopRecordingAsync { [weak self] fileURL in
             guard let self else { return }
+            // A tap/release this fast cannot contain intentional dictation. Capture
+            // startup padding can still make the finalized file roughly one second long,
+            // which is enough for Whisper to invent subtitle credits or short words.
+            // Reject based on the user's press-to-stop interval before any upload.
+            if userIntentDuration < 0.30 {
+                self.stopTranscribingOverlayTimers()
+                self.audioRecorder.cleanup()
+                if let fileURL {
+                    try? FileManager.default.removeItem(at: fileURL)
+                }
+                self.isTranscribing = false
+                self.statusText = "Ready"
+                self.debugStatusMessage = "Ignored empty quick recording"
+                self.errorMessage = nil
+                self.overlayManager.dismiss()
+                os_log(.info, log: recordingLog, "ignored %.0fms start-stop recording before transcription", userIntentDuration * 1000)
+                return
+            }
             guard let fileURL else {
                 self.stopTranscribingOverlayTimers()
                 self.errorMessage = "No audio recorded"

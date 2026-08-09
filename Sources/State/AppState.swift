@@ -251,6 +251,11 @@ final class AppState: ObservableObject, @unchecked Sendable {
     var pendingPermissionRecordingTrigger: RecordingTrigger?
     /// Set when user releases hold key during engine startup — deferred stop fires once engine is ready
     var pendingStop = false
+    /// Tracks user intent separately from capture-session startup. The audio file can
+    /// contain about a second of startup padding even when Start and Stop were tapped
+    /// immediately, so its media duration cannot identify an accidental empty recording.
+    var recordingIntentStartTime: CFAbsoluteTime?
+    var pendingStopIntentDuration: TimeInterval?
     var recordingStartPresentation: RecordingStartPresentation = .normal
     var speculativeToggleState: SpeculativeToggleState = .none
     var speculativeToggleCommitted = false

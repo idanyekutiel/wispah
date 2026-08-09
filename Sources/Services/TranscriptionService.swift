@@ -338,7 +338,31 @@ class TranscriptionService {
 
     private func isKnownHallucinatedOutro(_ transcript: String) -> Bool {
         let normalized = normalizeHallucinationCandidate(transcript)
-        return suspiciousHallucinationPhrases.contains(normalized)
+        if suspiciousHallucinationPhrases.contains(normalized) {
+            return true
+        }
+
+        // Caption artifacts are often emitted more than once without punctuation,
+        // e.g. "Subtitles by ... community Subtitles by ... community". Recognize a
+        // transcript made entirely from any sequence of known hallucination phrases.
+        var remainder = normalized
+        var matchedPhrase = false
+        let separators = CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines)
+        while !remainder.isEmpty {
+            guard let phrase = suffixHallucinationPhrases.first(where: { candidate in
+                guard remainder.hasPrefix(candidate) else { return false }
+                guard remainder.count > candidate.count else { return true }
+                let boundary = remainder.index(remainder.startIndex, offsetBy: candidate.count)
+                let next = remainder[boundary]
+                return !next.isLetter && !next.isNumber
+            }) else {
+                return false
+            }
+            remainder = String(remainder.dropFirst(phrase.count))
+                .trimmingCharacters(in: separators)
+            matchedPhrase = true
+        }
+        return matchedPhrase
     }
 
     private func strippingKnownHallucinatedOutroSuffix(from transcript: String) -> String? {
@@ -377,6 +401,12 @@ class TranscriptionService {
 
     private func shouldRemoveHallucinatedSuffix(in prefix: Substring, phrase: String) -> Bool {
         guard !prefix.isEmpty else { return false }
+
+        // Allows repeated boilerplate with no punctuation between copies. The final
+        // remaining copy is removed by `isKnownHallucinatedOutro` after this loop.
+        if isKnownHallucinatedOutro(String(prefix)) {
+            return true
+        }
 
         var sawLineBreak = false
         var lastSignificantCharacter: Character?
@@ -420,9 +450,13 @@ class TranscriptionService {
         "thank you",
         "thanks for watching",
         "thank you for watching",
+        "subtitles by amara.org community",
+        "subtitles by the amara.org community",
     ]
 
     private let suffixHallucinationPhrases: [String] = [
+        "subtitles by the amara.org community",
+        "subtitles by amara.org community",
         "thank you for watching",
         "thanks for watching",
         "thank you",
