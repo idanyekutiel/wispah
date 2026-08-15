@@ -548,6 +548,8 @@ extension AppState {
             self.transcriptionTask?.cancel()
             self.transcriptionTask = Task {
                 var effectiveSavedAudioFileName = savedAudioFileName
+                var rawTranscriptBeforeCancellation = ""
+                var diagnosticsBeforeCancellation = "Stopped before a transcription result"
                 do {
                     // Coverage baseline = speech duration (trimDuration), not wall-clock —
                     // wall-clock includes the press→speak gap and trailing silence that
@@ -560,10 +562,11 @@ extension AppState {
                     // one returns a high-confidence result. With the single-file capture
                     // core the recording is the source; further redundancy is the engine's
                     // independent recovery + network retries and the persisted saved audio (manual
-                    // retry). Additional sources can be appended here without touching the
-                    // main path.
+                    // retry). Keep the original recording in history rather than replacing
+                    // it before STT succeeds: a cancelled or failed request must always
+                    // retain a valid source that can be retried.
                     let sources: [AudioSource] = [
-                        AudioSource(label: "primary_recording", applyPreprocessing: true, replaceSavedAudio: true, applySpeechTrimming: true) {
+                        AudioSource(label: "primary_recording", applyPreprocessing: true, replaceSavedAudio: false, applySpeechTrimming: true) {
                             primarySourceURL
                         },
                     ]
@@ -594,10 +597,12 @@ extension AppState {
                     effectiveSavedAudioFileName = outcome.effectiveAudioFileName ?? effectiveSavedAudioFileName
                     let successfulTranscriptionPath = outcome.path
                     let resolvedRawTranscript = outcome.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+                    rawTranscriptBeforeCancellation = resolvedRawTranscript
                     let transcriptionMethod = (resolvedRawTranscript.isEmpty
                         ? TranscriptionMethod.failed
                         : TranscriptionMethod.live(succeeded: outcome.succeeded, usedFallback: outcome.usedFallback)).rawValue
                     let transcriptionDiagnostics = outcome.diagnosticsSummary
+                    diagnosticsBeforeCancellation = transcriptionDiagnostics
                     let appContext: AppContext
                     if let sessionContext {
                         appContext = sessionContext
@@ -702,11 +707,20 @@ extension AppState {
                         }
                     }
                 } catch {
-                    // User-initiated cancellation isn't a failure: reset quietly without an
-                    // error overlay or a failed history entry.
                     if Task.isCancelled || AppState.isCancellation(error) {
+                        // Cancellation stops network/model work but does not discard the
+                        // recording. Persist it as a recoverable failed run so History can
+                        // play it and invoke the normal retranscription path.
+                        let cancellationContext = sessionContext ?? self.fallbackContextAtStop()
+                        let historyAudioFileName = effectiveSavedAudioFileName
                         await MainActor.run { [weak self] in
-                            self?.handleTranscriptionCancelled()
+                            self?.handleTranscriptionCancelled(
+                                context: cancellationContext,
+                                audioFileName: historyAudioFileName,
+                                recordingDurationSeconds: trimDuration > 0 ? trimDuration : nil,
+                                rawTranscript: rawTranscriptBeforeCancellation,
+                                diagnostics: diagnosticsBeforeCancellation
+                            )
                         }
                         return
                     }
@@ -772,12 +786,42 @@ extension AppState {
         overlayManager.updateTranscribingStatus("Cancelling…", showCancel: false)
     }
 
-    /// Quietly reset after a cancellation — no error overlay, no failed history entry.
-    func handleTranscriptionCancelled() {
+    /// Reset after cancellation while retaining a failed history entry and its audio.
+    /// No error overlay is shown because cancellation was an intentional user action.
+    func handleTranscriptionCancelled(
+        context: AppContext,
+        audioFileName: String?,
+        recordingDurationSeconds: Double?,
+        rawTranscript: String,
+        diagnostics: String
+    ) {
         stopTranscribingOverlayTimers()
         isTranscribing = false
         errorMessage = nil
         statusText = "Cancelled"
+        debugStatusMessage = "Cancelled by user"
+        lastRawTranscript = rawTranscript
+        lastPostProcessedTranscript = ""
+        lastPostProcessingStatus = "Error: Manually cancelled"
+        lastPostProcessingPrompt = ""
+        lastContextSummary = context.contextSummary
+        lastContextScreenshotDataURL = context.screenshotDataURL
+        lastContextScreenshotStatus = context.screenshotError
+            ?? "available (\(context.screenshotMimeType ?? "image"))"
+        let audioStatus = audioFileName == nil
+            ? "Audio could not be retained"
+            : "Audio retained for retry"
+        recordPipelineHistoryEntry(
+            rawTranscript: rawTranscript,
+            postProcessedTranscript: "",
+            postProcessingPrompt: "",
+            context: context,
+            processingStatus: "Error: Manually cancelled",
+            audioFileName: audioFileName,
+            recordingDurationSeconds: recordingDurationSeconds,
+            transcriptionMethod: TranscriptionMethod.failed.rawValue,
+            diagnostics: "Cancelled by user · \(audioStatus) · \(diagnostics)"
+        )
         overlayManager.dismiss()
         audioRecorder.cleanup()
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {

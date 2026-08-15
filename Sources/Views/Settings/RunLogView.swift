@@ -5,6 +5,7 @@ import SwiftUI
 struct RunLogView: View {
     @EnvironmentObject var appState: AppState
     @State private var searchText: String = ""
+    @State private var showClearHistoryConfirmation = false
 
     private var filteredHistory: [PipelineHistoryItem] {
         if searchText.isEmpty { return appState.pipelineHistory }
@@ -31,7 +32,7 @@ struct RunLogView: View {
                 Spacer()
                 if appState.saveRunHistory {
                     Button("Clear History") {
-                        appState.clearPipelineHistory()
+                        showClearHistoryConfirmation = true
                     }
                     .disabled(appState.pipelineHistory.isEmpty)
                 }
@@ -120,6 +121,14 @@ struct RunLogView: View {
                     }
                 }
             }
+        }
+        .alert("Clear Transcription History?", isPresented: $showClearHistoryConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear History", role: .destructive) {
+                appState.clearPipelineHistory()
+            }
+        } message: {
+            Text("This permanently deletes every transcription entry and its saved audio. This cannot be undone.")
         }
     }
 }

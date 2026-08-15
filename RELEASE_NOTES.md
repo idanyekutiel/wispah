@@ -12,6 +12,8 @@
 - **OpenAI transcription upgraded.** The optional OpenAI provider now uses `gpt-transcribe`, including its language and keyword controls, while Groq remains the default workflow.
 - **Post-processing restored.** Transcript cleanup uses current low-latency models with reasoning kept minimal, and failed cleanup now falls back to the raw grounded transcript with a useful diagnostic.
 - **Onboarding test stabilized.** The setup recording test now runs through the same speech detection and transcription pipeline as normal dictation. Leaving the test while recording or transcribing cleanly cancels and resets it, so returning no longer leaves onboarding stuck.
+- **Cancelled recordings are recoverable.** Cancelling a slow transcription now records it as a manually cancelled failure, retains its audio according to the error-retention setting, and keeps the retry action available in Transcriptions.
+- **Safer history cleanup.** Clear History now asks for confirmation before permanently deleting transcription entries and their saved audio.
 
 ## Requirements
 

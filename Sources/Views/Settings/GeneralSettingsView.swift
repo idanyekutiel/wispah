@@ -13,6 +13,7 @@ struct GeneralSettingsView: View {
     @State private var keyValidationSuccess = false
     @State private var customVocabularyInput: String = ""
     @State private var showStatsDeleteConfirmation = false
+    @State private var showClearHistoryConfirmation = false
     @State private var micPermissionGranted = false
     @StateObject private var githubCache = GitHubMetadataCache.shared
     @ObservedObject private var updateManager = UpdateManager.shared
@@ -689,9 +690,17 @@ struct GeneralSettingsView: View {
 
                 HStack(spacing: 12) {
                     Button("Clear History") {
-                        appState.clearPipelineHistory()
+                        showClearHistoryConfirmation = true
                     }
                     .disabled(appState.pipelineHistory.isEmpty)
+                    .alert("Clear Transcription History?", isPresented: $showClearHistoryConfirmation) {
+                        Button("Cancel", role: .cancel) {}
+                        Button("Clear History", role: .destructive) {
+                            appState.clearPipelineHistory()
+                        }
+                    } message: {
+                        Text("This permanently deletes every transcription entry and its saved audio. This cannot be undone.")
+                    }
 
                     Text("Currently storing \(appState.pipelineHistory.count) \(appState.pipelineHistory.count == 1 ? "entry" : "entries").")
                         .font(.caption)
