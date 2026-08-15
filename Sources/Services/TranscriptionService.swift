@@ -17,6 +17,19 @@ class TranscriptionService {
     private let minimumTimeoutSeconds: TimeInterval = 15
     private let maximumTimeoutSeconds: TimeInterval = 120
 
+    /// Transcription uploads are independent, stateless requests. Give each attempt its
+    /// own ephemeral transport so an automatic retry cannot inherit a stale pooled
+    /// connection, cookies, credentials, or cached session state from the failed one.
+    /// This also makes the automatic path match the clean lifecycle users get when they
+    /// cancel and manually retranscribe from History.
+    private func makeUploadSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpShouldSetCookies = false
+        return URLSession(configuration: configuration)
+    }
+
     init(
         apiKey: String,
         baseURL: String = "https://api.groq.com/openai/v1",
@@ -143,7 +156,9 @@ class TranscriptionService {
         )
         request.httpBody = body
 
-        let (data, response) = try await URLSession.shared.upload(for: request, from: body)
+        let session = makeUploadSession()
+        defer { session.finishTasksAndInvalidate() }
+        let (data, response) = try await session.upload(for: request, from: body)
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw TranscriptionError.submissionFailed("No response from server")

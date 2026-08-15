@@ -64,7 +64,9 @@ final class TranscriptionEngine {
     /// Recordings at or above this length are eligible for the coverage check.
     private let longRecordingThresholdSeconds: Double = 30
     /// Bounded transient retry budget. Three total attempts handles brief provider/network
-    /// faults without turning a held hotkey into an unbounded wait.
+    /// faults without turning a held hotkey into an unbounded wait. A full request timeout
+    /// gets only one retry because three consecutive timeout windows feel hung and rarely
+    /// recover before a later manual retry would.
     private let maxTransientRetries = 2
 
     /// Recordings longer than this are split into overlapping chunks transcribed
@@ -367,16 +369,22 @@ final class TranscriptionEngine {
                     || (error as? TranscriptionError)?.isServerUnavailable == true
                 let rateLimited = retryRateLimits
                     && (error as? TranscriptionError)?.isRateLimited == true
-                guard (transient || rateLimited), retryCount < maxTransientRetries else { throw error }
+                let retryLimit = (error as? TranscriptionError)?.isTimeout == true
+                    ? 1
+                    : maxTransientRetries
+                guard (transient || rateLimited), retryCount < retryLimit else { throw error }
 
                 retryCount += 1
                 if rateLimited {
-                    onProgress?(.rateLimited(attempt: retryCount, maxAttempts: maxTransientRetries))
+                    onProgress?(.rateLimited(attempt: retryCount, maxAttempts: retryLimit))
                 } else {
                     onProgress?(.retryingNetwork)
                 }
                 let serverDelay = (error as? TranscriptionError)?.retryAfterSeconds
-                let exponential = (rateLimited ? 2.0 : 0.35) * pow(2.0, Double(retryCount - 1))
+                // Groq recommends exponential backoff starting around one second.
+                // The previous 350/700ms retries landed inside the same provider outage
+                // or connection failure window, while a manual retry seconds later worked.
+                let exponential = (rateLimited ? 2.0 : 1.0) * pow(2.0, Double(retryCount - 1))
                 let jitter = Double.random(in: 0...0.20)
                 let delay = serverDelay.map { min(max(0, $0), 30) }
                     ?? min(exponential + jitter, 5)
@@ -385,7 +393,7 @@ final class TranscriptionEngine {
                     log: recordingLog,
                     "engine: transient failure — retry %d/%d in %.2fs: %{public}@",
                     retryCount,
-                    maxTransientRetries,
+                    retryLimit,
                     delay,
                     error.localizedDescription
                 )

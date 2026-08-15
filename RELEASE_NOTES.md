@@ -14,6 +14,7 @@
 - **Onboarding test stabilized.** The setup recording test now runs through the same speech detection and transcription pipeline as normal dictation. Leaving the test while recording or transcribing cleanly cancels and resets it, so returning no longer leaves onboarding stuck.
 - **Cancelled recordings are recoverable.** Cancelling a slow transcription now records it as a manually cancelled failure, retains its audio according to the error-retention setting, and keeps the retry action available in Transcriptions.
 - **Safer history cleanup.** Clear History now asks for confirmation before permanently deleting transcription entries and their saved audio.
+- **Cleaner automatic retries.** Each transcription attempt now uses fresh ephemeral HTTP transport state and Groq-aligned exponential backoff. Full request timeouts get one clean retry instead of repeating three long attempts that are unlikely to recover.
 
 ## Requirements
 
